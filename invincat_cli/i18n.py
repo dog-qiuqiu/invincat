@@ -1,0 +1,860 @@
+"""Internationalization (i18n) support for deepagents-cli.
+
+This module provides comprehensive language localization support, enabling
+users to switch between English and Chinese languages throughout the application.
+"""
+
+from __future__ import annotations
+
+import logging
+from enum import StrEnum
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+class Language(StrEnum):
+    """Supported languages for the CLI interface."""
+
+    EN = "en"
+    """English (default)"""
+
+    ZH = "zh"
+    """Chinese (Simplified)"""
+
+
+DEFAULT_LANGUAGE = Language.EN
+"""Default language when not configured."""
+
+
+TRANSLATIONS: dict[str, dict[str, str]] = {
+    Language.EN: {
+        "welcome.tips.1": "Use @ to reference files and / for commands",
+        "welcome.tips.2": "Try /threads to resume a previous conversation",
+        "welcome.tips.3": "Use /offload when your conversation gets long",
+        "welcome.tips.4": "Use /mcp to see your loaded tools and servers",
+        "welcome.tips.5": "Use /remember to save learnings from this conversation",
+        "welcome.tips.6": "Use /model to switch models mid-conversation",
+        "welcome.tips.7": "Press ctrl+x to compose prompts in your external editor",
+        "welcome.tips.8": "Press ctrl+u to delete to the start of the line in the chat input",
+        "welcome.tips.9": "Use /skill:<name> to invoke a skill directly",
+        "welcome.tips.10": "Type /update to check for and install updates",
+        "welcome.tips.11": "Use /theme to customize the CLI colors and style",
+        "welcome.tips.12": "Use /skill-creator to build reusable agent skills",
+        "welcome.connecting": "Connecting...",
+        "welcome.resuming": "Resuming...",
+        "welcome.ready": "Ready",
+        "welcome.current": "current",
+        "approval.approve": "Approve",
+        "approval.reject": "Reject",
+        "approval.auto_approve": "Auto-approve",
+        "approval.expand_command": "Expand command",
+        "approval.shell_command": "Shell command",
+        "approval.tool_call": "Tool call",
+        "approval.decision_required": "Decision required",
+        "approval.warning_deceptive": "Warning: Potentially deceptive text",
+        "approval.more_warnings": "+{count} more warning(s)",
+        "status.thinking": "Thinking",
+        "status.awaiting_decision": "Awaiting decision",
+        "status.esc_to_interrupt": "esc to interrupt",
+        "status.shell_mode": "SHELL",
+        "status.cmd_mode": "CMD",
+        "status.tokens": "tokens",
+        "status.loading": "Loading...",
+        "status.ready": "Ready",
+        "status.error": "Error",
+        "status.success": "Success",
+        "status.cancelled": "Cancelled",
+        "status.interrupted": "Interrupted",
+        "command.clear": "Clear chat and start new thread",
+        "command.editor": "Open prompt in external editor ($EDITOR)",
+        "command.mcp": "Show active MCP servers and tools",
+        "command.model": "Switch or configure model (--model-params, --default)",
+        "command.offload": "Free up context window space by offloading older messages",
+        "command.remember": "Update memory and skills from conversation",
+        "command.skill_creator": "Guide for creating effective agent skills",
+        "command.threads": "Browse and resume previous threads",
+        "command.trace": "Open current thread in LangSmith",
+        "command.tokens": "Token usage",
+        "command.reload": "Reload config from environment variables and .env",
+        "command.theme": "Switch color theme",
+        "command.auto_memory": "Configure automatic memory updates",
+        "command.update": "Check for and install updates",
+        "command.auto_update": "Toggle automatic updates on or off",
+        "command.changelog": "Open changelog in browser",
+        "command.version": "Show version",
+        "command.feedback": "Submit a bug report or feature request",
+        "command.docs": "Open documentation in browser",
+        "command.quit": "Quit the application",
+        "command.help": "Show help message",
+        "command.language": "Switch interface language",
+        "help.title": "Commands",
+        "help.interactive_features": "Interactive Features",
+        "help.submit": "Submit your message",
+        "help.insert_newline": "Insert newline",
+        "help.open_editor": "Open prompt in external editor",
+        "help.toggle_auto_approve": "Toggle auto-approve mode",
+        "help.autocomplete_files": "Auto-complete files and inject content",
+        "help.slash_commands": "Slash commands (/help, /clear, /quit)",
+        "help.shell_commands": "Switch to shell mode, press 'esc' to exit shell mode",
+        "help.docs": "Docs",
+        "error.missing_dependencies": "Missing required CLI dependencies!",
+        "error.install_required": "The following packages are required to use the deepagents CLI:",
+        "error.install_command": "Please install them with:",
+        "error.install_all": "Or install all dependencies:",
+        "error.ripgrep_not_found": "ripgrep (rg) not found. Install it for faster code search.",
+        "error.tavily_not_configured": "Tavily API key not configured. Please set TAVILY_API_KEY environment variable.",
+        "error.package_not_installed": "Required package not installed: {package}. Install with: pip install 'deepagents[cli]'",
+        "error.config_read_failed": "Failed to read configuration file",
+        "error.config_write_failed": "Failed to write configuration file",
+        "error.language_save_failed": "Failed to save language preference",
+        "success.language_changed": "Language changed to {language}",
+        "success.config_reloaded": "Configuration reloaded successfully",
+        "success.new_thread": "Started new thread: {thread_id}",
+        "success.theme_changed": "Theme changed to {theme}",
+        "success.update_available": "Update available: {version}",
+        "success.up_to_date": "Already up to date",
+        "notification.press_escape": "Press Escape to cancel",
+        "notification.select_option": "Select an option",
+        "notification.loading_please_wait": "Loading, please wait...",
+        "language.select_title": "Select Language",
+        "language.english": "English",
+        "language.chinese": "中文 (Chinese)",
+        "language.current": "current",
+        "language.preview": "preview",
+        "language.select": "select",
+        "language.cancel": "cancel",
+        "theme.select_title": "Select Theme",
+        "theme.preview": "preview",
+        "theme.select": "select",
+        "theme.cancel": "cancel",
+        "auto_memory.title": "Auto Memory Configuration",
+        "auto_memory.enabled": "Enabled",
+        "auto_memory.disabled": "Disabled",
+        "auto_memory.interval": "Check Interval (turns)",
+        "auto_memory.on_exit": "Exit Check Marker",
+        "auto_memory.on": "On",
+        "auto_memory.off": "Off",
+        "auto_memory.save": "Save",
+        "auto_memory.cancel": "Cancel",
+        "auto_memory.saved": "Auto memory configuration saved",
+        "auto_memory.save_failed": "Failed to save auto memory configuration",
+        "auto_memory.enabled_label": "Auto Memory",
+        "auto_memory.interval_hint": "Number of turns between memory checks",
+        "auto_memory.on_exit_label": "On Exit Marker",
+        "auto_memory.on_exit_hint": "Write marker on exit for next session",
+        "thread.select_title": "Select Thread",
+        "thread.no_threads": "No threads found",
+        "thread.loading": "Loading threads...",
+        "thread.created": "Created",
+        "thread.updated": "Updated",
+        "thread.last_used": "Last Used",
+        "model.select_title": "Select Model",
+        "model.loading": "Loading models...",
+        "model.no_models": "No models available",
+        "model.current": "current",
+        "model.default": "default",
+        "model.set_default": "Set as default",
+        "model.clear_default": "Clear default",
+        "mcp.title": "MCP Servers and Tools",
+        "mcp.no_servers": "No MCP servers configured",
+        "mcp.tools_loaded": "tools loaded",
+        "mcp.server": "Server",
+        "mcp.tools": "Tools",
+        "tokens.title": "Token Usage",
+        "tokens.total": "Total",
+        "tokens.prompt": "Prompt",
+        "tokens.completion": "Completion",
+        "tokens.approximate": "approximate",
+        "update.checking": "Checking for updates...",
+        "update.installing": "Installing update...",
+        "update.restart_required": "Restart the CLI to use the new version",
+        "auto_update.enabled": "Automatic updates enabled",
+        "auto_update.disabled": "Automatic updates disabled",
+        "approval_menu.title": "Approval Required",
+        "approval_menu.approve_short": "Approve",
+        "approval_menu.reject_short": "Reject",
+        "approval_menu.auto_approve_short": "Auto",
+        "approval_menu.expand_short": "Expand",
+        "approval_menu.collapse_short": "Collapse",
+        "chat_input.placeholder": "Type a message... (@file /command)",
+        "chat_input.shell_mode": "Shell mode",
+        "chat_input.command_mode": "Command mode",
+        "file_ops.file_not_found": "File not found: {path}",
+        "file_ops.directory_not_found": "Directory not found: {path}",
+        "file_ops.permission_denied": "Permission denied: {path}",
+        "search.no_results": "No results found",
+        "search.searching": "Searching...",
+        "search.results_count": "{count} results found",
+        "model.title": "Select Model",
+        "model.current_model": "current: {model}",
+        "model.filter_placeholder": "Type to filter or enter provider:model...",
+        "model.navigate": "navigate",
+        "model.select_action": "select",
+        "model.set_default_action": "set default",
+        "model.cancel_action": "cancel",
+        "model.no_credentials": "No credentials",
+        "model.profile_params": "Profile parameters",
+        "model.default_model": "Default model",
+        "model.loading": "Loading models…",
+        "model.no_matching": "No matching models",
+        "model.profile_not_available": "Model profile not available :(",
+        "model.no_selected": "No model selected",
+        "model.could_not_load": "Could not load profile details",
+        "model.load_error": "Could not load model list. Check provider packages and config.toml.",
+        "model.default_cleared": "Default cleared",
+        "model.default_set_to": "Default set to {spec}",
+        "model.failed_clear": "Failed to clear default",
+        "model.failed_save": "Failed to save default",
+        "model.register_action": "register",
+        "model.register_title": "Register New Model",
+        "model.register_provider_label": "Provider Name",
+        "model.register_provider_placeholder": "e.g. ollama, deepseek, openrouter",
+        "model.register_model_label": "Model Name",
+        "model.register_model_placeholder": "e.g. qwen3:4b, deepseek-chat",
+        "model.register_apikey_label": "API Key Environment Variable",
+        "model.register_apikey_hint": "Leave empty for providers without API keys (e.g. Ollama)",
+        "model.register_apikey_placeholder": "e.g. DEEPSEEK_API_KEY",
+        "model.register_baseurl_label": "Base URL",
+        "model.register_baseurl_placeholder": "e.g. https://api.deepseek.com/v1",
+        "model.register_max_input_tokens_label": "Max Input Tokens",
+        "model.register_max_input_tokens_placeholder": "e.g. 128000",
+        "model.register_error_max_input_tokens_integer": "Max input tokens must be an integer",
+        "model.register_error_max_input_tokens_positive": "Max input tokens must be a positive number",
+        "model.register_error_baseurl": "Base URL is required",
+        "model.register_classpath_label": "Class Path (optional)",
+        "model.register_classpath_hint": "For custom providers using a BaseChatModel subclass",
+        "model.register_classpath_placeholder": "e.g. langchain_ollama:ChatOllama",
+        "model.register_next_field": "next field",
+        "model.register_submit": "submit",
+        "model.register_error_provider": "Provider name is required",
+        "model.register_error_model": "Model name is required",
+        "model.register_error_colon": "Do not include ':' in provider or model name — use separate fields",
+        "model.register_error_classpath": "Class path must be in 'module.path:ClassName' format",
+        "model.register_error_save": "Failed to save configuration",
+        "model.register_success": "Registered {spec}",
+        "mcp.title": "MCP Servers",
+        "mcp.servers_count": "{count} servers",
+        "mcp.tools_count": "{count} tools",
+        "mcp.no_servers_configured": "No MCP servers configured.\nUse `--mcp-config` to load servers.",
+        "mcp.navigate": "navigate",
+        "mcp.expand_collapse": "expand/collapse",
+        "mcp.close": "close",
+        "thread.title": "Select Thread",
+        "thread.current_thread": "current: {thread_id}",
+        "thread.filter_placeholder": "Type to filter threads...",
+        "thread.navigate": "navigate",
+        "thread.select_action": "select",
+        "thread.focus_options": "focus options",
+        "thread.toggle_option": "toggle option",
+        "thread.delete_action": "delete",
+        "thread.cancel_action": "cancel",
+        "thread.showing_limit": "Showing last {limit} threads. Set DA_CLI_RECENT_THREADS to override.",
+        "thread.column_thread_id": "Thread ID",
+        "thread.column_agent": "Agent",
+        "thread.column_messages": "Msgs",
+        "thread.column_created": "Created",
+        "thread.column_updated": "Updated",
+        "thread.column_branch": "Branch",
+        "thread.column_location": "Location",
+        "thread.column_prompt": "Prompt",
+        "thread.sort_by": "Sort by {field}",
+        "thread.sort_updated": "Updated At",
+        "thread.sort_created": "Created At",
+        "thread.delete_confirm": "Delete thread {thread_id}?",
+        "thread.delete_help": "Enter to confirm, Esc to cancel",
+        "thread.relative_time": "Relative time",
+        "thread.options": "Options",
+        "thread.options_help": "Tab through sort and column toggles. Column visibility persists between sessions.",
+        "thread.filter_placeholder": "Type to filter threads...",
+        "ask.select": "Select",
+        "ask.enter_continue": "Enter to continue",
+        "ask.switch_question": "Tab/Shift+Tab switch question",
+        "ask.cancel": "Esc to cancel",
+        "ask.type_answer": "Type your answer...",
+        "diff.no_changes": "No changes detected",
+        "diff.truncated": "... (truncated)",
+        "queue.discarded": "Queued message discarded",
+        "queue.moved_to_input": "Queued message moved to input",
+        "queue.discarded_input_not_empty": "Queued message discarded (input not empty)",
+        "thread.sort_save_failed": "Could not save sort preference",
+        "tool.details_not_available": "Tool details not available",
+        "tool.no_changes": "No changes to display",
+        "tool.removing": "Removing:",
+        "tool.adding": "Adding:",
+        "tool.more_lines": "... ({count} more lines)",
+        "tool.more_chars": "... ({count} more chars)",
+        "theme.select_title": "Select Theme",
+        "theme.preview": "preview",
+        "theme.select": "select",
+        "theme.cancel": "cancel",
+        "theme.current": "(current)",
+        "message.no_results": "No results",
+        "message.more_results": "{count} more results",
+        "message.error": "Error:",
+        "app.session_init_failed": "Session initialization failed. Some features may be unavailable.",
+        "app.skill_scan_failed": "Could not scan skill directories. Some /skill: commands may be unavailable.",
+        "app.skill_discovery_failed": "Skill discovery failed unexpectedly. /skill: commands may not work. Check logs for details.",
+        "app.no_threads_agent": "No previous threads for '{agent}', starting new.",
+        "app.no_threads": "No previous threads, starting new.",
+        "app.thread_not_found": "Thread '{thread_id}' not found. Did you mean: {similar}?",
+        "app.thread_not_found_simple": "Thread '{thread_id}' not found.",
+        "app.thread_lookup_failed": "Could not look up thread history. Starting new session.",
+        "app.updating_to": "Updating to v{version}...",
+        "app.updated_to": "Updated to v{version}. Restart to use the new version.",
+        "app.auto_update_failed": "Auto-update failed. Run manually: {command}",
+        "app.update_available": "Update available: v{latest} (current: v{current}). Run: {command}\nEnable auto-updates: /auto-update",
+        "app.update_failed": "Update failed unexpectedly.",
+        "app.auto_update_not_available": "Auto-updates are not available for editable installs.",
+        "app.auto_updates_enabled": "Auto-updates enabled.",
+        "app.auto_updates_disabled": "Auto-updates disabled.",
+        "app.auto_update_toggle_failed": "Auto-update toggle failed: {error}",
+        "app.thread_switch_in_progress": "Thread switch in progress. Please wait.",
+        "app.press_to_quit": "Press {shortcut} again to quit",
+        "app.external_editor_failed": "External editor failed. Check $VISUAL/$EDITOR.",
+        "app.model_switch_pending": "Model will switch after current task completes.",
+        "app.theme_not_saved": "Theme applied for this session but could not be saved. Check logs for details.",
+        "app.language_changed_to": "Language changed to {language}",
+        "app.thread_switch_pending": "Thread will switch after current task completes.",
+        "chat.attach_failed": "Could not attach {type}: {name}",
+        "thread.delete_failed": "Failed to delete thread {thread_id}",
+    },
+    Language.ZH: {
+        "welcome.tips.1": "使用 @ 引用文件，使用 / 执行命令",
+        "welcome.tips.2": "尝试 /threads 恢复之前的对话",
+        "welcome.tips.3": "对话过长时使用 /offload 释放上下文空间",
+        "welcome.tips.4": "使用 /mcp 查看已加载的工具和服务器",
+        "welcome.tips.5": "使用 /remember 保存对话中的学习内容",
+        "welcome.tips.6": "使用 /model 在对话中切换模型",
+        "welcome.tips.7": "按 ctrl+x 在外部编辑器中编写提示",
+        "welcome.tips.8": "按 ctrl+u 删除输入行首的内容",
+        "welcome.tips.9": "使用 /skill:<名称> 直接调用技能",
+        "welcome.tips.10": "输入 /update 检查并安装更新",
+        "welcome.tips.11": "使用 /theme 自定义 CLI 颜色和样式",
+        "welcome.tips.12": "使用 /skill-creator 创建可复用的代理技能",
+        "welcome.connecting": "连接中...",
+        "welcome.resuming": "恢复中...",
+        "welcome.ready": "就绪",
+        "welcome.current": "当前",
+        "approval.approve": "人工批准",
+        "approval.reject": "拒绝",
+        "approval.auto_approve": "自动批准",
+        "approval.expand_command": "展开命令",
+        "approval.shell_command": "Shell 命令",
+        "approval.tool_call": "工具调用",
+        "approval.decision_required": "需要决定",
+        "approval.warning_deceptive": "警告：可能存在欺骗性文本",
+        "approval.more_warnings": "+{count} 个更多警告",
+        "status.thinking": "思考中",
+        "status.awaiting_decision": "等待决定",
+        "status.esc_to_interrupt": "esc 中断",
+        "status.shell_mode": "SHELL",
+        "status.cmd_mode": "CMD",
+        "status.tokens": "tokens",
+        "status.loading": "加载中...",
+        "status.ready": "就绪",
+        "status.error": "错误",
+        "status.success": "成功",
+        "status.cancelled": "已取消",
+        "status.interrupted": "已中断",
+        "command.clear": "清除聊天并开始新对话",
+        "command.editor": "在外部编辑器中打开提示 ($EDITOR)",
+        "command.mcp": "显示活动的 MCP 服务器和工具",
+        "command.model": "切换或配置模型 (--model-params, --default)",
+        "command.offload": "通过卸载旧消息释放上下文窗口空间",
+        "command.remember": "从对话中更新记忆和技能",
+        "command.skill_creator": "创建有效代理技能的指南",
+        "command.threads": "浏览并恢复之前的对话",
+        "command.trace": "在 LangSmith 中打开当前对话",
+        "command.tokens": "tokens使用情况",
+        "command.reload": "从环境变量和 .env 重新加载配置",
+        "command.theme": "切换颜色主题",
+        "command.auto_memory": "配置自动记忆更新",
+        "command.update": "检查并安装更新",
+        "command.auto_update": "开启或关闭自动更新",
+        "command.changelog": "在浏览器中打开更新日志",
+        "command.version": "显示版本",
+        "command.feedback": "提交错误报告或功能请求",
+        "command.docs": "在浏览器中打开文档",
+        "command.quit": "退出应用程序",
+        "command.help": "显示帮助信息",
+        "command.language": "切换界面语言",
+        "help.title": "命令",
+        "help.interactive_features": "交互功能",
+        "help.submit": "提交消息",
+        "help.insert_newline": "插入换行符",
+        "help.open_editor": "在外部编辑器中打开提示",
+        "help.toggle_auto_approve": "切换自动批准模式",
+        "help.autocomplete_files": "自动补全文件并注入内容",
+        "help.slash_commands": "斜杠命令 (/help, /clear, /quit)",
+        "help.shell_commands": "切换到shell模式, 退出shell模式请按'esc'",
+        "help.docs": "文档",
+        "error.missing_dependencies": "缺少必需的 CLI 依赖项！",
+        "error.install_required": "以下包是使用 deepagents CLI 所需的：",
+        "error.install_command": "请使用以下命令安装：",
+        "error.install_all": "或安装所有依赖项：",
+        "error.ripgrep_not_found": "未找到 ripgrep (rg)。请安装它以获得更快的代码搜索。",
+        "error.tavily_not_configured": "Tavily API 密钥未配置。请设置 TAVILY_API_KEY 环境变量。",
+        "error.package_not_installed": "未安装必需的包：{package}。使用以下命令安装：pip install 'deepagents[cli]'",
+        "error.config_read_failed": "读取配置文件失败",
+        "error.config_write_failed": "写入配置文件失败",
+        "error.language_save_failed": "保存语言首选项失败",
+        "success.language_changed": "语言已更改为 {language}",
+        "success.config_reloaded": "配置重新加载成功",
+        "success.new_thread": "已开始新对话：{thread_id}",
+        "success.theme_changed": "主题已更改为 {theme}",
+        "success.update_available": "有可用更新：{version}",
+        "success.up_to_date": "已是最新版本",
+        "notification.press_escape": "按 Escape 取消",
+        "notification.select_option": "选择一个选项",
+        "notification.loading_please_wait": "加载中，请稍候...",
+        "language.select_title": "选择语言",
+        "language.english": "English (英语)",
+        "language.chinese": "中文 (Chinese)",
+        "language.current": "当前",
+        "language.preview": "预览",
+        "language.select": "选择",
+        "language.cancel": "取消",
+        "theme.select_title": "选择主题",
+        "theme.preview": "预览",
+        "theme.select": "选择",
+        "theme.cancel": "取消",
+        "auto_memory.title": "自动记忆配置",
+        "auto_memory.enabled": "已启用",
+        "auto_memory.disabled": "已禁用",
+        "auto_memory.interval": "检查间隔（轮数）",
+        "auto_memory.on_exit": "退出检查标记",
+        "auto_memory.on": "开",
+        "auto_memory.off": "关",
+        "auto_memory.save": "保存",
+        "auto_memory.cancel": "取消",
+        "auto_memory.saved": "自动记忆配置已保存",
+        "auto_memory.save_failed": "保存自动记忆配置失败",
+        "auto_memory.enabled_label": "自动记忆",
+        "auto_memory.interval_hint": "每隔多少轮对话触发一次记忆检查",
+        "auto_memory.on_exit_label": "退出标记",
+        "auto_memory.on_exit_hint": "退出时写入标记，下次会话提前触发检查",
+        "thread.select_title": "选择对话",
+        "thread.no_threads": "未找到对话",
+        "thread.loading": "加载对话中...",
+        "thread.created": "创建时间",
+        "thread.updated": "更新时间",
+        "thread.last_used": "最后使用",
+        "model.select_title": "选择模型",
+        "model.loading": "加载模型中...",
+        "model.no_models": "没有可用的模型",
+        "model.current": "当前",
+        "model.default": "默认",
+        "model.set_default": "设为默认",
+        "model.clear_default": "清除默认",
+        "mcp.title": "MCP 服务器和工具",
+        "mcp.no_servers": "未配置 MCP 服务器",
+        "mcp.tools_loaded": "个工具已加载",
+        "mcp.server": "服务器",
+        "mcp.tools": "工具",
+        "tokens.title": "tokens使用情况",
+        "tokens.total": "总计",
+        "tokens.prompt": "提示",
+        "tokens.completion": "完成",
+        "tokens.approximate": "约",
+        "update.checking": "检查更新中...",
+        "update.installing": "安装更新中...",
+        "update.restart_required": "重启 CLI 以使用新版本",
+        "auto_update.enabled": "自动更新已启用",
+        "auto_update.disabled": "自动更新已禁用",
+        "approval_menu.title": "需要批准",
+        "approval_menu.approve_short": "批准",
+        "approval_menu.reject_short": "拒绝",
+        "approval_menu.auto_approve_short": "自动",
+        "approval_menu.expand_short": "展开",
+        "approval_menu.collapse_short": "折叠",
+        "chat_input.placeholder": "输入消息... (@文件 /命令)",
+        "chat_input.shell_mode": "Shell 模式",
+        "chat_input.command_mode": "命令模式",
+        "file_ops.file_not_found": "文件未找到：{path}",
+        "file_ops.directory_not_found": "目录未找到：{path}",
+        "file_ops.permission_denied": "权限被拒绝：{path}",
+        "search.no_results": "未找到结果",
+        "search.searching": "搜索中...",
+        "search.results_count": "找到 {count} 个结果",
+        "model.title": "选择模型",
+        "model.current_model": "当前: {model}",
+        "model.filter_placeholder": "输入筛选或输入 provider:model...",
+        "model.navigate": "导航",
+        "model.select_action": "选择",
+        "model.set_default_action": "设为默认",
+        "model.cancel_action": "取消",
+        "model.no_credentials": "无凭证",
+        "model.profile_params": "配置参数",
+        "model.default_model": "默认模型",
+        "model.loading": "加载模型中…",
+        "model.no_matching": "没有匹配的模型",
+        "model.profile_not_available": "模型配置不可用 :(",
+        "model.no_selected": "未选择模型",
+        "model.could_not_load": "无法加载配置详情",
+        "model.load_error": "无法加载模型列表。请检查提供商包和 config.toml。",
+        "model.default_cleared": "已清除默认",
+        "model.default_set_to": "默认已设置为 {spec}",
+        "model.failed_clear": "清除默认失败",
+        "model.failed_save": "保存默认失败",
+        "model.register_action": "注册",
+        "model.register_title": "注册新模型",
+        "model.register_provider_label": "提供商名称",
+        "model.register_provider_placeholder": "例如 ollama, deepseek, openrouter",
+        "model.register_model_label": "模型名称",
+        "model.register_model_placeholder": "例如 qwen3:4b, deepseek-chat",
+        "model.register_apikey_label": "API Key 环境变量",
+        "model.register_apikey_hint": "无 API Key 的提供商请留空（如 Ollama）",
+        "model.register_apikey_placeholder": "例如 DEEPSEEK_API_KEY",
+        "model.register_baseurl_label": "Base URL",
+        "model.register_baseurl_placeholder": "例如 https://api.deepseek.com/v1",
+        "model.register_max_input_tokens_label": "最大输入 Tokens",
+        "model.register_max_input_tokens_placeholder": "例如 128000",
+        "model.register_error_max_input_tokens_integer": "最大输入 Tokens 必须是整数",
+        "model.register_error_max_input_tokens_positive": "最大输入 Tokens 必须是正数",
+        "model.register_error_baseurl": "Base URL 不能为空",
+        "model.register_classpath_label": "Class Path（可选）",
+        "model.register_classpath_hint": "用于自定义 BaseChatModel 子类的提供商",
+        "model.register_classpath_placeholder": "例如 langchain_ollama:ChatOllama",
+        "model.register_next_field": "下一字段",
+        "model.register_submit": "提交",
+        "model.register_error_provider": "提供商名称不能为空",
+        "model.register_error_model": "模型名称不能为空",
+        "model.register_error_colon": "提供商和模型名称中不要包含 ':'，请分别填写",
+        "model.register_error_classpath": "Class Path 必须使用 'module.path:ClassName' 格式",
+        "model.register_error_save": "保存配置失败",
+        "model.register_success": "已注册 {spec}",
+        "mcp.title": "MCP 服务器",
+        "mcp.servers_count": "{count} 个服务器",
+        "mcp.tools_count": "{count} 个工具",
+        "mcp.no_servers_configured": "未配置 MCP 服务器。\n使用 `--mcp-config` 加载服务器。",
+        "mcp.navigate": "导航",
+        "mcp.expand_collapse": "展开/折叠",
+        "mcp.close": "关闭",
+        "thread.title": "选择对话",
+        "thread.current_thread": "当前: {thread_id}",
+        "thread.filter_placeholder": "输入筛选对话...",
+        "thread.navigate": "导航",
+        "thread.select_action": "选择",
+        "thread.focus_options": "聚焦选项",
+        "thread.toggle_option": "切换选项",
+        "thread.delete_action": "删除",
+        "thread.cancel_action": "取消",
+        "thread.showing_limit": "显示最近 {limit} 个对话。设置 DA_CLI_RECENT_THREADS 覆盖。",
+        "thread.column_thread_id": "对话 ID",
+        "thread.column_agent": "代理",
+        "thread.column_messages": "消息",
+        "thread.column_created": "创建时间",
+        "thread.column_updated": "更新时间",
+        "thread.column_branch": "分支",
+        "thread.column_location": "位置",
+        "thread.column_prompt": "提示",
+        "thread.sort_by": "按 {field} 排序",
+        "thread.sort_updated": "更新时间",
+        "thread.sort_created": "创建时间",
+        "thread.delete_confirm": "删除对话 {thread_id}？",
+        "thread.delete_help": "Enter 确认，Esc 取消",
+        "thread.relative_time": "相对时间",
+        "thread.options": "选项",
+        "thread.options_help": "Tab 切换排序和列显示。列可见性在会话间保持。",
+        "thread.filter_placeholder": "输入筛选对话...",
+        "ask.select": "选择",
+        "ask.enter_continue": "Enter 继续",
+        "ask.switch_question": "Tab/Shift+Tab 切换问题",
+        "ask.cancel": "Esc 取消",
+        "ask.type_answer": "输入您的答案...",
+        "diff.no_changes": "未检测到更改",
+        "diff.truncated": "... (已截断)",
+        "queue.discarded": "排队消息已丢弃",
+        "queue.moved_to_input": "排队消息已移至输入框",
+        "queue.discarded_input_not_empty": "排队消息已丢弃（输入框非空）",
+        "thread.sort_save_failed": "无法保存排序偏好",
+        "tool.details_not_available": "工具详情不可用",
+        "tool.no_changes": "无更改可显示",
+        "tool.removing": "删除中：",
+        "tool.adding": "添加中：",
+        "tool.more_lines": "... (还有 {count} 行)",
+        "tool.more_chars": "... (还有 {count} 个字符)",
+        "theme.select_title": "选择主题",
+        "theme.preview": "预览",
+        "theme.select": "选择",
+        "theme.cancel": "取消",
+        "theme.current": "(当前)",
+        "message.no_results": "无结果",
+        "message.more_results": "还有 {count} 个结果",
+        "message.error": "错误：",
+        "app.session_init_failed": "会话初始化失败。某些功能可能不可用。",
+        "app.skill_scan_failed": "无法扫描技能目录。某些 /skill: 命令可能不可用。",
+        "app.skill_discovery_failed": "技能发现意外失败。/skill: 命令可能无法工作。请查看日志了解详情。",
+        "app.no_threads_agent": "'{agent}' 没有之前的对话，开始新对话。",
+        "app.no_threads": "没有之前的对话，开始新对话。",
+        "app.thread_not_found": "对话 '{thread_id}' 未找到。您是指：{similar}？",
+        "app.thread_not_found_simple": "对话 '{thread_id}' 未找到。",
+        "app.thread_lookup_failed": "无法查找对话历史。开始新会话。",
+        "app.updating_to": "正在更新到 v{version}...",
+        "app.updated_to": "已更新到 v{version}。请重启以使用新版本。",
+        "app.auto_update_failed": "自动更新失败。请手动运行：{command}",
+        "app.update_available": "有可用更新：v{latest}（当前：v{current}）。运行：{command}\n启用自动更新：/auto-update",
+        "app.update_failed": "更新意外失败。",
+        "app.auto_update_not_available": "可编辑安装不支持自动更新。",
+        "app.auto_updates_enabled": "自动更新已启用。",
+        "app.auto_updates_disabled": "自动更新已禁用。",
+        "app.auto_update_toggle_failed": "自动更新切换失败：{error}",
+        "app.thread_switch_in_progress": "对话切换进行中。请稍候。",
+        "app.press_to_quit": "再次按 {shortcut} 退出",
+        "app.external_editor_failed": "外部编辑器失败。请检查 $VISUAL/$EDITOR。",
+        "app.model_switch_pending": "模型将在当前任务完成后切换。",
+        "app.theme_not_saved": "主题已应用于本次会话，但无法保存。请查看日志了解详情。",
+        "app.language_changed_to": "语言已更改为 {language}",
+        "app.thread_switch_pending": "对话将在当前任务完成后切换。",
+        "chat.attach_failed": "无法附加 {type}：{name}",
+        "thread.delete_failed": "删除对话 {thread_id} 失败",
+    },
+}
+
+
+class I18n:
+    """Internationalization manager for the CLI.
+
+    This class manages language preferences and provides translation services
+    for all user-facing text in the application.
+
+    Attributes:
+        current_language: The currently active language.
+    """
+
+    def __init__(self, language: Language = DEFAULT_LANGUAGE) -> None:
+        """Initialize the i18n manager.
+
+        Args:
+            language: The initial language to use.
+        """
+        self._language = language
+        self._translations = TRANSLATIONS
+
+    @property
+    def language(self) -> Language:
+        """Get the current language."""
+        return self._language
+
+    @language.setter
+    def language(self, value: Language) -> None:
+        """Set the current language.
+
+        Args:
+            value: The language to set.
+        """
+        if value not in Language:
+            logger.warning(
+                "Invalid language '%s', falling back to default '%s'",
+                value,
+                DEFAULT_LANGUAGE,
+            )
+            value = DEFAULT_LANGUAGE
+        self._language = value
+        logger.debug("Language changed to: %s", value)
+
+    def t(self, key: str, **kwargs: Any) -> str:
+        """Translate a key to the current language.
+
+        Args:
+            key: The translation key (e.g., "welcome.ready").
+            **kwargs: Format arguments for string interpolation.
+
+        Returns:
+            The translated string, or the key if not found.
+        """
+        translations = self._translations.get(self._language, {})
+        text = translations.get(key)
+
+        if text is None:
+            translations = self._translations.get(DEFAULT_LANGUAGE, {})
+            text = translations.get(key, key)
+            if text == key:
+                logger.warning("Translation key not found: %s", key)
+
+        if kwargs:
+            try:
+                return text.format(**kwargs)
+            except (KeyError, ValueError) as e:
+                logger.warning(
+                    "Failed to format translation key '%s' with args %s: %s",
+                    key,
+                    kwargs,
+                    e,
+                )
+                return text
+
+        return text
+
+    def get_tip(self, index: int) -> str:
+        """Get a welcome tip by index.
+
+        Args:
+            index: The tip index (1-13).
+
+        Returns:
+            The translated tip text.
+        """
+        return self.t(f"welcome.tips.{index}")
+
+    def get_all_tips(self) -> list[str]:
+        """Get all welcome tips.
+
+        Returns:
+            List of all translated tip texts.
+        """
+        tips = []
+        for i in range(1, 13):
+            tip = self.t(f"welcome.tips.{i}")
+            if tip != f"welcome.tips.{i}":
+                tips.append(tip)
+        return tips
+
+    def get_language_name(self, language: Language) -> str:
+        """Get the display name for a language.
+
+        Args:
+            language: The language to get the name for.
+
+        Returns:
+            The display name of the language.
+        """
+        if language == Language.EN:
+            return self.t("language.english")
+        elif language == Language.ZH:
+            return self.t("language.chinese")
+        return language.value
+
+
+_i18n_instance: I18n | None = None
+
+
+def get_i18n() -> I18n:
+    """Get the global i18n instance.
+
+    Returns:
+        The global I18n instance.
+    """
+    global _i18n_instance
+    if _i18n_instance is None:
+        _i18n_instance = I18n()
+    return _i18n_instance
+
+
+def set_language(language: Language) -> None:
+    """Set the global language.
+
+    Args:
+        language: The language to set.
+    """
+    i18n = get_i18n()
+    i18n.language = language
+
+
+def t(key: str, **kwargs: Any) -> str:
+    """Translate a key using the global i18n instance.
+
+    This is a convenience function that wraps get_i18n().t().
+
+    Args:
+        key: The translation key.
+        **kwargs: Format arguments for string interpolation.
+
+    Returns:
+        The translated string.
+    """
+    return get_i18n().t(key, **kwargs)
+
+
+def load_language_from_config(config_path: Path | None = None) -> Language:
+    """Load language preference from config file.
+
+    Args:
+        config_path: Path to config file. Defaults to ~/.invincat/config.toml.
+
+    Returns:
+        The configured language, or default if not configured.
+    """
+    import tomllib
+
+    if config_path is None:
+        try:
+            config_path = Path.home() / ".invincat" / "config.toml"
+        except RuntimeError:
+            logger.debug("Could not determine home directory")
+            return DEFAULT_LANGUAGE
+
+    if not config_path.exists():
+        logger.debug("Config file not found at %s, using default language", config_path)
+        return DEFAULT_LANGUAGE
+
+    try:
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+
+        lang_value = data.get("general", {}).get("language")
+        if lang_value:
+            try:
+                return Language(lang_value)
+            except ValueError:
+                logger.warning(
+                    "Invalid language value '%s' in config, using default",
+                    lang_value,
+                )
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        logger.warning("Failed to read language from config: %s", e)
+
+    return DEFAULT_LANGUAGE
+
+
+def save_language_to_config(
+    language: Language, config_path: Path | None = None
+) -> bool:
+    """Save language preference to config file.
+
+    Args:
+        language: The language to save.
+        config_path: Path to config file. Defaults to ~/.invincat/config.toml.
+
+    Returns:
+        True if save succeeded, False otherwise.
+    """
+    import tomllib
+    import tomli_w
+
+    if config_path is None:
+        try:
+            config_path = Path.home() / ".invincat" / "config.toml"
+        except RuntimeError:
+            logger.error("Could not determine home directory for config path")
+            return False
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    data: dict[str, Any] = {}
+    if config_path.exists():
+        try:
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
+        except (OSError, tomllib.TOMLDecodeError) as e:
+            logger.warning("Failed to read existing config, will overwrite: %s", e)
+            data = {}
+
+    if "general" not in data:
+        data["general"] = {}
+
+    data["general"]["language"] = language.value
+
+    try:
+        with config_path.open("wb") as f:
+            tomli_w.dump(data, f)
+        logger.debug("Saved language preference to %s", config_path)
+        return True
+    except OSError as e:
+        logger.error("Failed to save language preference: %s", e)
+        return False
