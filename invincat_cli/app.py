@@ -70,6 +70,11 @@ _monotonic = time.monotonic
 # Auto-offload triggers when context window usage exceeds this fraction.
 _AUTO_OFFLOAD_THRESHOLD = 0.8
 
+# Minimum seconds between consecutive auto-offload attempts.  Prevents the
+# "trigger → OffloadThresholdNotMet → next turn → trigger again" loop that
+# occurs when system-prompt overhead dominates the token count.
+_AUTO_OFFLOAD_COOLDOWN_SECONDS = 300
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -696,6 +701,12 @@ class DeepAgentsApp(App):
 
         self._tokens_approximate: bool = False
         """Whether the cached token count is stale (interrupted generation)."""
+
+        self._auto_offload_cooldown_until: float = 0.0
+        """Monotonic timestamp before which auto-offload must not fire again."""
+
+        self._offload_budget_cache: tuple[tuple[Any, ...], str | None] | None = None
+        """(cache_key, result) for `_resolve_offload_budget_str`."""
 
         self._last_typed_at: float | None = None
         """Typing-aware approval deferral state."""
@@ -3138,11 +3149,22 @@ class DeepAgentsApp(App):
         """Trigger offload automatically when the context window is nearly full.
 
         Runs at the end of every agent turn. Returns immediately if the usage
-        ratio is below `_AUTO_OFFLOAD_THRESHOLD` or if the limit is unknown.
+        ratio is below `_AUTO_OFFLOAD_THRESHOLD`, the limit is unknown, or a
+        cooldown is active.
+
+        A `_AUTO_OFFLOAD_COOLDOWN_SECONDS` cooldown is set after every attempt
+        (successful or not) to prevent the feedback loop where system-prompt
+        overhead keeps the usage ratio above the threshold even after offloading
+        conversation messages — which would cause the auto-trigger to fire on
+        every subsequent turn.
+
         Skips when the token count is stale (approximate flag set by an
         interrupted generation) to avoid acting on unreliable data.
         """
         if self._tokens_approximate:
+            return
+
+        if _monotonic() < self._auto_offload_cooldown_until:
             return
 
         from invincat_cli.config import settings
@@ -3162,12 +3184,16 @@ class DeepAgentsApp(App):
             )
         )
         await self._handle_offload()
+        # Set cooldown regardless of outcome so we don't re-trigger next turn.
+        self._auto_offload_cooldown_until = _monotonic() + _AUTO_OFFLOAD_COOLDOWN_SECONDS
 
     def _resolve_offload_budget_str(self) -> str | None:
         """Resolve the offload retention budget as a human-readable string.
 
-        Instantiates a model and computes summarization defaults, so this is
-        not a trivial accessor.
+        Result is cached by (provider, model, context_limit, profile_override)
+        so repeated calls from `/tokens` and the status bar are cheap.  The
+        cache is automatically invalidated when any of those values change
+        (e.g. the user switches models with `/model`).
 
         Returns:
             A string like `"20.0K (10% of 200.0K)"` or
@@ -3175,6 +3201,20 @@ class DeepAgentsApp(App):
         """
         from invincat_cli.config import create_model, settings
 
+        cache_key: tuple[Any, ...] = (
+            settings.model_provider,
+            settings.model_name,
+            settings.model_context_limit,
+            tuple(sorted(self._profile_override.items()))
+            if self._profile_override
+            else (),
+        )
+        if self._offload_budget_cache is not None:
+            cached_key, cached_val = self._offload_budget_cache
+            if cached_key == cache_key:
+                return cached_val
+
+        val: str | None = None
         try:
             from deepagents.middleware.summarization import (
                 compute_summarization_defaults,
@@ -3188,13 +3228,15 @@ class DeepAgentsApp(App):
             defaults = compute_summarization_defaults(result.model)
             from invincat_cli.offload import format_offload_limit
 
-            return format_offload_limit(
+            val = format_offload_limit(
                 defaults["keep"],
                 settings.model_context_limit,
             )
         except Exception:  # best-effort for /tokens display
             logger.debug("Failed to compute offload budget string", exc_info=True)
-            return None
+
+        self._offload_budget_cache = (cache_key, val)
+        return val
 
     async def _handle_offload(self) -> None:
         """Offload older messages to free context window space."""
