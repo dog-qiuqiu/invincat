@@ -1053,16 +1053,18 @@ def create_cli_agent(
             )
         )
 
-        # Build auto-memory paths: include expected project path even if not exists
-        # This allows the model to create project-level memory files
-        auto_memory_paths = [str(settings.get_user_agent_md_path(assistant_id))]
+        # Auto-memory watches all loaded sources plus the expected project path
+        # so the model can also create a new project-level AGENTS.md if absent.
+        auto_memory_paths = list(memory_sources)
         project_expected_path = (
             project_context.project_root / ".invincat" / "AGENTS.md"
             if project_context is not None and project_context.project_root
             else settings.get_project_agent_md_expected_path()
         )
         if project_expected_path:
-            auto_memory_paths.append(str(project_expected_path))
+            expected_str = str(project_expected_path)
+            if expected_str not in auto_memory_paths:
+                auto_memory_paths.append(expected_str)
 
         # Add auto-memory middleware (periodic memory update hints)
         from invincat_cli.auto_memory import AutoMemoryMiddleware

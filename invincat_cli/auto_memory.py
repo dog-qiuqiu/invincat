@@ -20,6 +20,7 @@ Configuration (in ``~/.invincat/config.toml``):
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -83,6 +84,7 @@ If nothing new is worth saving, simply continue the conversation normally."""
 
 _MARKER_DIR = Path.home() / ".invincat" / "agent"
 _MARKER_FILE = _MARKER_DIR / ".auto_memory_pending"
+_GLOBAL_MEMORY_DIR = Path.home() / ".invincat"
 
 EXIT_MARKER_EXPIRY_SECONDS = 24 * 60 * 60
 
@@ -93,6 +95,9 @@ _marker_lock = threading.Lock()
 
 _MAX_MEMORY_SIZE_CHARS = 8000
 """Warn in hint when AGENTS.md exceeds this size to prompt consolidation."""
+
+_MAX_PER_FILE_CHARS = 4000
+"""Maximum characters per memory file included in the hint."""
 
 _MEMORY_SIGNAL_PATTERNS = re.compile(
     r"\b(always|never|prefer(?:ence)?|convention|decided?|policy|"
@@ -340,7 +345,7 @@ class AutoMemoryMiddleware(AgentMiddleware):
         self._interval = interval if interval is not None else config["interval"]
         self._memory_paths = memory_paths or []
         self._exit_marker_consumed = False
-        self._pre_agent_mtimes: dict[str, float] = {}
+        self._pre_agent_hashes: dict[str, str] = {}
 
         cleanup_expired_exit_markers()
 
@@ -353,25 +358,27 @@ class AutoMemoryMiddleware(AgentMiddleware):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _snapshot_mtimes(self) -> dict[str, float]:
-        """Return a path → mtime mapping for all tracked memory files."""
-        mtimes: dict[str, float] = {}
+    def _snapshot_hashes(self) -> dict[str, str]:
+        """Return a path → content-hash mapping for all tracked memory files."""
+        hashes: dict[str, str] = {}
         for path in self._memory_paths:
             try:
-                mtimes[path] = Path(path).stat().st_mtime
+                content = Path(path).read_bytes()
+                hashes[path] = hashlib.md5(content, usedforsecurity=False).hexdigest()
             except OSError:
-                mtimes[path] = 0.0
-        return mtimes
+                hashes[path] = ""
+        return hashes
 
-    def _memory_files_changed(self, before: dict[str, float]) -> bool:
-        """Return True if any memory file mtime changed since *before* snapshot."""
-        for path, old_mtime in before.items():
+    def _memory_files_changed(self, before: dict[str, str]) -> bool:
+        """Return True if any memory file content changed since *before* snapshot."""
+        for path, old_hash in before.items():
             try:
-                new_mtime = Path(path).stat().st_mtime
+                content = Path(path).read_bytes()
+                new_hash = hashlib.md5(content, usedforsecurity=False).hexdigest()
             except OSError:
-                new_mtime = 0.0
-            if new_mtime != old_mtime:
-                logger.debug("Memory file mtime changed: %s", path)
+                new_hash = ""
+            if new_hash != old_hash:
+                logger.debug("Memory file content changed: %s", path)
                 return True
         return False
 
@@ -397,8 +404,15 @@ class AutoMemoryMiddleware(AgentMiddleware):
         for path in self._memory_paths:
             try:
                 content = Path(path).read_text(encoding="utf-8").strip()
-                if content:
-                    parts.append(f"[{path}]\n{content}")
+                if not content:
+                    continue
+                if len(content) > _MAX_PER_FILE_CHARS:
+                    omitted = len(content) - _MAX_PER_FILE_CHARS
+                    content = (
+                        content[:_MAX_PER_FILE_CHARS]
+                        + f"\n\u2026 [{omitted} chars omitted]"
+                    )
+                parts.append(f"[{path}]\n{content}")
             except OSError:
                 pass
         return "\n\n".join(parts)
@@ -459,12 +473,15 @@ class AutoMemoryMiddleware(AgentMiddleware):
             project_paths: list[str] = []
             global_paths: list[str] = []
 
+            _global_dir = _GLOBAL_MEMORY_DIR.resolve()
             for p in self._memory_paths:
-                if ".invincat/agent/AGENTS.md" in p or p.endswith("/agent/AGENTS.md"):
-                    global_paths.append(p)
-                elif ".invincat/AGENTS.md" in p or p.endswith("/AGENTS.md"):
-                    project_paths.append(p)
-                else:
+                try:
+                    resolved = Path(p).expanduser().resolve()
+                    if resolved.is_relative_to(_global_dir):
+                        global_paths.append(p)
+                    else:
+                        project_paths.append(p)
+                except (ValueError, OSError):
                     global_paths.append(p)
 
             if project_paths:
@@ -537,7 +554,7 @@ class AutoMemoryMiddleware(AgentMiddleware):
             )
             self._exit_marker_consumed = False
 
-        self._pre_agent_mtimes = self._snapshot_mtimes()
+        self._pre_agent_hashes = self._snapshot_hashes()
 
         return {"_auto_memory_user_turn_count": user_turn_count}
 
@@ -688,7 +705,7 @@ class AutoMemoryMiddleware(AgentMiddleware):
             updates["_auto_memory_user_turn_count"] = 0
             updates["_auto_memory_hint_injected"] = False
 
-        if self._memory_paths and self._memory_files_changed(self._pre_agent_mtimes):
+        if self._memory_paths and self._memory_files_changed(self._pre_agent_hashes):
             updates["memory_contents"] = None
             logger.debug("Memory file mtime changed, cleared memory_contents for reload")
 

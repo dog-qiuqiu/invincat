@@ -16,6 +16,17 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+_PROJECT_ROOT_MARKERS = frozenset(
+    {
+        ".git",
+        ".invincat",
+        "pyproject.toml",
+        "package.json",
+        "go.mod",
+        "Cargo.toml",
+    }
+)
+
 
 @dataclass(frozen=True)
 class ProjectContext:
@@ -133,10 +144,13 @@ def get_server_project_context(
 
 
 def find_project_root(start_path: str | Path | None = None) -> Path | None:
-    """Find the project root by looking for .git directory.
+    """Find the project root by walking up for common project markers.
 
-    Walks up the directory tree from start_path (or cwd) looking for a .git
-    directory, which indicates the project root.
+    Checks each ancestor directory (nearest first) for any of the following:
+    ``.git``, ``.invincat``, ``pyproject.toml``, ``package.json``,
+    ``go.mod``, ``Cargo.toml``.  Returns the nearest match so that a
+    nested Python package inside a Git mono-repo correctly resolves to
+    the package root rather than the repo root.
 
     Args:
         start_path: Directory to start searching from.
@@ -147,11 +161,10 @@ def find_project_root(start_path: str | Path | None = None) -> Path | None:
     """
     current = Path(start_path or Path.cwd()).expanduser().resolve()
 
-    # Walk up the directory tree
     for parent in [current, *list(current.parents)]:
-        git_dir = parent / ".git"
-        if git_dir.exists():
-            return parent
+        for marker in _PROJECT_ROOT_MARKERS:
+            if (parent / marker).exists():
+                return parent
 
     return None
 
@@ -163,7 +176,10 @@ def find_project_agent_md(project_root: Path) -> list[Path]:
     1. project_root/.invincat/AGENTS.md
     2. project_root/AGENTS.md
 
-    Both files will be loaded and combined if both exist.
+    Both files will be loaded when both exist; there is no automatic
+    conflict resolution.  The model is instructed that project memory
+    takes precedence over global memory, but it must reconcile two
+    co-existing project files itself by reading both before editing.
 
     Args:
         project_root: Path to the project root directory.
