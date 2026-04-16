@@ -20,12 +20,15 @@ Configuration (in ``~/.invincat/config.toml``):
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
+import re
 import tempfile
 import threading
 import time
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, NotRequired, cast
 
@@ -88,6 +91,17 @@ EXIT_MARKER_EXPIRY_SECONDS = 24 * 60 * 60
 # read the marker as present and both attempt to consume it.
 _marker_lock = threading.Lock()
 
+_MAX_MEMORY_SIZE_CHARS = 8000
+"""Warn in hint when AGENTS.md exceeds this size to prompt consolidation."""
+
+_MEMORY_SIGNAL_PATTERNS = re.compile(
+    r"\b(always|never|prefer(?:ence)?|convention|decided?|policy|"
+    r"best\s+practice|should\s+use|don't\s+use|avoid|make\s+sure|"
+    r"remember|important|rule|standard|guideline)\b",
+    re.IGNORECASE,
+)
+"""Patterns in user messages that indicate memory-worthy content."""
+
 
 class AutoMemoryState(AgentState):
     """State for auto-memory middleware."""
@@ -101,8 +115,14 @@ _DEFAULT_ENABLED = True
 _DEFAULT_ON_EXIT = True
 
 
+@lru_cache(maxsize=1)
 def _read_auto_memory_config() -> dict[str, Any]:
     """Read ``[auto_memory]`` section from ``~/.invincat/config.toml``.
+
+    Result is cached for the lifetime of the process. Call
+    ``_read_auto_memory_config.cache_clear()`` (or use
+    ``save_auto_memory_config``, which does this automatically) after
+    writing a new config to pick up the change.
 
     Returns:
         Dictionary with keys ``enabled``, ``interval``, ``on_exit``.
@@ -203,6 +223,7 @@ def save_auto_memory_config(
                 Path(tmp_path).unlink()
             raise
         logger.debug("Saved auto_memory config to %s", config_path)
+        _read_auto_memory_config.cache_clear()
         return True
     except OSError as exc:
         logger.error("Failed to save auto_memory config: %s", exc)
@@ -221,22 +242,15 @@ def _has_exit_marker() -> bool:
         if not _MARKER_FILE.exists():
             return False
 
-        content = _MARKER_FILE.read_text().strip()
-        for line in content.split("\n"):
-            if line.startswith("timestamp="):
-                try:
-                    timestamp_str = line.split("=", 1)[1]
-                    timestamp = float(timestamp_str)
-                    if time.time() - timestamp > EXIT_MARKER_EXPIRY_SECONDS:
-                        logger.debug("Exit marker expired, removing")
-                        _consume_exit_marker()
-                        return False
-                except (ValueError, IndexError):
-                    pass
-                break
-
+        data = json.loads(_MARKER_FILE.read_text())
+        timestamp = float(data.get("timestamp", 0))
+        if time.time() - timestamp > EXIT_MARKER_EXPIRY_SECONDS:
+            logger.debug("Exit marker expired, removing")
+            _consume_exit_marker()
+            return False
         return True
-    except OSError:
+    except (OSError, json.JSONDecodeError, ValueError, KeyError):
+        logger.debug("Could not parse exit marker, treating as absent", exc_info=True)
         return False
 
 
@@ -257,9 +271,12 @@ def write_exit_marker(thread_id: str = "") -> None:
     try:
         _MARKER_DIR.mkdir(parents=True, exist_ok=True)
         timestamp = time.time()
-        iso_timestamp = datetime.fromtimestamp(timestamp).isoformat()
-        content = f"thread_id={thread_id}\ntimestamp={timestamp}\niso_time={iso_timestamp}\n"
-        _MARKER_FILE.write_text(content)
+        data = {
+            "thread_id": thread_id,
+            "timestamp": timestamp,
+            "iso_time": datetime.fromtimestamp(timestamp).isoformat(),
+        }
+        _MARKER_FILE.write_text(json.dumps(data))
         logger.debug("Auto-memory exit marker written to %s", _MARKER_FILE)
     except OSError:
         logger.debug("Failed to write auto-memory exit marker", exc_info=True)
@@ -271,66 +288,18 @@ def cleanup_expired_exit_markers() -> int:
     Returns:
         Number of markers removed.
     """
-    removed = 0
     try:
-        if _MARKER_FILE.exists():
-            content = _MARKER_FILE.read_text().strip()
-            for line in content.split("\n"):
-                if line.startswith("timestamp="):
-                    try:
-                        timestamp_str = line.split("=", 1)[1]
-                        timestamp = float(timestamp_str)
-                        if time.time() - timestamp > EXIT_MARKER_EXPIRY_SECONDS:
-                            _consume_exit_marker()
-                            removed = 1
-                            logger.debug("Cleaned up expired exit marker")
-                    except (ValueError, IndexError):
-                        pass
-                    break
-    except OSError:
+        if not _MARKER_FILE.exists():
+            return 0
+        data = json.loads(_MARKER_FILE.read_text())
+        timestamp = float(data.get("timestamp", 0))
+        if time.time() - timestamp > EXIT_MARKER_EXPIRY_SECONDS:
+            _consume_exit_marker()
+            logger.debug("Cleaned up expired exit marker")
+            return 1
+    except (OSError, json.JSONDecodeError, ValueError):
         pass
-    return removed
-
-
-def _check_memory_file_updated(state: AutoMemoryState, memory_paths: list[str]) -> bool:
-    """Check if any memory file was updated in the last tool calls.
-
-    Args:
-        state: Current agent state containing messages.
-        memory_paths: List of memory file paths to check.
-
-    Returns:
-        True if a memory file was updated.
-    """
-    messages = state.get("messages", [])
-    if not messages:
-        return False
-
-    # Iterate the last 10 messages in reverse (most-recent first) so we can
-    # return True as soon as a match is found without scanning the full history.
-    for msg in messages[-10:][::-1]:
-        msg_type = getattr(msg, "type", None)
-        if msg_type == "tool":
-            content = getattr(msg, "content", "")
-            if isinstance(content, str):
-                for path in memory_paths:
-                    if path in content:
-                        logger.debug("Detected memory file update: %s", path)
-                        return True
-        elif msg_type == "ai":
-            tool_calls = getattr(msg, "tool_calls", [])
-            for tool_call in tool_calls:
-                tool_name = tool_call.get("name", "") if isinstance(tool_call, dict) else getattr(tool_call, "name", "")
-                if tool_name in ("edit_file", "write_file"):
-                    args = tool_call.get("args", {}) if isinstance(tool_call, dict) else getattr(tool_call, "args", {})
-                    # Use getattr fallback consistent with how tool_name is
-                    # extracted above, so object-style tool calls are handled.
-                    file_path = args.get("file_path", "") if isinstance(args, dict) else getattr(args, "file_path", "")
-                    for path in memory_paths:
-                        if path in file_path:
-                            logger.debug("Detected memory file update via tool call: %s", path)
-                            return True
-    return False
+    return 0
 
 
 class AutoMemoryMiddleware(AgentMiddleware):
@@ -345,6 +314,9 @@ class AutoMemoryMiddleware(AgentMiddleware):
     On session start, if an exit marker from a previous session exists,
     the hint is injected on the first few exchanges to encourage the
     model to preserve any important information early on.
+
+    The hint also includes the current memory file contents so the model
+    can perform a diff-style update rather than blindly appending.
     """
 
     state_schema = AutoMemoryState
@@ -368,6 +340,7 @@ class AutoMemoryMiddleware(AgentMiddleware):
         self._interval = interval if interval is not None else config["interval"]
         self._memory_paths = memory_paths or []
         self._exit_marker_consumed = False
+        self._pre_agent_mtimes: dict[str, float] = {}
 
         cleanup_expired_exit_markers()
 
@@ -376,20 +349,77 @@ class AutoMemoryMiddleware(AgentMiddleware):
         """Whether auto-memory is currently active."""
         return self._enabled
 
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _snapshot_mtimes(self) -> dict[str, float]:
+        """Return a path → mtime mapping for all tracked memory files."""
+        mtimes: dict[str, float] = {}
+        for path in self._memory_paths:
+            try:
+                mtimes[path] = Path(path).stat().st_mtime
+            except OSError:
+                mtimes[path] = 0.0
+        return mtimes
+
+    def _memory_files_changed(self, before: dict[str, float]) -> bool:
+        """Return True if any memory file mtime changed since *before* snapshot."""
+        for path, old_mtime in before.items():
+            try:
+                new_mtime = Path(path).stat().st_mtime
+            except OSError:
+                new_mtime = 0.0
+            if new_mtime != old_mtime:
+                logger.debug("Memory file mtime changed: %s", path)
+                return True
+        return False
+
+    def _has_memory_signals(self, state: AutoMemoryState) -> bool:
+        """Return True if recent user messages contain memory-worthy keywords.
+
+        Scans the last 5 messages for patterns that suggest the user is
+        expressing preferences, decisions, or conventions worth persisting.
+        When detected, ``_should_show_hint`` can fire earlier than the
+        configured interval.
+        """
+        messages = state.get("messages", [])
+        for msg in messages[-5:]:
+            if getattr(msg, "type", None) == "human":
+                content = getattr(msg, "content", "")
+                if isinstance(content, str) and _MEMORY_SIGNAL_PATTERNS.search(content):
+                    return True
+        return False
+
+    def _get_current_memory_contents(self) -> str:
+        """Read all memory files and return their contents for diff-style updates."""
+        parts: list[str] = []
+        for path in self._memory_paths:
+            try:
+                content = Path(path).read_text(encoding="utf-8").strip()
+                if content:
+                    parts.append(f"[{path}]\n{content}")
+            except OSError:
+                pass
+        return "\n\n".join(parts)
+
+    # ------------------------------------------------------------------
+    # Core logic
+    # ------------------------------------------------------------------
+
     def _should_show_hint(self, state: AutoMemoryState) -> bool:
-        """Determine whether the memory hint should be shown for this turn.
+        """Return True if the memory hint should be injected this turn.
 
-        Args:
-            state: Current agent state.
-
-        Returns:
-            True if the hint should be injected.
+        Three triggers (in priority order):
+        1. Regular interval — ``user_turn_count >= interval``.
+        2. Exit marker — previous session ended; fire after 3 exchanges.
+        3. Content-aware — memory-worthy signals detected; fire after
+           ``interval // 3`` exchanges (min 1).
         """
         if not self._enabled:
             return False
 
-        hint_injected = state.get("_auto_memory_hint_injected", False)
-        if hint_injected:
+        if state.get("_auto_memory_hint_injected", False):
             return False
 
         user_turn_count = state.get("_auto_memory_user_turn_count", 0) or 0
@@ -401,17 +431,28 @@ class AutoMemoryMiddleware(AgentMiddleware):
             if user_turn_count >= 3:
                 return True
 
+        if self._has_memory_signals(state) and user_turn_count >= max(1, self._interval // 3):
+            return True
+
         return False
 
-    def _build_hint(self, turns: int, *, is_exit_followup: bool = False) -> str:
+    def _build_hint(
+        self,
+        turns: int,
+        *,
+        is_exit_followup: bool = False,
+        current_memory: str = "",
+    ) -> str:
         """Build the memory hint string.
 
         Args:
-            turns: Current turn count.
-            is_exit_followup: Whether this hint is triggered by an exit marker.
+            turns: Current user-turn count for context.
+            is_exit_followup: Use the session-start variant of the template.
+            current_memory: Existing memory file contents to include so the
+                model can perform a diff-style update instead of blind append.
 
         Returns:
-            Formatted hint string.
+            Formatted hint string ready to append to the system prompt.
         """
         if self._memory_paths:
             paths_lines: list[str] = []
@@ -438,16 +479,33 @@ class AutoMemoryMiddleware(AgentMiddleware):
             paths_str = "- `~/.invincat/agent/AGENTS.md` (global - for cross-project preferences)"
 
         template = _EXIT_MEMORY_HINT if is_exit_followup else _AUTO_MEMORY_HINT
-        return template.format(turns=turns, memory_paths=paths_str)
+        hint = template.format(turns=turns, memory_paths=paths_str)
+
+        if current_memory:
+            size_note = ""
+            if len(current_memory) > _MAX_MEMORY_SIZE_CHARS:
+                size_note = (
+                    f"\n\n\u26a0 Memory file is large ({len(current_memory):,} chars). "
+                    "Remove outdated entries before adding new ones."
+                )
+            hint += (
+                f"\n\nCurrent memory contents"
+                f" (do NOT re-save what is already there):\n"
+                f"{current_memory}{size_note}"
+            )
+
+        return hint
 
     def before_agent(
         self,
         state: AutoMemoryState,
         runtime: Any,
     ) -> dict[str, Any] | None:
-        """Increment user turn counter on each agent invocation.
+        """Increment user turn counter and snapshot memory file mtimes.
 
         Only counts user turns (HumanMessage), not tool call iterations.
+        The mtime snapshot is used by ``after_agent`` to detect writes
+        without scanning message content.
 
         Args:
             state: Current agent state.
@@ -479,6 +537,8 @@ class AutoMemoryMiddleware(AgentMiddleware):
             )
             self._exit_marker_consumed = False
 
+        self._pre_agent_mtimes = self._snapshot_mtimes()
+
         return {"_auto_memory_user_turn_count": user_turn_count}
 
     def _check_and_mark_exit_followup(self) -> bool:
@@ -498,7 +558,11 @@ class AutoMemoryMiddleware(AgentMiddleware):
         return is_exit_followup
 
     def _inject_hint(
-        self, request: ModelRequest, *, is_exit_followup: bool = False
+        self,
+        request: ModelRequest,
+        *,
+        is_exit_followup: bool = False,
+        current_memory: str = "",
     ) -> ModelRequest | None:
         """Build and inject the memory hint into the request's system prompt.
 
@@ -507,6 +571,7 @@ class AutoMemoryMiddleware(AgentMiddleware):
             is_exit_followup: Whether an exit marker was detected for this call.
                 Callers are responsible for passing the correct value and for
                 deleting the marker file (sync vs async).
+            current_memory: Pre-read memory file contents to embed in the hint.
 
         Returns:
             Modified request with hint appended, or None if no injection needed.
@@ -518,7 +583,11 @@ class AutoMemoryMiddleware(AgentMiddleware):
 
         turns = state.get("_auto_memory_user_turn_count", 0) or 0
 
-        hint = self._build_hint(turns, is_exit_followup=is_exit_followup)
+        hint = self._build_hint(
+            turns,
+            is_exit_followup=is_exit_followup,
+            current_memory=current_memory,
+        )
         system_prompt = request.system_prompt or ""
         new_prompt = system_prompt + "\n" + hint
 
@@ -543,7 +612,12 @@ class AutoMemoryMiddleware(AgentMiddleware):
         is_exit_followup = self._check_and_mark_exit_followup()
         if is_exit_followup:
             _consume_exit_marker()
-        modified_request = self._inject_hint(request, is_exit_followup=is_exit_followup)
+        current_memory = self._get_current_memory_contents()
+        modified_request = self._inject_hint(
+            request,
+            is_exit_followup=is_exit_followup,
+            current_memory=current_memory,
+        )
         return handler(modified_request or request)
 
     async def awrap_model_call(
@@ -553,9 +627,9 @@ class AutoMemoryMiddleware(AgentMiddleware):
     ) -> ModelResponse:
         """Async variant of wrap_model_call.
 
-        Runs all marker file I/O (stat, read, unlink) via ``asyncio.to_thread``
-        so that ``blockbuster`` does not raise ``BlockingError`` from the async
-        event loop.
+        Runs all blocking file I/O (exit-marker stat/read/unlink and memory
+        file reads) via ``asyncio.to_thread`` so that ``blockbuster`` does not
+        raise ``BlockingError`` from the async event loop.
 
         Args:
             request: The model request being processed.
@@ -566,15 +640,20 @@ class AutoMemoryMiddleware(AgentMiddleware):
         """
         import asyncio
 
-        def _check_and_consume() -> bool:
-            """Check, mark, and delete the exit marker — all blocking I/O in one thread call."""
+        def _io_in_thread() -> tuple[bool, str]:
+            """Check/consume exit marker and read memory files in one thread."""
             is_followup = self._check_and_mark_exit_followup()
             if is_followup:
                 _consume_exit_marker()
-            return is_followup
+            current_memory = self._get_current_memory_contents()
+            return is_followup, current_memory
 
-        is_exit_followup = await asyncio.to_thread(_check_and_consume)
-        modified_request = self._inject_hint(request, is_exit_followup=is_exit_followup)
+        is_exit_followup, current_memory = await asyncio.to_thread(_io_in_thread)
+        modified_request = self._inject_hint(
+            request,
+            is_exit_followup=is_exit_followup,
+            current_memory=current_memory,
+        )
         return await handler(modified_request or request)
 
     def after_agent(
@@ -582,14 +661,15 @@ class AutoMemoryMiddleware(AgentMiddleware):
         state: AutoMemoryState,
         runtime: Any,
     ) -> dict[str, Any] | None:
-        """Reset turn counter after a hint was injected and check for memory updates.
+        """Reset turn counter after a hint was injected and detect memory writes.
 
         If a hint was injected during this agent run (indicated by
         ``_auto_memory_hint_injected`` being True), resets the turn counter
         so the next cycle starts fresh.
 
-        Also checks if any memory file was updated and clears the
-        ``memory_contents`` state to trigger a reload.
+        Detects memory file writes by comparing current mtimes against the
+        snapshot taken in ``before_agent``, which is more reliable than
+        scanning message content for path strings.
 
         Args:
             state: Current agent state.
@@ -608,9 +688,9 @@ class AutoMemoryMiddleware(AgentMiddleware):
             updates["_auto_memory_user_turn_count"] = 0
             updates["_auto_memory_hint_injected"] = False
 
-        if self._memory_paths and _check_memory_file_updated(state, self._memory_paths):
+        if self._memory_paths and self._memory_files_changed(self._pre_agent_mtimes):
             updates["memory_contents"] = None
-            logger.debug("Memory file updated, cleared memory_contents for reload")
+            logger.debug("Memory file mtime changed, cleared memory_contents for reload")
 
         return updates if updates else None
 
@@ -655,47 +735,37 @@ class RefreshableMemoryMiddleware(AgentMiddleware):
     def before_agent(self, state: dict[str, Any], runtime: Any) -> dict[str, Any] | None:
         """Load memory content before agent execution.
 
-        Reloads memory if memory_contents is None or not present.
+        Reloads when ``memory_contents`` is absent or ``None`` (the sentinel
+        set by ``AutoMemoryMiddleware.after_agent`` to trigger a refresh).
 
         Args:
             state: Current agent state.
             runtime: Runtime context.
 
         Returns:
-            State update with memory_contents populated.
+            State update with memory_contents populated, or None to skip.
         """
-        memory_contents = state.get("memory_contents")
-
-        if memory_contents is None:
+        if state.get("memory_contents") is None:
             logger.debug("Refreshing memory contents")
             return self._memory_middleware.before_agent(state, runtime, None)
-
-        if "memory_contents" not in state:
-            return self._memory_middleware.before_agent(state, runtime, None)
-
         return None
 
     async def abefore_agent(self, state: dict[str, Any], runtime: Any) -> dict[str, Any] | None:
         """Async load memory content before agent execution.
 
-        Reloads memory if memory_contents is None or not present.
+        Reloads when ``memory_contents`` is absent or ``None`` (the sentinel
+        set by ``AutoMemoryMiddleware.after_agent`` to trigger a refresh).
 
         Args:
             state: Current agent state.
             runtime: Runtime context.
 
         Returns:
-            State update with memory_contents populated.
+            State update with memory_contents populated, or None to skip.
         """
-        memory_contents = state.get("memory_contents")
-
-        if memory_contents is None:
+        if state.get("memory_contents") is None:
             logger.debug("Refreshing memory contents (async)")
             return await self._memory_middleware.abefore_agent(state, runtime, None)
-
-        if "memory_contents" not in state:
-            return await self._memory_middleware.abefore_agent(state, runtime, None)
-
         return None
 
     def wrap_model_call(self, request: ModelRequest, handler: Any) -> ModelResponse:
