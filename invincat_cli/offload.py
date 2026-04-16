@@ -26,6 +26,67 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_TOOL_OUTPUT_TRIM_CHARS = 800
+"""Max characters of ToolMessage content kept when building the summarization input.
+
+Raw tool outputs (file reads, shell output, search results) can be thousands of
+tokens but contribute little to summary quality — the surrounding AI messages
+already interpreted those outputs. Trimming them before the summarizing LLM sees
+them lowers cost and latency without degrading the result.
+
+The full, un-trimmed content is still written to backend storage so the history
+file remains complete.
+"""
+
+
+def _trim_tool_outputs(messages: list[Any]) -> list[Any]:
+    """Return a shallow copy of *messages* with oversized ToolMessage content trimmed.
+
+    Only string-content ``ToolMessage`` instances longer than
+    ``_TOOL_OUTPUT_TRIM_CHARS`` are replaced; all other messages are included
+    by reference unchanged.
+
+    Args:
+        messages: Original message list — not modified in place.
+
+    Returns:
+        New list suitable for passing to the summarizing LLM.
+    """
+    from langchain_core.messages import ToolMessage
+
+    result: list[Any] = []
+    trimmed_count = 0
+    for msg in messages:
+        if (
+            isinstance(msg, ToolMessage)
+            and isinstance(msg.content, str)
+            and len(msg.content) > _TOOL_OUTPUT_TRIM_CHARS
+        ):
+            omitted = len(msg.content) - _TOOL_OUTPUT_TRIM_CHARS
+            trimmed_content = (
+                msg.content[:_TOOL_OUTPUT_TRIM_CHARS]
+                + f"\n\u2026 [{omitted} chars omitted]"
+            )
+            result.append(
+                ToolMessage(
+                    content=trimmed_content,
+                    tool_call_id=msg.tool_call_id,
+                    name=getattr(msg, "name", None),
+                    additional_kwargs=msg.additional_kwargs,
+                )
+            )
+            trimmed_count += 1
+        else:
+            result.append(msg)
+
+    if trimmed_count:
+        logger.debug(
+            "Trimmed tool output in %d/%d messages before summarization",
+            trimmed_count,
+            len(messages),
+        )
+    return result
+
 
 # ---------------------------------------------------------------------------
 # Result types
@@ -302,15 +363,21 @@ async def perform_offload(
 
     to_summarize, to_keep = middleware._partition_messages(effective, cutoff)
 
+    # Token stats use the original messages so they reflect actual context freed.
     tokens_summarized = count_tokens_approximately(to_summarize)
     tokens_kept = count_tokens_approximately(to_keep)
     tokens_before = tokens_summarized + tokens_kept
 
+    # Trim oversized tool outputs before summarization.  The full content is
+    # still written to backend storage below — trimming only affects what the
+    # summarizing LLM sees, reducing cost and latency without degrading quality.
+    to_summarize_trimmed = _trim_tool_outputs(to_summarize)
+
     # Generate summary first so no side effects occur if the LLM fails
-    summary = await middleware._acreate_summary(to_summarize)
+    summary = await middleware._acreate_summary(to_summarize_trimmed)
 
     backend_path = await offload_messages_to_backend(
-        to_summarize,
+        to_summarize,  # full content for persistent history
         middleware,
         thread_id=thread_id,
         backend=offload_backend,
