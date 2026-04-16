@@ -67,6 +67,9 @@ from invincat_cli.widgets.welcome import WelcomeBanner
 logger = logging.getLogger(__name__)
 _monotonic = time.monotonic
 
+# Auto-offload triggers when context window usage exceeds this fraction.
+_AUTO_OFFLOAD_THRESHOLD = 0.8
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -3131,6 +3134,35 @@ class DeepAgentsApp(App):
             logger.debug("Failed to retrieve conversation token count", exc_info=True)
             return None
 
+    async def _maybe_auto_offload(self) -> None:
+        """Trigger offload automatically when the context window is nearly full.
+
+        Runs at the end of every agent turn. Returns immediately if the usage
+        ratio is below `_AUTO_OFFLOAD_THRESHOLD` or if the limit is unknown.
+        Skips when the token count is stale (approximate flag set by an
+        interrupted generation) to avoid acting on unreliable data.
+        """
+        if self._tokens_approximate:
+            return
+
+        from invincat_cli.config import settings
+
+        context_limit = settings.model_context_limit
+        if not context_limit or not self._context_tokens:
+            return
+
+        usage_ratio = self._context_tokens / context_limit
+        if usage_ratio < _AUTO_OFFLOAD_THRESHOLD:
+            return
+
+        pct = round(usage_ratio * 100)
+        await self._mount_message(
+            AppMessage(
+                f"Context window is {pct}% full \u2014 automatically offloading older messages\u2026"
+            )
+        )
+        await self._handle_offload()
+
     def _resolve_offload_budget_str(self) -> str | None:
         """Resolve the offload retention budget as a human-readable string.
 
@@ -3469,6 +3501,9 @@ class DeepAgentsApp(App):
                     )
                 )
 
+        # Auto-offload when context window is near full (no-op when below threshold)
+        await self._maybe_auto_offload()
+
         # Process next message from queue if any
         await self._process_next_from_queue()
 
@@ -3777,6 +3812,50 @@ class DeepAgentsApp(App):
             exclusive=False,
         )
 
+    @staticmethod
+    def _build_resume_summary(messages: list[MessageData], context_tokens: int) -> str:
+        """Build a one-line session summary shown when a thread is resumed.
+
+        Extracts the first and last user messages so the user has immediate
+        context without scrolling back through history.
+
+        Args:
+            messages: Converted message data for the thread.
+            context_tokens: Persisted context token count (0 if unknown).
+
+        Returns:
+            A short multi-part summary string, or ``""`` when there is nothing
+            useful to show (e.g. brand-new thread with no user messages).
+        """
+        user_messages = [m for m in messages if m.type == MessageType.USER]
+        if not user_messages:
+            return ""
+
+        parts: list[str] = []
+
+        first_content = user_messages[0].content.strip()
+        if first_content:
+            preview = first_content[:80]
+            if len(first_content) > 80:
+                preview += "\u2026"
+            parts.append(f"Started with: \u201c{preview}\u201d")
+
+        if len(user_messages) > 1:
+            last_content = user_messages[-1].content.strip()
+            if last_content and last_content != first_content:
+                preview = last_content[:80]
+                if len(last_content) > 80:
+                    preview += "\u2026"
+                parts.append(f"Last topic: \u201c{preview}\u201d")
+
+        total = len(messages)
+        token_str = (
+            f", {format_token_count(context_tokens)} tokens" if context_tokens > 0 else ""
+        )
+        parts.insert(0, f"{total} messages{token_str}")
+
+        return " \u00b7 ".join(parts)
+
     async def _load_thread_history(
         self,
         *,
@@ -3861,7 +3940,11 @@ class DeepAgentsApp(App):
                             error,
                         )
 
-            # 9. Add footer immediately and resolve link asynchronously
+            # 9. Show a brief summary of prior session activity, then the footer.
+            summary = self._build_resume_summary(payload.messages, payload.context_tokens)
+            if summary:
+                await self._mount_message(AppMessage(summary))
+
             thread_msg_widget = AppMessage(f"Resumed thread: {history_thread_id}")
             await self._mount_message(thread_msg_widget)
             self._schedule_thread_message_link(
