@@ -588,6 +588,7 @@ async def execute_task_textual(
             suppress_resumed_output = False
             pending_interrupts: dict[str, HITLRequest] = {}
             pending_ask_user: dict[str, AskUserRequest] = {}
+            error_ask_user_ids: dict[str, str] = {}
 
             async for chunk in agent.astream(
                 stream_input,
@@ -637,9 +638,13 @@ async def execute_task_textual(
                                         await dispatch_hook("input.required", {})
                                     except ValidationError:
                                         logger.exception(
-                                            "Invalid ask_user interrupt payload"
+                                            "Invalid ask_user interrupt payload; "
+                                            "resuming with error so the agent can recover"
                                         )
-                                        raise
+                                        error_ask_user_ids[interrupt_obj.id] = (
+                                            "invalid ask_user payload"
+                                        )
+                                        interrupt_occurred = True
                                 else:
                                     try:
                                         validated_request = (
@@ -650,8 +655,20 @@ async def execute_task_textual(
                                         )
                                         interrupt_occurred = True
                                         await dispatch_hook("input.required", {})
-                                    except ValidationError:  # noqa: TRY203  # Re-raise preserves exception context in handler
-                                        raise
+                                    except ValidationError:
+                                        logger.exception(
+                                            "Invalid HITL interrupt payload; "
+                                            "aborting turn cleanly"
+                                        )
+                                        if adapter._set_spinner:
+                                            await adapter._set_spinner(None)
+                                        await adapter._mount_message(
+                                            AppMessage(
+                                                "Internal error: could not parse tool approval request. "
+                                                "Please try again."
+                                            )
+                                        )
+                                        return turn_stats
 
                     # Check for todo updates (not yet implemented in Textual UI)
                     chunk_data = next(iter(data.values())) if data else None
@@ -1360,6 +1377,15 @@ async def execute_task_textual(
             if interrupt_occurred:
                 any_rejected = False
                 resume_payload: dict[str, Any] = {}
+
+                # Inject error resumes for ask_user interrupts that failed validation.
+                # This unblocks the graph so the agent can handle the error gracefully
+                # rather than leaving the interrupt unresolved.
+                for interrupt_id, error_msg in error_ask_user_ids.items():
+                    resume_payload[interrupt_id] = {
+                        "status": "error",
+                        "error": error_msg,
+                    }
 
                 for interrupt_id, ask_req in list(pending_ask_user.items()):
                     questions = ask_req["questions"]

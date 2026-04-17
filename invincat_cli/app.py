@@ -1671,11 +1671,12 @@ class DeepAgentsApp(App):
 
     def on_scroll_to(self, _event: ScrollTo) -> None:
         """Handle scroll events to check if we need to hydrate older messages.
-        
+
         This catches all scroll events including mouse wheel, keyboard, and
         scrollbar drag, not just clicking on the scrollbar track.
         """
         self._check_hydration_needed()
+        self._maybe_reanchor()
 
     def _update_status(self, message: str) -> None:
         """Update the status bar with a message."""
@@ -1727,6 +1728,21 @@ class DeepAgentsApp(App):
         """Hide the token display during streaming."""
         if self._status_bar:
             self._status_bar.hide_tokens()
+
+    def _maybe_reanchor(self) -> None:
+        """Re-establish the scroll anchor when the user has scrolled to the bottom.
+
+        Textual releases the anchor automatically on manual scroll-up.  When
+        the user scrolls back to the bottom we restore it so new content keeps
+        the view up-to-date.
+        """
+        try:
+            chat = self.query_one("#chat", VerticalScroll)
+        except NoMatches:
+            return
+        if not chat.is_anchored and chat.max_scroll_y > 0:
+            if chat.scroll_y >= chat.max_scroll_y - 2:
+                chat.anchor()
 
     def _check_hydration_needed(self) -> None:
         """Check if we need to hydrate messages from the store.
@@ -1794,23 +1810,33 @@ class DeepAgentsApp(App):
                     exc_info=True,
                 )
 
-        for widget, msg_data in reversed(hydrated_widgets):
-            try:
-                if first_child:
-                    await messages_container.mount(widget, before=first_child)
-                else:
-                    await messages_container.mount(widget)
-                first_child = widget
-                hydrated_count += 1
-                # Render Markdown content for hydrated assistant messages
-                if isinstance(widget, AssistantMessage) and msg_data.content:
+        widgets_to_mount = [w for w, _ in hydrated_widgets]  # chronological order
+        try:
+            if first_child:
+                await messages_container.mount(*widgets_to_mount, before=first_child)
+            else:
+                await messages_container.mount(*widgets_to_mount)
+            hydrated_count = len(widgets_to_mount)
+        except Exception:
+            logger.warning("Batch hydration mount failed; falling back to sequential", exc_info=True)
+            for widget, _ in hydrated_widgets:
+                try:
+                    if first_child:
+                        await messages_container.mount(widget, before=first_child)
+                    else:
+                        await messages_container.mount(widget)
+                    first_child = widget
+                    hydrated_count += 1
+                except Exception:
+                    logger.warning("Failed to mount hydrated widget %s", widget.id, exc_info=True)
+
+        # Render Markdown content after all widgets are mounted
+        for widget, msg_data in hydrated_widgets:
+            if isinstance(widget, AssistantMessage) and msg_data.content:
+                try:
                     await widget.set_content(msg_data.content)
-            except Exception:
-                logger.warning(
-                    "Failed to mount hydrated widget %s",
-                    widget.id,
-                    exc_info=True,
-                )
+                except Exception:
+                    logger.warning("Failed to set content for hydrated widget", exc_info=True)
 
         # Only update store for the number we actually mounted
         if hydrated_count > 0:
@@ -3303,8 +3329,18 @@ class DeepAgentsApp(App):
             await dispatch_hook("context.compact", {})
             await self._set_spinner("Offloading")
 
+            raw_messages = state_values.get("messages", [])
+            # Checkpointer may return messages as plain dicts (e.g. after a
+            # server restart or when reading from SQLite directly). Convert
+            # to LangChain message objects so SummarizationMiddleware can
+            # process them — same pattern used in _fetch_thread_history_data.
+            if raw_messages and isinstance(raw_messages[0], dict):
+                from langchain_core.messages.utils import convert_to_messages
+
+                raw_messages = convert_to_messages(raw_messages)
+
             result = await perform_offload(
-                messages=state_values.get("messages", []),
+                messages=raw_messages,
                 prior_event=state_values.get("_summarization_event"),
                 thread_id=self._lc_thread_id,
                 model_spec=(f"{settings.model_provider}:{settings.model_name}"),
