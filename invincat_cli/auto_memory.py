@@ -48,39 +48,43 @@ _AUTO_MEMORY_HINT = """\
 ### Auto Memory Check
 
 You have had {turns} exchanges with the user. Review the recent conversation \
-and if you have learned any of the following, proactively update the memory \
-file using edit_file:
-
-- User preferences or coding conventions
-- Project architecture decisions
-- Best practices or anti-patterns discovered
-- Important context the user expects you to remember
-
-Memory files (project takes precedence over global):
-{memory_paths}
-
-Only update if there is genuinely valuable information worth preserving. \
-Do NOT update memory on every check — only when something meaningful was learned. \
+and proactively update the **appropriate** memory file using edit_file if \
+something worth preserving was learned.
+{project_section}{global_section}
+Choose the file that matches the scope of the information. \
+Do NOT update on every check — only when something genuinely new was learned. \
 If nothing new is worth saving, simply continue the conversation normally."""
 
 _EXIT_MEMORY_HINT = """\
 
 ### Auto Memory Check (Session Start)
 
-This is a new session. The previous session may have contained important \
-information worth preserving. If the current conversation reveals any of the \
-following, proactively update the memory file using edit_file:
-
-- User preferences or coding conventions
-- Project architecture decisions
-- Best practices or anti-patterns discovered
-- Important context the user expects you to remember
-
-Memory files (project takes precedence over global):
-{memory_paths}
-
-Only update if there is genuinely valuable information worth preserving. \
+This is a new session. Review the current conversation and proactively update \
+the **appropriate** memory file using edit_file if something worth preserving \
+was learned.
+{project_section}{global_section}
+Choose the file that matches the scope of the information. \
 If nothing new is worth saving, simply continue the conversation normally."""
+
+_PROJECT_MEMORY_SECTION = """
+**Project memory** — specific to this codebase, safe to commit with the repo:
+{paths}
+  Save here: tech stack decisions, architecture patterns, project-specific \
+coding conventions, constraints unique to this project.
+  Do NOT save: personal preferences unrelated to this codebase."""
+
+_GLOBAL_MEMORY_SECTION = """
+**Global memory** — applies across all projects and sessions with this user:
+{paths}
+  Save here: user's personal preferences, coding style, communication habits, \
+cross-project conventions.
+  Do NOT save: rules or decisions that only apply to one specific project."""
+
+_GLOBAL_MEMORY_ONLY_SECTION = """
+**Memory file** (global — applies across all projects and sessions):
+{paths}
+  Save here: user preferences, coding style, cross-project conventions, \
+important context the user expects you to remember."""
 
 _MARKER_DIR = Path.home() / ".invincat" / "agent"
 _MARKER_FILE = _MARKER_DIR / ".auto_memory_pending"
@@ -401,8 +405,28 @@ class AutoMemoryMiddleware(AgentMiddleware):
                     return True
         return False
 
+    def _classify_paths(self) -> tuple[list[str], list[str]]:
+        """Split memory paths into (project_paths, global_paths)."""
+        project_paths: list[str] = []
+        global_paths: list[str] = []
+        _global_dir = _GLOBAL_MEMORY_DIR.resolve()
+        for p in self._memory_paths:
+            try:
+                resolved = Path(p).expanduser().resolve()
+                if resolved.is_relative_to(_global_dir):
+                    global_paths.append(p)
+                else:
+                    project_paths.append(p)
+            except (ValueError, OSError):
+                global_paths.append(p)
+        return project_paths, global_paths
+
     def _get_current_memory_contents(self) -> str:
         """Read all memory files and return their contents for diff-style updates."""
+        project_paths, global_paths = self._classify_paths()
+        label_map = {p: "Project memory" for p in project_paths}
+        label_map.update({p: "Global memory" for p in global_paths})
+
         parts: list[str] = []
         for path in self._memory_paths:
             try:
@@ -415,7 +439,8 @@ class AutoMemoryMiddleware(AgentMiddleware):
                         content[:_MAX_PER_FILE_CHARS]
                         + f"\n\u2026 [{omitted} chars omitted]"
                     )
-                parts.append(f"[{path}]\n{content}")
+                label = label_map.get(path, "Memory")
+                parts.append(f"[{label} — {path}]\n{content}")
             except OSError:
                 pass
         return "\n\n".join(parts)
@@ -472,34 +497,25 @@ class AutoMemoryMiddleware(AgentMiddleware):
             Formatted hint string ready to append to the system prompt.
         """
         if self._memory_paths:
-            paths_lines: list[str] = []
-            project_paths: list[str] = []
-            global_paths: list[str] = []
-
-            _global_dir = _GLOBAL_MEMORY_DIR.resolve()
-            for p in self._memory_paths:
-                try:
-                    resolved = Path(p).expanduser().resolve()
-                    if resolved.is_relative_to(_global_dir):
-                        global_paths.append(p)
-                    else:
-                        project_paths.append(p)
-                except (ValueError, OSError):
-                    global_paths.append(p)
-
-            if project_paths:
-                for p in project_paths:
-                    paths_lines.append(f"- `{p}` (project - OVERRIDES global for this project)")
-            if global_paths:
-                for p in global_paths:
-                    paths_lines.append(f"- `{p}` (global - for cross-project preferences)")
-
-            paths_str = "\n".join(paths_lines)
+            project_paths, global_paths = self._classify_paths()
         else:
-            paths_str = "- `~/.invincat/agent/AGENTS.md` (global - for cross-project preferences)"
+            project_paths, global_paths = [], ["~/.invincat/agent/AGENTS.md"]
+
+        def _fmt(paths: list[str]) -> str:
+            return "\n".join(f"  - `{p}`" for p in paths)
+
+        if project_paths and global_paths:
+            project_section = _PROJECT_MEMORY_SECTION.format(paths=_fmt(project_paths))
+            global_section = _GLOBAL_MEMORY_SECTION.format(paths=_fmt(global_paths))
+        elif project_paths:
+            project_section = _PROJECT_MEMORY_SECTION.format(paths=_fmt(project_paths))
+            global_section = ""
+        else:
+            project_section = ""
+            global_section = _GLOBAL_MEMORY_ONLY_SECTION.format(paths=_fmt(global_paths))
 
         template = _EXIT_MEMORY_HINT if is_exit_followup else _AUTO_MEMORY_HINT
-        hint = template.format(turns=turns, memory_paths=paths_str)
+        hint = template.format(turns=turns, project_section=project_section, global_section=global_section)
 
         if current_memory:
             size_note = ""
