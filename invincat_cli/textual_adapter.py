@@ -220,6 +220,30 @@ def _normalize_tool_id(tool_id: Any) -> str | None:
     return str(tool_id)
 
 
+def _is_transient_stream_error(exc: BaseException) -> bool:
+    """Return True for errors that are safe to retry on a fresh astream call.
+
+    Covers HTTP 429 rate-limit errors, 5xx server errors, and common
+    network-layer exceptions (connection reset, timeout, etc.).  Only called
+    when *zero* chunks were received — i.e., the stream failed before any
+    content reached the UI, so a retry cannot produce duplicate output.
+    """
+    err_str = str(exc).lower()
+    err_type = type(exc).__name__.lower()
+    transient_status_codes = ("429", "500", "502", "503", "504")
+    if any(code in err_str for code in transient_status_codes):
+        return True
+    transient_keywords = (
+        "rate_limit", "ratelimit", "rate limit",
+        "connect", "timeout", "network", "unavailable",
+        "overloaded", "capacity", "reset by peer", "broken pipe",
+        "eof", "connection closed", "connection error",
+    )
+    if any(kw in err_str or kw in err_type for kw in transient_keywords):
+        return True
+    return False
+
+
 class TextualUIAdapter:
     """Adapter for rendering agent output to Textual widgets.
 
@@ -609,663 +633,435 @@ async def execute_task_textual(
             pending_ask_user: dict[str, AskUserRequest] = {}
             error_ask_user_ids: dict[str, str] = {}
 
-            async for chunk in agent.astream(
-                stream_input,
-                stream_mode=["messages", "updates"],
-                subgraphs=True,
-                config=config,
-                context=context,
-                durability="exit",
-            ):
-                if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # stream chunk is a 3-tuple (namespace, mode, data)
-                    logger.debug("Skipping non-3-tuple chunk: %s", type(chunk).__name__)
-                    continue
-
-                namespace, current_stream_mode, data = chunk
-
-                # Convert namespace to hashable tuple for dict keys
-                ns_key = tuple(namespace) if namespace else ()
-
-                # Filter out subagent outputs - only show main agent (empty
-                # namespace). Subagents run via Task tool and should only
-                # report back to the main agent
-                is_main_agent = ns_key == ()
-
-                # Handle UPDATES stream - for interrupts and todos
-                if current_stream_mode == "updates":
-                    if not isinstance(data, dict):
-                        continue
-
-                    # Check for interrupts
-                    if "__interrupt__" in data:
-                        interrupts: list[Interrupt] = data["__interrupt__"]
-                        if interrupts:
-                            for interrupt_obj in interrupts:
-                                iv = interrupt_obj.value
-                                if (
-                                    isinstance(iv, dict)
-                                    and iv.get("type") == "ask_user"
-                                ):
-                                    try:
-                                        validated_ask_user = (
-                                            ask_user_adapter.validate_python(iv)
-                                        )
-                                        pending_ask_user[interrupt_obj.id] = (
-                                            validated_ask_user
-                                        )
-                                        interrupt_occurred = True
-                                        await dispatch_hook("input.required", {})
-                                    except ValidationError:
-                                        logger.exception(
-                                            "Invalid ask_user interrupt payload; "
-                                            "resuming with error so the agent can recover"
-                                        )
-                                        error_ask_user_ids[interrupt_obj.id] = (
-                                            "invalid ask_user payload"
-                                        )
-                                        interrupt_occurred = True
-                                else:
-                                    try:
-                                        validated_request = (
-                                            hitl_request_adapter.validate_python(iv)
-                                        )
-                                        pending_interrupts[interrupt_obj.id] = (
-                                            validated_request
-                                        )
-                                        interrupt_occurred = True
-                                        await dispatch_hook("input.required", {})
-                                    except ValidationError:
-                                        logger.exception(
-                                            "Invalid HITL interrupt payload; "
-                                            "aborting turn cleanly"
-                                        )
-                                        if adapter._set_spinner:
-                                            await adapter._set_spinner(None)
-                                        await adapter._mount_message(
-                                            AppMessage(
-                                                "Internal error: could not parse tool approval request. "
-                                                "Please try again."
-                                            )
-                                        )
-                                        return turn_stats
-
-                    # Check for todo updates (not yet implemented in Textual UI)
-                    chunk_data = next(iter(data.values())) if data else None
-                    if (
-                        chunk_data
-                        and isinstance(chunk_data, dict)
-                        and "todos" in chunk_data
+            _astream_attempt = 0
+            while True:  # stream-retry loop; only retries on transient errors with zero chunks received
+                _astream_chunks = 0
+                _astream_exc: BaseException | None = None
+                try:
+                    async for chunk in agent.astream(
+                        stream_input,
+                        stream_mode=["messages", "updates"],
+                        subgraphs=True,
+                        config=config,
+                        context=context,
+                        durability="exit",
                     ):
-                        pass  # Future: render todo list widget
-
-                # Handle MESSAGES stream - for content and tool calls
-                elif current_stream_mode == "messages":
-                    # Skip subagent outputs - only render main agent content in chat
-                    if not is_main_agent:
-                        logger.debug("Skipping subagent message ns=%s", ns_key)
-                        continue
-
-                    if not isinstance(data, tuple) or len(data) != 2:  # noqa: PLR2004  # message stream data is a 2-tuple (message, metadata)
-                        logger.debug(
-                            "Skipping non-2-tuple message data: type=%s",
-                            type(data).__name__,
-                        )
-                        continue
-
-                    message, metadata = data
-                    logger.debug(
-                        "Processing message: type=%s id=%s has_content_blocks=%s",
-                        type(message).__name__,
-                        getattr(message, "id", None),
-                        hasattr(message, "content_blocks"),
-                    )
-
-                    # Filter out summarization model output, but keep UI feedback.
-                    # The summarization model streams AIMessage chunks tagged
-                    # with lc_source="summarization" in the callback metadata.
-                    # These are hidden from the user; only the spinner and a
-                    # notification widget provide feedback.
-                    if _is_summarization_chunk(metadata):
-                        if not summarization_in_progress:
-                            summarization_in_progress = True
-                            if adapter._set_spinner:
-                                await adapter._set_spinner("Offloading")
-                        continue
-
-                    # Regular (non-summarization) chunks resumed — summarization
-                    # has finished. Mount the notification and reset the spinner.
-                    if summarization_in_progress:
-                        summarization_in_progress = False
-                        try:
-                            await adapter._mount_message(SummarizationMessage())
-                        except Exception:
-                            logger.debug(
-                                "Failed to mount summarization notification",
-                                exc_info=True,
-                            )
-                        if adapter._set_spinner and not adapter._current_tool_messages:
-                            await adapter._set_spinner("Thinking")
-
-                    if isinstance(message, HumanMessage):
-                        content = message.text
-                        # Flush pending text for this namespace
-                        pending_text = pending_text_by_namespace.get(ns_key, "")
-                        if content and pending_text:
-                            await _flush_assistant_text_ns(
-                                adapter,
-                                pending_text,
-                                ns_key,
-                                assistant_message_by_namespace,
-                            )
-                            pending_text_by_namespace[ns_key] = ""
-                        continue
-
-                    if isinstance(message, ToolMessage):
-                        tool_name = getattr(message, "name", "")
-                        tool_status = getattr(message, "status", "success")
-                        tool_content = format_tool_message_content(message.content)
-                        
-                        raw_tool_id = getattr(message, "tool_call_id", None)
-                        logger.debug(
-                            "ToolMessage received: name=%s, status=%s, raw_tool_id=%s (type=%s), active_keys=%s",
-                            tool_name,
-                            tool_status,
-                            raw_tool_id,
-                            type(raw_tool_id).__name__,
-                            list(file_op_tracker.active.keys()),
-                        )
-                        
-                        tool_id = _normalize_tool_id(raw_tool_id)
-                        tool_msg = None
-                        tool_args_for_match: dict[str, Any] | None = None
-
-                        # Strategy 1: Direct key match on normalized str ID.
-                        # Use pop(key, None) defensively even though the preceding
-                        # `in` check makes KeyError impossible in normal asyncio
-                        # execution — the guard protects against future refactors
-                        # that might introduce an await between the check and pop.
-                        if tool_id and tool_id in adapter._current_tool_messages:
-                            tool_msg = adapter._current_tool_messages.pop(tool_id, None)
-                            if tool_msg is None:
-                                logger.warning(
-                                    "Strategy 1: key disappeared between check and pop "
-                                    "for tool_id=%s; will retry with Strategy 2",
-                                    tool_id,
-                                )
-                            else:
-                                logger.debug(
-                                    "Matched ToolMessage by direct key tool_id=%s", tool_id
-                                )
-
-                        # Strategy 2: Match by widget's _tool_call_id attribute.
-                        # When the widget was stored under a different (e.g. index-based)
-                        # key, pop it by that key, then sync:
-                        #   1. The widget's _tool_call_id attribute → real tool_id
-                        #   2. The MessageStore entry's tool_call_id → real tool_id
-                        # Without (2) the store's index still maps the OLD key, so
-                        # any future prune/hydrate lookup by tool_id would miss it.
-                        if not tool_msg and tool_id:
-                            for key, msg in list(adapter._current_tool_messages.items()):
-                                widget_id = _normalize_tool_id(
-                                    getattr(msg, "_tool_call_id", None)
-                                )
-                                if widget_id == tool_id:
-                                    tool_msg = adapter._current_tool_messages.pop(key)
-                                    logger.debug(
-                                        "Matched ToolMessage by _tool_call_id=%s to key=%s",
-                                        tool_id,
-                                        key,
-                                    )
-                                    # Sync widget attribute to the canonical tool_id
-                                    # so any caller inspecting _tool_call_id sees the
-                                    # correct value after this point.
-                                    if key != tool_id:
-                                        tool_msg._tool_call_id = tool_id
-                                        # Sync the MessageStore index so that
-                                        # get_message_by_tool_call_id(tool_id) finds
-                                        # this record after pruning/hydration.
-                                        if tool_msg.id and adapter._message_store:
+                        _astream_chunks += 1
+                        if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # stream chunk is a 3-tuple (namespace, mode, data)
+                            logger.debug("Skipping non-3-tuple chunk: %s", type(chunk).__name__)
+                            continue
+        
+                        namespace, current_stream_mode, data = chunk
+        
+                        # Convert namespace to hashable tuple for dict keys
+                        ns_key = tuple(namespace) if namespace else ()
+        
+                        # Filter out subagent outputs - only show main agent (empty
+                        # namespace). Subagents run via Task tool and should only
+                        # report back to the main agent
+                        is_main_agent = ns_key == ()
+        
+                        # Handle UPDATES stream - for interrupts and todos
+                        if current_stream_mode == "updates":
+                            if not isinstance(data, dict):
+                                continue
+        
+                            # Check for interrupts
+                            if "__interrupt__" in data:
+                                interrupts: list[Interrupt] = data["__interrupt__"]
+                                if interrupts:
+                                    for interrupt_obj in interrupts:
+                                        iv = interrupt_obj.value
+                                        if (
+                                            isinstance(iv, dict)
+                                            and iv.get("type") == "ask_user"
+                                        ):
                                             try:
-                                                adapter._message_store.update_message(
-                                                    tool_msg.id,
-                                                    tool_call_id=tool_id,
+                                                validated_ask_user = (
+                                                    ask_user_adapter.validate_python(iv)
                                                 )
-                                            except Exception:  # noqa: BLE001
-                                                logger.warning(
-                                                    "Strategy 2: failed to sync "
-                                                    "tool_call_id in store for "
-                                                    "msg id=%s tool_id=%s",
-                                                    tool_msg.id,
-                                                    tool_id,
-                                                    exc_info=True,
+                                                pending_ask_user[interrupt_obj.id] = (
+                                                    validated_ask_user
                                                 )
-                                    break
-
-                        # Strategy 3: Match by tool_name (fallback for missing IDs)
-                        if not tool_msg and tool_name and adapter._current_tool_messages:
-                            candidates = [
-                                (key, msg)
-                                for key, msg in list(adapter._current_tool_messages.items())
-                                if getattr(msg, "_tool_name", None) == tool_name
-                                and getattr(msg, "is_attached", True)
-                            ]
-                            if len(candidates) == 1:
-                                key, msg = candidates[0]
-                                tool_msg = adapter._current_tool_messages.pop(key)
+                                                interrupt_occurred = True
+                                                await dispatch_hook("input.required", {})
+                                            except ValidationError:
+                                                logger.exception(
+                                                    "Invalid ask_user interrupt payload; "
+                                                    "resuming with error so the agent can recover"
+                                                )
+                                                error_ask_user_ids[interrupt_obj.id] = (
+                                                    "invalid ask_user payload"
+                                                )
+                                                interrupt_occurred = True
+                                        else:
+                                            try:
+                                                validated_request = (
+                                                    hitl_request_adapter.validate_python(iv)
+                                                )
+                                                pending_interrupts[interrupt_obj.id] = (
+                                                    validated_request
+                                                )
+                                                interrupt_occurred = True
+                                                await dispatch_hook("input.required", {})
+                                            except ValidationError:
+                                                logger.exception(
+                                                    "Invalid HITL interrupt payload; "
+                                                    "aborting turn cleanly"
+                                                )
+                                                if adapter._set_spinner:
+                                                    await adapter._set_spinner(None)
+                                                await adapter._mount_message(
+                                                    AppMessage(
+                                                        "Internal error: could not parse tool approval request. "
+                                                        "Please try again."
+                                                    )
+                                                )
+                                                return turn_stats
+        
+                            # Check for todo updates (not yet implemented in Textual UI)
+                            chunk_data = next(iter(data.values())) if data else None
+                            if (
+                                chunk_data
+                                and isinstance(chunk_data, dict)
+                                and "todos" in chunk_data
+                            ):
+                                pass  # Future: render todo list widget
+        
+                        # Handle MESSAGES stream - for content and tool calls
+                        elif current_stream_mode == "messages":
+                            # Skip subagent outputs - only render main agent content in chat
+                            if not is_main_agent:
+                                logger.debug("Skipping subagent message ns=%s", ns_key)
+                                continue
+        
+                            if not isinstance(data, tuple) or len(data) != 2:  # noqa: PLR2004  # message stream data is a 2-tuple (message, metadata)
                                 logger.debug(
-                                    "Matched ToolMessage by tool_name=%s to key=%s",
-                                    tool_name,
-                                    key,
+                                    "Skipping non-2-tuple message data: type=%s",
+                                    type(data).__name__,
                                 )
-                            elif len(candidates) > 1:
-                                for key, msg in candidates:
-                                    status = getattr(msg, "_status", "pending")
-                                    if status in ("pending", "running"):
+                                continue
+        
+                            message, metadata = data
+                            logger.debug(
+                                "Processing message: type=%s id=%s has_content_blocks=%s",
+                                type(message).__name__,
+                                getattr(message, "id", None),
+                                hasattr(message, "content_blocks"),
+                            )
+        
+                            # Filter out summarization model output, but keep UI feedback.
+                            # The summarization model streams AIMessage chunks tagged
+                            # with lc_source="summarization" in the callback metadata.
+                            # These are hidden from the user; only the spinner and a
+                            # notification widget provide feedback.
+                            if _is_summarization_chunk(metadata):
+                                if not summarization_in_progress:
+                                    summarization_in_progress = True
+                                    if adapter._set_spinner:
+                                        await adapter._set_spinner("Offloading")
+                                continue
+        
+                            # Regular (non-summarization) chunks resumed — summarization
+                            # has finished. Mount the notification and reset the spinner.
+                            if summarization_in_progress:
+                                summarization_in_progress = False
+                                try:
+                                    await adapter._mount_message(SummarizationMessage())
+                                except Exception:
+                                    logger.debug(
+                                        "Failed to mount summarization notification",
+                                        exc_info=True,
+                                    )
+                                if adapter._set_spinner and not adapter._current_tool_messages:
+                                    await adapter._set_spinner("Thinking")
+        
+                            if isinstance(message, HumanMessage):
+                                content = message.text
+                                # Flush pending text for this namespace
+                                pending_text = pending_text_by_namespace.get(ns_key, "")
+                                if content and pending_text:
+                                    await _flush_assistant_text_ns(
+                                        adapter,
+                                        pending_text,
+                                        ns_key,
+                                        assistant_message_by_namespace,
+                                    )
+                                    pending_text_by_namespace[ns_key] = ""
+                                continue
+        
+                            if isinstance(message, ToolMessage):
+                                tool_name = getattr(message, "name", "")
+                                tool_status = getattr(message, "status", "success")
+                                tool_content = format_tool_message_content(message.content)
+                                
+                                raw_tool_id = getattr(message, "tool_call_id", None)
+                                logger.debug(
+                                    "ToolMessage received: name=%s, status=%s, raw_tool_id=%s (type=%s), active_keys=%s",
+                                    tool_name,
+                                    tool_status,
+                                    raw_tool_id,
+                                    type(raw_tool_id).__name__,
+                                    list(file_op_tracker.active.keys()),
+                                )
+                                
+                                tool_id = _normalize_tool_id(raw_tool_id)
+                                tool_msg = None
+                                tool_args_for_match: dict[str, Any] | None = None
+        
+                                # Strategy 1: Direct key match on normalized str ID.
+                                # Use pop(key, None) defensively even though the preceding
+                                # `in` check makes KeyError impossible in normal asyncio
+                                # execution — the guard protects against future refactors
+                                # that might introduce an await between the check and pop.
+                                if tool_id and tool_id in adapter._current_tool_messages:
+                                    tool_msg = adapter._current_tool_messages.pop(tool_id, None)
+                                    if tool_msg is None:
+                                        logger.warning(
+                                            "Strategy 1: key disappeared between check and pop "
+                                            "for tool_id=%s; will retry with Strategy 2",
+                                            tool_id,
+                                        )
+                                    else:
+                                        logger.debug(
+                                            "Matched ToolMessage by direct key tool_id=%s", tool_id
+                                        )
+        
+                                # Strategy 2: Match by widget's _tool_call_id attribute.
+                                # When the widget was stored under a different (e.g. index-based)
+                                # key, pop it by that key, then sync:
+                                #   1. The widget's _tool_call_id attribute → real tool_id
+                                #   2. The MessageStore entry's tool_call_id → real tool_id
+                                # Without (2) the store's index still maps the OLD key, so
+                                # any future prune/hydrate lookup by tool_id would miss it.
+                                if not tool_msg and tool_id:
+                                    for key, msg in list(adapter._current_tool_messages.items()):
+                                        widget_id = _normalize_tool_id(
+                                            getattr(msg, "_tool_call_id", None)
+                                        )
+                                        if widget_id == tool_id:
+                                            tool_msg = adapter._current_tool_messages.pop(key)
+                                            logger.debug(
+                                                "Matched ToolMessage by _tool_call_id=%s to key=%s",
+                                                tool_id,
+                                                key,
+                                            )
+                                            # Sync widget attribute to the canonical tool_id
+                                            # so any caller inspecting _tool_call_id sees the
+                                            # correct value after this point.
+                                            if key != tool_id:
+                                                tool_msg._tool_call_id = tool_id
+                                                # Sync the MessageStore index so that
+                                                # get_message_by_tool_call_id(tool_id) finds
+                                                # this record after pruning/hydration.
+                                                if tool_msg.id and adapter._message_store:
+                                                    try:
+                                                        adapter._message_store.update_message(
+                                                            tool_msg.id,
+                                                            tool_call_id=tool_id,
+                                                        )
+                                                    except Exception:  # noqa: BLE001
+                                                        logger.warning(
+                                                            "Strategy 2: failed to sync "
+                                                            "tool_call_id in store for "
+                                                            "msg id=%s tool_id=%s",
+                                                            tool_msg.id,
+                                                            tool_id,
+                                                            exc_info=True,
+                                                        )
+                                            break
+        
+                                # Strategy 3: Match by tool_name (fallback for missing IDs)
+                                if not tool_msg and tool_name and adapter._current_tool_messages:
+                                    candidates = [
+                                        (key, msg)
+                                        for key, msg in list(adapter._current_tool_messages.items())
+                                        if getattr(msg, "_tool_name", None) == tool_name
+                                        and getattr(msg, "is_attached", True)
+                                    ]
+                                    if len(candidates) == 1:
+                                        key, msg = candidates[0]
                                         tool_msg = adapter._current_tool_messages.pop(key)
                                         logger.debug(
-                                            "Matched ToolMessage by tool_name=%s status=%s to key=%s",
+                                            "Matched ToolMessage by tool_name=%s to key=%s",
                                             tool_name,
-                                            status,
                                             key,
                                         )
-                                        break
-                                if not tool_msg and candidates:
-                                    key, msg = candidates[0]
-                                    tool_msg = adapter._current_tool_messages.pop(key)
-                                    logger.debug(
-                                        "Matched ToolMessage by tool_name=%s (first candidate) to key=%s",
+                                    elif len(candidates) > 1:
+                                        for key, msg in candidates:
+                                            status = getattr(msg, "_status", "pending")
+                                            if status in ("pending", "running"):
+                                                tool_msg = adapter._current_tool_messages.pop(key)
+                                                logger.debug(
+                                                    "Matched ToolMessage by tool_name=%s status=%s to key=%s",
+                                                    tool_name,
+                                                    status,
+                                                    key,
+                                                )
+                                                break
+                                        if not tool_msg and candidates:
+                                            key, msg = candidates[0]
+                                            tool_msg = adapter._current_tool_messages.pop(key)
+                                            logger.debug(
+                                                "Matched ToolMessage by tool_name=%s (first candidate) to key=%s",
+                                                tool_name,
+                                                key,
+                                            )
+        
+                                # Extract args from matched widget for file_op_tracker matching
+                                if tool_msg:
+                                    tool_args_for_match = getattr(tool_msg, "_args", None)
+        
+                                # Now call complete_with_message with args for better matching
+                                record = file_op_tracker.complete_with_message(
+                                    message, tool_args_for_match
+                                )
+                                
+                                logger.debug(
+                                    "File op record lookup result: %s (diff=%s)",
+                                    "found" if record else "not found",
+                                    record.diff[:100] + "..." if record and record.diff else "empty/N/A",
+                                )
+        
+                                if not tool_msg and tool_id:
+                                    logger.warning(
+                                        "ToolMessage unmatched: tool_id=%s name=%s "
+                                        "remaining keys=%s; widget may be pruned or ID mismatch",
+                                        tool_id,
                                         tool_name,
-                                        key,
+                                        [(k, type(k).__name__) for k in adapter._current_tool_messages.keys()],
                                     )
-
-                        # Extract args from matched widget for file_op_tracker matching
-                        if tool_msg:
-                            tool_args_for_match = getattr(tool_msg, "_args", None)
-
-                        # Now call complete_with_message with args for better matching
-                        record = file_op_tracker.complete_with_message(
-                            message, tool_args_for_match
-                        )
-                        
-                        logger.debug(
-                            "File op record lookup result: %s (diff=%s)",
-                            "found" if record else "not found",
-                            record.diff[:100] + "..." if record and record.diff else "empty/N/A",
-                        )
-
-                        if not tool_msg and tool_id:
-                            logger.warning(
-                                "ToolMessage unmatched: tool_id=%s name=%s "
-                                "remaining keys=%s; widget may be pruned or ID mismatch",
-                                tool_id,
-                                tool_name,
-                                [(k, type(k).__name__) for k in adapter._current_tool_messages.keys()],
-                            )
-
-                        # FIX: normalize output_str — never pass empty string to
-                        # set_success/set_error; use a placeholder so the result
-                        # frame is never silently blank.
-                        output_str = str(tool_content) if tool_content else "(no output)"
-
-                        # If the file-op tracker recorded an internal error
-                        # (e.g. couldn't read back the file after writing) but
-                        # the ToolMessage status is still "success", surface the
-                        # internal error in the output so the user isn't silently
-                        # left without a diff and no indication of why.
-                        if (
-                            record is not None
-                            and record.status == "error"
-                            and record.error
-                            and tool_status == "success"
-                        ):
-                            logger.warning(
-                                "File op internal error for tool=%s: %s",
-                                tool_name,
-                                record.error,
-                            )
-                            output_str = f"{output_str}\n\n[diff unavailable: {record.error}]"
-                        elif (
-                            record is None
-                            and tool_name in ("write_file", "edit_file")
-                            and tool_status == "success"
-                        ):
-                            logger.warning(
-                                "DiffMessage skipped: no file-op record for "
-                                "tool=%s tool_call_id=%s (operation not tracked)",
-                                tool_name,
-                                tool_id,
-                            )
-                            output_str = f"{output_str}\n\n[diff unavailable: operation was not tracked]"
-
-                        if tool_msg:
-                            if tool_status == "success":
-                                tool_msg.set_success(output_str)
-                            else:
-                                tool_msg.set_error(output_str)
-                                await dispatch_hook(
-                                    "tool.error",
-                                    {"tool_names": [tool_msg._tool_name]},
-                                )
-                        elif tool_id:
-                            # Widget not in current tracking map — it was either
-                            # pruned before the ToolMessage arrived, or the index
-                            # was already cleared by mark_pruned() (see #2.3 fix).
-                            # Either way, look up the stored data and recreate a
-                            # widget so the result is always visible to the user.
-                            msg_data = None
-                            if adapter._message_store:
-                                # get_message_by_tool_call_id normalises to str
-                                # internally — a single call is sufficient.
-                                msg_data = adapter._message_store.get_message_by_tool_call_id(
-                                    tool_id
-                                )
-
-                            if msg_data:
-                                logger.debug(
-                                    "ToolMessage tool_call_id=%s widget pruned "
-                                    "(found in store); recreating widget",
-                                    tool_id,
-                                )
-                                tool_msg = ToolCallMessage(
-                                    msg_data.tool_name or tool_name,
-                                    msg_data.tool_args or {},
-                                    tool_call_id=tool_id,
-                                )
-                                await adapter._mount_message(tool_msg)
-
-                                if tool_status == "success":
-                                    tool_msg.set_success(output_str)
-                                    # Any associated DiffMessage is shown via the
-                                    # `if record:` block further below — no extra
-                                    # work is needed here.
-                                else:
-                                    tool_msg.set_error(output_str)
-                                    await dispatch_hook(
-                                        "tool.error",
-                                        {"tool_names": [tool_msg._tool_name]},
+        
+                                # FIX: normalize output_str — never pass empty string to
+                                # set_success/set_error; use a placeholder so the result
+                                # frame is never silently blank.
+                                output_str = str(tool_content) if tool_content else "(no output)"
+        
+                                # If the file-op tracker recorded an internal error
+                                # (e.g. couldn't read back the file after writing) but
+                                # the ToolMessage status is still "success", surface the
+                                # internal error in the output so the user isn't silently
+                                # left without a diff and no indication of why.
+                                if (
+                                    record is not None
+                                    and record.status == "error"
+                                    and record.error
+                                    and tool_status == "success"
+                                ):
+                                    logger.warning(
+                                        "File op internal error for tool=%s: %s",
+                                        tool_name,
+                                        record.error,
                                     )
-                            else:
-                                # Last-resort: neither the live tracking map nor
-                                # the message store has a record.  This can happen
-                                # when there is a race between pruning and the store
-                                # write, or when the ID was never registered (e.g.
-                                # a ToolMessage for a tool that was never streamed).
-                                # Mount a fallback widget so the result is never
-                                # silently swallowed.
-                                logger.warning(
-                                    "ToolMessage tool_call_id=%s name=%s not found in "
-                                    "tracking map or store; mounting fallback widget",
-                                    tool_id,
-                                    tool_name,
-                                )
-                                # Use args from the file-op record if available,
-                                # so the fallback widget isn't completely empty.
-                                fallback_args = (
-                                    record.args
-                                    if record is not None and record.args
-                                    else {}
-                                )
-                                fallback_msg = ToolCallMessage(
-                                    tool_name or "unknown",
-                                    fallback_args,
-                                    tool_call_id=tool_id,
-                                )
-                                await adapter._mount_message(fallback_msg)
-                                if tool_status == "success":
-                                    fallback_msg.set_success(output_str)
-                                else:
-                                    fallback_msg.set_error(output_str)
-                                    await dispatch_hook(
-                                        "tool.error",
-                                        {"tool_names": [tool_name or "unknown"]},
+                                    output_str = f"{output_str}\n\n[diff unavailable: {record.error}]"
+                                elif (
+                                    record is None
+                                    and tool_name in ("write_file", "edit_file")
+                                    and tool_status == "success"
+                                ):
+                                    logger.warning(
+                                        "DiffMessage skipped: no file-op record for "
+                                        "tool=%s tool_call_id=%s (operation not tracked)",
+                                        tool_name,
+                                        tool_id,
                                     )
-                                # Also persist to store so future lookups work
-                                adapter._update_tool_message_in_store(
-                                    tool_id, tool_status, output_str
-                                )
-
-                        # Reshow spinner only when all in-flight tools have
-                        # completed (avoids premature "Thinking..." when
-                        # parallel tool calls are active).
-                        if adapter._set_spinner and not adapter._current_tool_messages:
-                            await adapter._set_spinner("Thinking")
-
-                        # Show file operation results - always show diffs in chat
-                        if record:
-                            pending_text = pending_text_by_namespace.get(ns_key, "")
-                            if pending_text:
-                                await _flush_assistant_text_ns(
-                                    adapter,
-                                    pending_text,
-                                    ns_key,
-                                    assistant_message_by_namespace,
-                                )
-                                pending_text_by_namespace[ns_key] = ""
-                            if record.diff:
-                                diff_msg = DiffMessage(record.diff, record.display_path)
-                                await adapter._mount_message(diff_msg)
-                            else:
-                                logger.debug(
-                                    "No diff for tool=%s tool_call_id=%s "
-                                    "(content unchanged or after-content unreadable)",
-                                    tool_name,
-                                    tool_id,
-                                )
-                        else:
-                            # record is None — file_op_tracker has no matching entry.
-                            # For non-file tools this is expected; for write_file /
-                            # edit_file the warning and output_str annotation were
-                            # already applied in the elif branch above.
-                            if tool_name not in ("write_file", "edit_file"):
-                                logger.debug(
-                                    "No file-op record for tool=%s tool_call_id=%s "
-                                    "(non-file tool, expected)",
-                                    tool_name,
-                                    tool_id,
-                                )
-                        continue
-
-                    # Extract token usage (before content_blocks check
-                    # - usage may be on any chunk)
-                    if hasattr(message, "usage_metadata"):
-                        usage = message.usage_metadata
-                        if usage:
-                            input_toks = usage.get("input_tokens", 0)
-                            output_toks = usage.get("output_tokens", 0)
-                            total_toks = usage.get("total_tokens", 0)
-                            from invincat_cli.config import settings
-
-                            active_model = settings.model_name or ""
-                            if input_toks or output_toks:
-                                # Model gives split counts — preferred path
-                                turn_stats.record_request(
-                                    active_model, input_toks, output_toks
-                                )
-                                captured_input_tokens = max(
-                                    captured_input_tokens, input_toks + output_toks
-                                )
-                            elif total_toks:
-                                # Fallback: model gives only total (no split)
-                                turn_stats.record_request(active_model, total_toks, 0)
-                                captured_input_tokens = max(
-                                    captured_input_tokens, total_toks
-                                )
-
-                            # Immediately update UI with current token count
-                            if adapter._on_tokens_update:
-                                adapter._on_tokens_update(captured_input_tokens)
-
-                    # Check if this is an AIMessageChunk with content
-                    if not hasattr(message, "content_blocks"):
-                        logger.debug(
-                            "Message has no content_blocks: type=%s",
-                            type(message).__name__,
-                        )
-                        continue
-
-                    # Process content blocks
-                    blocks = message.content_blocks
-                    logger.debug(
-                        "content_blocks count=%d blocks=%s",
-                        len(blocks),
-                        repr(blocks)[:500],
-                    )
-                    for block in blocks:
-                        block_type = block.get("type")
-
-                        if block_type == "text":
-                            text = block.get("text", "")
-                            if text:
-                                # Track accumulated text for reference
-                                pending_text = pending_text_by_namespace.get(ns_key, "")
-                                pending_text += text
-                                pending_text_by_namespace[ns_key] = pending_text
-
-                                # Get or create assistant message for this namespace
-                                current_msg = assistant_message_by_namespace.get(ns_key)
-                                if current_msg is None:
-                                    # Hide spinner when assistant starts responding
-                                    if adapter._set_spinner:
-                                        await adapter._set_spinner(None)
-                                    msg_id = f"asst-{uuid.uuid4().hex[:8]}"
-                                    # Mark active BEFORE mounting so pruning
-                                    # (triggered by mount) won't remove it
-                                    # (_mount_message can trigger
-                                    # _prune_old_messages if the window exceeds
-                                    # WINDOW_SIZE.)
-                                    if adapter._set_active_message:
-                                        adapter._set_active_message(msg_id)
-                                    current_msg = AssistantMessage(id=msg_id)
-                                    await adapter._mount_message(current_msg)
-                                    assistant_message_by_namespace[ns_key] = current_msg
-
-                                # Append just the new text chunk for smoother
-                                # streaming (uses MarkdownStream internally for
-                                # better performance)
-                                await current_msg.append_content(text)
-
-                        elif block_type in {"tool_call_chunk", "tool_call"}:
-                            chunk_name = block.get("name")
-                            chunk_args = block.get("args")
-                            chunk_id = block.get("id")
-                            chunk_index = block.get("index")
-
-                            # Normalize buffer key — always str for consistent
-                            # lookup in _current_tool_messages.
-                            raw_buffer_key: str | int
-                            if chunk_index is not None:
-                                raw_buffer_key = chunk_index
-                            elif chunk_id is not None:
-                                raw_buffer_key = chunk_id
-                            else:
-                                # Use a UUID so parallel chunks without id/index
-                                # don't collide — f"unknown-{len(buffers)}" would
-                                # repeat when a previous buffer was already popped.
-                                raw_buffer_key = f"unknown-{uuid.uuid4().hex[:8]}"
-
-                            buffer = tool_call_buffers.setdefault(
-                                raw_buffer_key,
-                                {
-                                    "name": None,
-                                    "id": None,
-                                    "args": None,
-                                    "args_parts": [],
-                                    "args_finalized": False,
-                                },
-                            )
-
-                            if chunk_name:
-                                buffer["name"] = chunk_name
-                            if chunk_id:
-                                buffer["id"] = chunk_id
-
-                            if isinstance(chunk_args, dict):
-                                buffer["args"] = chunk_args
-                                buffer["args_parts"] = []
-                            elif isinstance(chunk_args, str):
-                                if chunk_args:
-                                    parts: list[str] = buffer.setdefault(
-                                        "args_parts", []
-                                    )
-                                    if not parts or chunk_args != parts[-1]:
-                                        parts.append(chunk_args)
-                                    buffer["args"] = "".join(parts)
-                            elif chunk_args is not None:
-                                buffer["args"] = chunk_args
-
-                            buffer_name = buffer.get("name")
-                            buffer_id = buffer.get("id")
-
-                            # Need at least a name before doing anything
-                            if buffer_name is None:
-                                continue
-
-                            # Normalize display_key to str for consistent map keys
-                            raw_display_key = buffer_id if buffer_id is not None else raw_buffer_key
-                            display_key = _normalize_tool_id(raw_display_key) or str(raw_display_key)
-
-                            # --- EARLY MOUNT: show widget as soon as name is known,
-                            # before args have finished streaming.  This eliminates
-                            # the blank gap between the assistant text message and
-                            # the tool call widget appearing in the UI.
-                            if display_key not in displayed_tool_ids:
-                                # Check if this buffer was previously mounted under the
-                                # index-based key (when buffer_id was not yet available).
-                                # If so, re-key the existing widget instead of creating a
-                                # new one — this prevents zombie widget accumulation.
-                                index_key = _normalize_tool_id(raw_buffer_key) or str(raw_buffer_key)
-                                if display_key != index_key and index_key in adapter._current_tool_messages:
-                                    # Re-key: move existing widget to the real ID key
-                                    existing = adapter._current_tool_messages.pop(index_key)
-                                    existing._tool_call_id = display_key
-                                    adapter._current_tool_messages[display_key] = existing
-                                    displayed_tool_ids.add(display_key)
-                                    # Also update the store so that if this widget is
-                                    # later pruned, the fallback hydration path uses
-                                    # the correct tool_call_id for result matching.
-                                    if existing.id and adapter._message_store:
-                                        try:
-                                            adapter._message_store.update_message(
-                                                existing.id, tool_call_id=display_key
-                                            )
-                                        except Exception:  # noqa: BLE001
-                                            logger.warning(
-                                                "Failed to update tool_call_id in store "
-                                                "for message id=%s display_key=%s",
-                                                existing.id,
-                                                display_key,
-                                                exc_info=True,
-                                            )
-                                    # Also re-key the file op tracker so that
-                                    # complete_with_message() can match by UUID
-                                    # when the ToolMessage arrives.  Without this,
-                                    # the tracker still holds the index-based key
-                                    # (e.g. "0") and the UUID lookup fails —
-                                    # causing DiffMessage to never be shown when
-                                    # multiple concurrent file ops are in flight.
-                                    old_record = file_op_tracker.active.pop(
-                                        index_key, None
-                                    )
-                                    if old_record is not None:
-                                        old_record.tool_call_id = display_key
-                                        file_op_tracker.active[display_key] = (
-                                            old_record
+                                    output_str = f"{output_str}\n\n[diff unavailable: operation was not tracked]"
+        
+                                if tool_msg:
+                                    if tool_status == "success":
+                                        tool_msg.set_success(output_str)
+                                    else:
+                                        tool_msg.set_error(output_str)
+                                        await dispatch_hook(
+                                            "tool.error",
+                                            {"tool_names": [tool_msg._tool_name]},
                                         )
+                                elif tool_id:
+                                    # Widget not in current tracking map — it was either
+                                    # pruned before the ToolMessage arrived, or the index
+                                    # was already cleared by mark_pruned() (see #2.3 fix).
+                                    # Either way, look up the stored data and recreate a
+                                    # widget so the result is always visible to the user.
+                                    msg_data = None
+                                    if adapter._message_store:
+                                        # get_message_by_tool_call_id normalises to str
+                                        # internally — a single call is sufficient.
+                                        msg_data = adapter._message_store.get_message_by_tool_call_id(
+                                            tool_id
+                                        )
+        
+                                    if msg_data:
                                         logger.debug(
-                                            "Re-keyed file_op_tracker record "
-                                            "from index key=%s to id=%s",
-                                            index_key,
-                                            display_key,
+                                            "ToolMessage tool_call_id=%s widget pruned "
+                                            "(found in store); recreating widget",
+                                            tool_id,
                                         )
-                                    logger.debug(
-                                        "Re-keyed ToolCallMessage from index key=%s to id=%s",
-                                        index_key,
-                                        display_key,
-                                    )
-                                else:
-                                    displayed_tool_ids.add(display_key)
-
-                                    # Flush any pending assistant text first
+                                        tool_msg = ToolCallMessage(
+                                            msg_data.tool_name or tool_name,
+                                            msg_data.tool_args or {},
+                                            tool_call_id=tool_id,
+                                        )
+                                        await adapter._mount_message(tool_msg)
+        
+                                        if tool_status == "success":
+                                            tool_msg.set_success(output_str)
+                                            # Any associated DiffMessage is shown via the
+                                            # `if record:` block further below — no extra
+                                            # work is needed here.
+                                        else:
+                                            tool_msg.set_error(output_str)
+                                            await dispatch_hook(
+                                                "tool.error",
+                                                {"tool_names": [tool_msg._tool_name]},
+                                            )
+                                    else:
+                                        # Last-resort: neither the live tracking map nor
+                                        # the message store has a record.  This can happen
+                                        # when there is a race between pruning and the store
+                                        # write, or when the ID was never registered (e.g.
+                                        # a ToolMessage for a tool that was never streamed).
+                                        # Mount a fallback widget so the result is never
+                                        # silently swallowed.
+                                        logger.warning(
+                                            "ToolMessage tool_call_id=%s name=%s not found in "
+                                            "tracking map or store; mounting fallback widget",
+                                            tool_id,
+                                            tool_name,
+                                        )
+                                        # Use args from the file-op record if available,
+                                        # so the fallback widget isn't completely empty.
+                                        fallback_args = (
+                                            record.args
+                                            if record is not None and record.args
+                                            else {}
+                                        )
+                                        fallback_msg = ToolCallMessage(
+                                            tool_name or "unknown",
+                                            fallback_args,
+                                            tool_call_id=tool_id,
+                                        )
+                                        await adapter._mount_message(fallback_msg)
+                                        if tool_status == "success":
+                                            fallback_msg.set_success(output_str)
+                                        else:
+                                            fallback_msg.set_error(output_str)
+                                            await dispatch_hook(
+                                                "tool.error",
+                                                {"tool_names": [tool_name or "unknown"]},
+                                            )
+                                        # Also persist to store so future lookups work
+                                        adapter._update_tool_message_in_store(
+                                            tool_id, tool_status, output_str
+                                        )
+        
+                                # Reshow spinner only when all in-flight tools have
+                                # completed (avoids premature "Thinking..." when
+                                # parallel tool calls are active).
+                                if adapter._set_spinner and not adapter._current_tool_messages:
+                                    await adapter._set_spinner("Thinking")
+        
+                                # Show file operation results - always show diffs in chat
+                                if record:
                                     pending_text = pending_text_by_namespace.get(ns_key, "")
                                     if pending_text:
                                         await _flush_assistant_text_ns(
@@ -1275,90 +1071,354 @@ async def execute_task_textual(
                                             assistant_message_by_namespace,
                                         )
                                         pending_text_by_namespace[ns_key] = ""
-                                        assistant_message_by_namespace.pop(ns_key, None)
-
-                                    # Hide spinner before showing tool call widget
-                                    if adapter._set_spinner:
-                                        await adapter._set_spinner(None)
-
-                                    # Mount immediately with empty args — args will be
-                                    # filled in via update_args() once fully parsed.
-                                    logger.debug(
-                                        "Early-mounting ToolCallMessage: name=%s key=%s",
-                                        buffer_name,
-                                        display_key,
-                                    )
-                                    tool_msg = ToolCallMessage(
-                                        buffer_name,
-                                        {},
-                                        tool_call_id=display_key,
-                                        args_finalized=False,
-                                    )
-                                    await adapter._mount_message(tool_msg)
-                                    adapter._current_tool_messages[display_key] = tool_msg
-
-                            # --- ARGS UPDATE: once args are fully parseable, update
-                            # the already-visible widget and register the file op.
-                            if not buffer.get("args_finalized"):
-                                raw_args = buffer.get("args")
-                                parsed_args = None
-
-                                if isinstance(raw_args, dict):
-                                    parsed_args = raw_args
-                                elif isinstance(raw_args, str) and raw_args:
-                                    try:
-                                        parsed_args = json.loads(raw_args)
-                                    except json.JSONDecodeError:
-                                        pass  # Still streaming — will retry next chunk
-
-                                if parsed_args is not None:
-                                    if not isinstance(parsed_args, dict):
-                                        parsed_args = {"value": parsed_args}
-
-                                    buffer["args_finalized"] = True
-
-                                    logger.debug(
-                                        "Args finalized for tool key=%s args=%s",
-                                        display_key,
-                                        repr(parsed_args)[:200],
-                                    )
-
-                                    # Update the widget with real args now that
-                                    # they have fully streamed in.
-                                    tool_msg = adapter._current_tool_messages.get(display_key)
-                                    if tool_msg is not None:
-                                        tool_msg.update_args(parsed_args)
-
-                                    # Register file op only once args are final.
-                                    # Use display_key (always a str) rather than
-                                    # buffer_id (which may still be None when the
-                                    # streaming chunk carries args but not yet an
-                                    # id).  complete_with_message reconciles the
-                                    # key via tool-name fallback when the ToolMessage
-                                    # arrives with its canonical UUID.
-                                    logger.debug(
-                                        "Starting file op: name=%s, display_key=%s, active_keys=%s",
-                                        buffer_name,
-                                        display_key,
-                                        list(file_op_tracker.active.keys()),
-                                    )
-                                    file_op_tracker.start_operation(
-                                        buffer_name, parsed_args, display_key
-                                    )
-
-                                    tool_call_buffers.pop(raw_buffer_key, None)
-
-                    if getattr(message, "chunk_position", None) == "last":
-                        pending_text = pending_text_by_namespace.get(ns_key, "")
-                        if pending_text:
-                            await _flush_assistant_text_ns(
-                                adapter,
-                                pending_text,
-                                ns_key,
-                                assistant_message_by_namespace,
+                                    if record.diff:
+                                        diff_msg = DiffMessage(record.diff, record.display_path)
+                                        await adapter._mount_message(diff_msg)
+                                    else:
+                                        logger.debug(
+                                            "No diff for tool=%s tool_call_id=%s "
+                                            "(content unchanged or after-content unreadable)",
+                                            tool_name,
+                                            tool_id,
+                                        )
+                                else:
+                                    # record is None — file_op_tracker has no matching entry.
+                                    # For non-file tools this is expected; for write_file /
+                                    # edit_file the warning and output_str annotation were
+                                    # already applied in the elif branch above.
+                                    if tool_name not in ("write_file", "edit_file"):
+                                        logger.debug(
+                                            "No file-op record for tool=%s tool_call_id=%s "
+                                            "(non-file tool, expected)",
+                                            tool_name,
+                                            tool_id,
+                                        )
+                                continue
+        
+                            # Extract token usage (before content_blocks check
+                            # - usage may be on any chunk)
+                            if hasattr(message, "usage_metadata"):
+                                usage = message.usage_metadata
+                                if usage:
+                                    input_toks = usage.get("input_tokens", 0)
+                                    output_toks = usage.get("output_tokens", 0)
+                                    total_toks = usage.get("total_tokens", 0)
+                                    from invincat_cli.config import settings
+        
+                                    active_model = settings.model_name or ""
+                                    if input_toks or output_toks:
+                                        # Model gives split counts — preferred path
+                                        turn_stats.record_request(
+                                            active_model, input_toks, output_toks
+                                        )
+                                        captured_input_tokens = max(
+                                            captured_input_tokens, input_toks + output_toks
+                                        )
+                                    elif total_toks:
+                                        # Fallback: model gives only total (no split)
+                                        turn_stats.record_request(active_model, total_toks, 0)
+                                        captured_input_tokens = max(
+                                            captured_input_tokens, total_toks
+                                        )
+        
+                                    # Immediately update UI with current token count
+                                    if adapter._on_tokens_update:
+                                        adapter._on_tokens_update(captured_input_tokens)
+        
+                            # Check if this is an AIMessageChunk with content
+                            if not hasattr(message, "content_blocks"):
+                                logger.debug(
+                                    "Message has no content_blocks: type=%s",
+                                    type(message).__name__,
+                                )
+                                continue
+        
+                            # Process content blocks
+                            blocks = message.content_blocks
+                            logger.debug(
+                                "content_blocks count=%d blocks=%s",
+                                len(blocks),
+                                repr(blocks)[:500],
                             )
-                            pending_text_by_namespace[ns_key] = ""
-                            assistant_message_by_namespace.pop(ns_key, None)
+                            for block in blocks:
+                                block_type = block.get("type")
+        
+                                if block_type == "text":
+                                    text = block.get("text", "")
+                                    if text:
+                                        # Track accumulated text for reference
+                                        pending_text = pending_text_by_namespace.get(ns_key, "")
+                                        pending_text += text
+                                        pending_text_by_namespace[ns_key] = pending_text
+        
+                                        # Get or create assistant message for this namespace
+                                        current_msg = assistant_message_by_namespace.get(ns_key)
+                                        if current_msg is None:
+                                            # Hide spinner when assistant starts responding
+                                            if adapter._set_spinner:
+                                                await adapter._set_spinner(None)
+                                            msg_id = f"asst-{uuid.uuid4().hex[:8]}"
+                                            # Mark active BEFORE mounting so pruning
+                                            # (triggered by mount) won't remove it
+                                            # (_mount_message can trigger
+                                            # _prune_old_messages if the window exceeds
+                                            # WINDOW_SIZE.)
+                                            if adapter._set_active_message:
+                                                adapter._set_active_message(msg_id)
+                                            current_msg = AssistantMessage(id=msg_id)
+                                            await adapter._mount_message(current_msg)
+                                            assistant_message_by_namespace[ns_key] = current_msg
+        
+                                        # Append just the new text chunk for smoother
+                                        # streaming (uses MarkdownStream internally for
+                                        # better performance)
+                                        await current_msg.append_content(text)
+        
+                                elif block_type in {"tool_call_chunk", "tool_call"}:
+                                    chunk_name = block.get("name")
+                                    chunk_args = block.get("args")
+                                    chunk_id = block.get("id")
+                                    chunk_index = block.get("index")
+        
+                                    # Normalize buffer key — always str for consistent
+                                    # lookup in _current_tool_messages.
+                                    raw_buffer_key: str | int
+                                    if chunk_index is not None:
+                                        raw_buffer_key = chunk_index
+                                    elif chunk_id is not None:
+                                        raw_buffer_key = chunk_id
+                                    else:
+                                        # Use a UUID so parallel chunks without id/index
+                                        # don't collide — f"unknown-{len(buffers)}" would
+                                        # repeat when a previous buffer was already popped.
+                                        raw_buffer_key = f"unknown-{uuid.uuid4().hex[:8]}"
+        
+                                    buffer = tool_call_buffers.setdefault(
+                                        raw_buffer_key,
+                                        {
+                                            "name": None,
+                                            "id": None,
+                                            "args": None,
+                                            "args_parts": [],
+                                            "args_finalized": False,
+                                        },
+                                    )
+        
+                                    if chunk_name:
+                                        buffer["name"] = chunk_name
+                                    if chunk_id:
+                                        buffer["id"] = chunk_id
+        
+                                    if isinstance(chunk_args, dict):
+                                        buffer["args"] = chunk_args
+                                        buffer["args_parts"] = []
+                                    elif isinstance(chunk_args, str):
+                                        if chunk_args:
+                                            parts: list[str] = buffer.setdefault(
+                                                "args_parts", []
+                                            )
+                                            if not parts or chunk_args != parts[-1]:
+                                                parts.append(chunk_args)
+                                            buffer["args"] = "".join(parts)
+                                    elif chunk_args is not None:
+                                        buffer["args"] = chunk_args
+        
+                                    buffer_name = buffer.get("name")
+                                    buffer_id = buffer.get("id")
+        
+                                    # Need at least a name before doing anything
+                                    if buffer_name is None:
+                                        continue
+        
+                                    # Normalize display_key to str for consistent map keys
+                                    raw_display_key = buffer_id if buffer_id is not None else raw_buffer_key
+                                    display_key = _normalize_tool_id(raw_display_key) or str(raw_display_key)
+        
+                                    # --- EARLY MOUNT: show widget as soon as name is known,
+                                    # before args have finished streaming.  This eliminates
+                                    # the blank gap between the assistant text message and
+                                    # the tool call widget appearing in the UI.
+                                    if display_key not in displayed_tool_ids:
+                                        # Check if this buffer was previously mounted under the
+                                        # index-based key (when buffer_id was not yet available).
+                                        # If so, re-key the existing widget instead of creating a
+                                        # new one — this prevents zombie widget accumulation.
+                                        index_key = _normalize_tool_id(raw_buffer_key) or str(raw_buffer_key)
+                                        if display_key != index_key and index_key in adapter._current_tool_messages:
+                                            # Re-key: move existing widget to the real ID key
+                                            existing = adapter._current_tool_messages.pop(index_key)
+                                            existing._tool_call_id = display_key
+                                            adapter._current_tool_messages[display_key] = existing
+                                            displayed_tool_ids.add(display_key)
+                                            # Also update the store so that if this widget is
+                                            # later pruned, the fallback hydration path uses
+                                            # the correct tool_call_id for result matching.
+                                            if existing.id and adapter._message_store:
+                                                try:
+                                                    adapter._message_store.update_message(
+                                                        existing.id, tool_call_id=display_key
+                                                    )
+                                                except Exception:  # noqa: BLE001
+                                                    logger.warning(
+                                                        "Failed to update tool_call_id in store "
+                                                        "for message id=%s display_key=%s",
+                                                        existing.id,
+                                                        display_key,
+                                                        exc_info=True,
+                                                    )
+                                            # Also re-key the file op tracker so that
+                                            # complete_with_message() can match by UUID
+                                            # when the ToolMessage arrives.  Without this,
+                                            # the tracker still holds the index-based key
+                                            # (e.g. "0") and the UUID lookup fails —
+                                            # causing DiffMessage to never be shown when
+                                            # multiple concurrent file ops are in flight.
+                                            old_record = file_op_tracker.active.pop(
+                                                index_key, None
+                                            )
+                                            if old_record is not None:
+                                                old_record.tool_call_id = display_key
+                                                file_op_tracker.active[display_key] = (
+                                                    old_record
+                                                )
+                                                logger.debug(
+                                                    "Re-keyed file_op_tracker record "
+                                                    "from index key=%s to id=%s",
+                                                    index_key,
+                                                    display_key,
+                                                )
+                                            logger.debug(
+                                                "Re-keyed ToolCallMessage from index key=%s to id=%s",
+                                                index_key,
+                                                display_key,
+                                            )
+                                        else:
+                                            displayed_tool_ids.add(display_key)
+        
+                                            # Flush any pending assistant text first
+                                            pending_text = pending_text_by_namespace.get(ns_key, "")
+                                            if pending_text:
+                                                await _flush_assistant_text_ns(
+                                                    adapter,
+                                                    pending_text,
+                                                    ns_key,
+                                                    assistant_message_by_namespace,
+                                                )
+                                                pending_text_by_namespace[ns_key] = ""
+                                                assistant_message_by_namespace.pop(ns_key, None)
+        
+                                            # Hide spinner before showing tool call widget
+                                            if adapter._set_spinner:
+                                                await adapter._set_spinner(None)
+        
+                                            # Mount immediately with empty args — args will be
+                                            # filled in via update_args() once fully parsed.
+                                            logger.debug(
+                                                "Early-mounting ToolCallMessage: name=%s key=%s",
+                                                buffer_name,
+                                                display_key,
+                                            )
+                                            tool_msg = ToolCallMessage(
+                                                buffer_name,
+                                                {},
+                                                tool_call_id=display_key,
+                                                args_finalized=False,
+                                            )
+                                            await adapter._mount_message(tool_msg)
+                                            adapter._current_tool_messages[display_key] = tool_msg
+        
+                                    # --- ARGS UPDATE: once args are fully parseable, update
+                                    # the already-visible widget and register the file op.
+                                    if not buffer.get("args_finalized"):
+                                        raw_args = buffer.get("args")
+                                        parsed_args = None
+        
+                                        if isinstance(raw_args, dict):
+                                            parsed_args = raw_args
+                                        elif isinstance(raw_args, str) and raw_args:
+                                            try:
+                                                parsed_args = json.loads(raw_args)
+                                            except json.JSONDecodeError:
+                                                pass  # Still streaming — will retry next chunk
+        
+                                        if parsed_args is not None:
+                                            if not isinstance(parsed_args, dict):
+                                                parsed_args = {"value": parsed_args}
+        
+                                            buffer["args_finalized"] = True
+        
+                                            logger.debug(
+                                                "Args finalized for tool key=%s args=%s",
+                                                display_key,
+                                                repr(parsed_args)[:200],
+                                            )
+        
+                                            # Update the widget with real args now that
+                                            # they have fully streamed in.
+                                            tool_msg = adapter._current_tool_messages.get(display_key)
+                                            if tool_msg is not None:
+                                                tool_msg.update_args(parsed_args)
+        
+                                            # Register file op only once args are final.
+                                            # Use display_key (always a str) rather than
+                                            # buffer_id (which may still be None when the
+                                            # streaming chunk carries args but not yet an
+                                            # id).  complete_with_message reconciles the
+                                            # key via tool-name fallback when the ToolMessage
+                                            # arrives with its canonical UUID.
+                                            logger.debug(
+                                                "Starting file op: name=%s, display_key=%s, active_keys=%s",
+                                                buffer_name,
+                                                display_key,
+                                                list(file_op_tracker.active.keys()),
+                                            )
+                                            file_op_tracker.start_operation(
+                                                buffer_name, parsed_args, display_key
+                                            )
+        
+                                            tool_call_buffers.pop(raw_buffer_key, None)
+        
+                            if getattr(message, "chunk_position", None) == "last":
+                                pending_text = pending_text_by_namespace.get(ns_key, "")
+                                if pending_text:
+                                    await _flush_assistant_text_ns(
+                                        adapter,
+                                        pending_text,
+                                        ns_key,
+                                        assistant_message_by_namespace,
+                                    )
+                                    pending_text_by_namespace[ns_key] = ""
+                                    assistant_message_by_namespace.pop(ns_key, None)
+
+                except (asyncio.CancelledError, KeyboardInterrupt):
+                    raise
+                except Exception as _exc:
+                    _astream_exc = _exc
+
+                if _astream_exc is None:
+                    break  # stream completed successfully — exit retry loop
+
+                _astream_attempt += 1
+                if (
+                    _astream_chunks > 0
+                    or _astream_attempt > 3
+                    or not _is_transient_stream_error(_astream_exc)
+                ):
+                    raise _astream_exc
+
+                _retry_delay = 2.0 * (2 ** (_astream_attempt - 1))  # 2s, 4s, 8s
+                logger.warning(
+                    "astream transient error (attempt %d/4); retrying in %.1fs: %s",
+                    _astream_attempt,
+                    _retry_delay,
+                    _astream_exc,
+                )
+                await adapter._mount_message(
+                    AppMessage(
+                        f"Connection error \u2014 retrying ({_astream_attempt}/3)\u2026"
+                    )
+                )
+                await asyncio.sleep(_retry_delay)
 
             # Reset summarization state if stream ended mid-summarization
             # (e.g. middleware error, stream exhausted before regular chunks).
