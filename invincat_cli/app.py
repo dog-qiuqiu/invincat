@@ -1810,23 +1810,33 @@ class DeepAgentsApp(App):
                     exc_info=True,
                 )
 
-        for widget, msg_data in reversed(hydrated_widgets):
-            try:
-                if first_child:
-                    await messages_container.mount(widget, before=first_child)
-                else:
-                    await messages_container.mount(widget)
-                first_child = widget
-                hydrated_count += 1
-                # Render Markdown content for hydrated assistant messages
-                if isinstance(widget, AssistantMessage) and msg_data.content:
+        widgets_to_mount = [w for w, _ in hydrated_widgets]  # chronological order
+        try:
+            if first_child:
+                await messages_container.mount(*widgets_to_mount, before=first_child)
+            else:
+                await messages_container.mount(*widgets_to_mount)
+            hydrated_count = len(widgets_to_mount)
+        except Exception:
+            logger.warning("Batch hydration mount failed; falling back to sequential", exc_info=True)
+            for widget, _ in hydrated_widgets:
+                try:
+                    if first_child:
+                        await messages_container.mount(widget, before=first_child)
+                    else:
+                        await messages_container.mount(widget)
+                    first_child = widget
+                    hydrated_count += 1
+                except Exception:
+                    logger.warning("Failed to mount hydrated widget %s", widget.id, exc_info=True)
+
+        # Render Markdown content after all widgets are mounted
+        for widget, msg_data in hydrated_widgets:
+            if isinstance(widget, AssistantMessage) and msg_data.content:
+                try:
                     await widget.set_content(msg_data.content)
-            except Exception:
-                logger.warning(
-                    "Failed to mount hydrated widget %s",
-                    widget.id,
-                    exc_info=True,
-                )
+                except Exception:
+                    logger.warning("Failed to set content for hydrated widget", exc_info=True)
 
         # Only update store for the number we actually mounted
         if hydrated_count > 0:

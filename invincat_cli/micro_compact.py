@@ -73,8 +73,22 @@ KEEP_RECENT_GROUPS: int = 3
 _MIN_GROUPS_TO_TRIM: int = KEEP_RECENT_GROUPS + 1
 """Do nothing when there are fewer groups than this threshold."""
 
-_PLACEHOLDER = "[cleared]"
-"""Replacement content for old compressible tool results."""
+_CLEARED_PREFIX = "[cleared"
+"""Prefix shared by all placeholder strings; used to detect already-cleared content."""
+
+
+def _make_placeholder(content: str, tool_name: str) -> str:
+    """Build an informative placeholder that preserves the first line and line count.
+
+    Keeping a one-line summary lets the model recognise what was there without
+    re-reading the full output (e.g. it won't re-read a file it already processed).
+    """
+    first_line = content.split("\n", 1)[0].strip()[:120]
+    total_lines = content.count("\n") + 1
+    summary = f"{total_lines} lines" if total_lines > 1 else "1 line"
+    if first_line:
+        return f"[cleared — {tool_name}, {summary}: {first_line}…]"
+    return f"[cleared — {tool_name}, {summary}]"
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +102,7 @@ def micro_compact_messages(messages: list[Any]) -> tuple[list[Any], int]:
     Groups messages into tool-call batches (AIMessage with tool_calls +
     subsequent ToolMessages).  The last ``KEEP_RECENT_GROUPS`` groups are kept
     intact.  Older groups have compressible ToolMessage content replaced with
-    ``_PLACEHOLDER``.
+    an informative placeholder (first line + line count).
 
     The input list is never mutated; a new list is returned with only the
     modified ToolMessages replaced (all other messages reused by reference).
@@ -141,11 +155,13 @@ def micro_compact_messages(messages: list[Any]) -> tuple[list[Any], int]:
             if tool_name not in COMPRESSIBLE_TOOLS:
                 continue
             content = msg.content
-            if not isinstance(content, str) or not content or content == _PLACEHOLDER:
-                continue  # already cleared or empty
+            if not isinstance(content, str) or not content:
+                continue
+            if content.startswith(_CLEARED_PREFIX):
+                continue  # already cleared
 
             result[idx] = ToolMessage(
-                content=_PLACEHOLDER,
+                content=_make_placeholder(content, tool_name),
                 tool_call_id=msg.tool_call_id,
                 name=tool_name,
                 additional_kwargs=getattr(msg, "additional_kwargs", {}),
