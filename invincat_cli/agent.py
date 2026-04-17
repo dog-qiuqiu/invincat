@@ -1028,6 +1028,13 @@ def create_cli_agent(
 
     agent_middleware.append(TokenStateMiddleware())
 
+    # Micro-compact: trim old tool outputs before every model call.
+    # Pure rule-based, zero LLM cost, runs before memory/context middleware
+    # so those layers operate on an already-reduced message list.
+    from invincat_cli.micro_compact import MicroCompactMiddleware
+
+    agent_middleware.append(MicroCompactMiddleware())
+
     # Add ask_user middleware (must be early so its tool is available)
     if enable_ask_user:
         from invincat_cli.ask_user import AskUserMiddleware
