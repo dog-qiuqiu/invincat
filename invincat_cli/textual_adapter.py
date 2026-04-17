@@ -582,8 +582,27 @@ async def execute_task_textual(
     # Track summarization lifecycle so spinner status and notification stay in sync.
     summarization_in_progress = False
 
+    _MAX_RESUME_ITERATIONS = 50
+    _resume_iteration = 0
+
     try:
         while True:
+            _resume_iteration += 1
+            if _resume_iteration > _MAX_RESUME_ITERATIONS:
+                logger.error(
+                    "HITL resume loop exceeded %d iterations — breaking to prevent "
+                    "infinite loop. This likely indicates a bug in the agent or "
+                    "interrupt handler.",
+                    _MAX_RESUME_ITERATIONS,
+                )
+                await adapter._mount_message(
+                    AppMessage(
+                        "Too many consecutive interrupts — breaking loop. "
+                        "Please start a new message."
+                    )
+                )
+                break
+
             interrupt_occurred = False
             suppress_resumed_output = False
             pending_interrupts: dict[str, HITLRequest] = {}
@@ -1727,15 +1746,42 @@ async def _handle_interrupt_cleanup(
 
     # Save accumulated state before marking tools as rejected (best-effort).
     # State update failures shouldn't prevent cleanup.
+    # Retry up to 3 times with exponential backoff for transient network errors.
+    async def _aupdate_state_with_retry(update_kwargs: dict) -> None:
+        delay = 1.0
+        for attempt in range(3):
+            try:
+                await agent.aupdate_state(config, update_kwargs)
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if attempt == 2:
+                    logger.warning(
+                        "Failed to save interrupted state after 3 attempts",
+                        exc_info=True,
+                    )
+                    return
+                logger.debug(
+                    "aupdate_state attempt %d failed; retrying in %.1fs",
+                    attempt + 1,
+                    delay,
+                    exc_info=True,
+                )
+                await asyncio.sleep(delay)
+                delay *= 2
+
     try:
         if interrupted_msg:
-            await agent.aupdate_state(config, {"messages": [interrupted_msg]})
+            await _aupdate_state_with_retry({"messages": [interrupted_msg]})
 
         cancellation_msg = HumanMessage(
             content="[SYSTEM] Task interrupted by user. "
             "Previous operation was cancelled."
         )
-        await agent.aupdate_state(config, {"messages": [cancellation_msg]})
+        await _aupdate_state_with_retry({"messages": [cancellation_msg]})
+    except asyncio.CancelledError:
+        logger.debug("aupdate_state retry cancelled — skipping state save")
     except Exception:
         logger.warning("Failed to save interrupted state", exc_info=True)
 

@@ -683,6 +683,17 @@ class DeepAgentsApp(App):
 
         self._agent_running = False
 
+        self._agent_generation: int = 0
+        """Monotonically-increasing counter incremented each time a new agent task starts.
+
+        Used by _cleanup_agent_task() to guard against stale cleanup from a
+        previously-cancelled worker clobbering the running flags of a newer
+        concurrent worker.  When _cancel_worker() eagerly clears _agent_running
+        so the user can send a new message immediately, the old (shielded)
+        cleanup goroutine can still be alive. Without the generation check it
+        would reset _agent_running=False / _agent_worker=None for the NEW agent.
+        """
+
         self._shell_process: asyncio.subprocess.Process | None = None
         """Shell command process tracking for interruption (! commands)."""
 
@@ -3467,6 +3478,8 @@ class DeepAgentsApp(App):
 
         # Check if agent is available
         if self._agent and self._ui_adapter and self._session_state:
+            self._agent_generation += 1
+            generation = self._agent_generation
             self._agent_running = True
 
             if self._chat_input:
@@ -3475,7 +3488,7 @@ class DeepAgentsApp(App):
             # Use run_worker to avoid blocking the main event loop
             # This allows the UI to remain responsive during agent execution
             self._agent_worker = self.run_worker(
-                self._run_agent_task(message, message_kwargs=message_kwargs),
+                self._run_agent_task(message, message_kwargs=message_kwargs, generation=generation),
                 exclusive=False,
             )
         else:
@@ -3488,6 +3501,7 @@ class DeepAgentsApp(App):
         message: str,
         *,
         message_kwargs: dict[str, Any] | None = None,
+        generation: int = 0,
     ) -> None:
         """Run the agent task in a background worker.
 
@@ -3497,6 +3511,10 @@ class DeepAgentsApp(App):
             message: The prompt to send to the agent.
             message_kwargs: Extra fields merged into the stream input message
                 dict (e.g., `additional_kwargs` for skill metadata).
+            generation: Value of `_agent_generation` at the time this task was
+                created. Passed through to `_cleanup_agent_task()` so stale
+                cleanup from a previously-cancelled (but still-shielded) worker
+                cannot clobber the running flags of a newer concurrent worker.
         """
         # Caller ensures _ui_adapter is set (checked in _handle_user_message)
         if self._ui_adapter is None:
@@ -3547,7 +3565,7 @@ class DeepAgentsApp(App):
             if self._inflight_turn_stats is not None:
                 self._session_stats.merge(turn_stats)
                 self._inflight_turn_stats = None
-            await self._cleanup_agent_task()
+            await self._cleanup_agent_task(generation=generation)
 
     async def _process_next_from_queue(self) -> None:
         """Process the next message from the queue if any exist.
@@ -3583,20 +3601,41 @@ class DeepAgentsApp(App):
         if not busy and self._pending_messages:
             await self._process_next_from_queue()
 
-    async def _cleanup_agent_task(self) -> None:
-        """Clean up after agent task completes or is cancelled."""
-        self._agent_running = False
-        self._agent_worker = None
+    async def _cleanup_agent_task(self, *, generation: int = 0) -> None:
+        """Clean up after agent task completes or is cancelled.
+
+        Args:
+            generation: The `_agent_generation` value captured when this task
+                started.  Running-flag cleanup is skipped when a newer agent
+                has already taken over (i.e., `generation` is stale), preventing
+                a shielded-but-cancelled old worker from clobbering the flags of
+                the new concurrent worker that started after ESC was pressed.
+        """
+        is_current_generation = generation == self._agent_generation
+        if is_current_generation:
+            self._agent_running = False
+            self._agent_worker = None
 
         # Remove spinner if present
         await self._set_spinner(None)
 
-        if self._chat_input:
+        if is_current_generation and self._chat_input:
             self._chat_input.set_cursor_active(active=True)
 
         # Ensure token display is restored (in case of early cancellation).
         # Pass the cached approximate flag so an interrupted "+" isn't clobbered.
-        self._show_tokens(approximate=self._tokens_approximate)
+        if is_current_generation:
+            self._show_tokens(approximate=self._tokens_approximate)
+
+        if not is_current_generation:
+            # A newer agent took over — skip queue drain, deferred actions, and
+            # auto-offload so they don't interfere with the new agent's turn.
+            logger.debug(
+                "Skipping stale cleanup for generation %d (current: %d)",
+                generation,
+                self._agent_generation,
+            )
+            return
 
         try:
             await self._maybe_drain_deferred()
