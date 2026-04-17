@@ -245,9 +245,16 @@ ALL_CLASSIFIED: frozenset[str] = (
 # ---------------------------------------------------------------------------
 
 SLASH_COMMANDS: list[tuple[str, str, str]] = [
-    (cmd.name, cmd.description, cmd.hidden_keywords) for cmd in COMMANDS
+    entry
+    for cmd in COMMANDS
+    for entry in (
+        [(cmd.name, cmd.description, cmd.hidden_keywords)]
+        + [(alias, cmd.description, cmd.hidden_keywords) for alias in cmd.aliases]
+    )
 ]
-"""`(name, description, hidden_keywords)` tuples for `SlashCommandController`."""
+"""`(name, description, hidden_keywords)` tuples for `SlashCommandController`.
+
+Aliases are included as separate entries so they appear in autocomplete."""
 
 
 def parse_skill_command(command: str) -> tuple[str, str]:

@@ -3329,19 +3329,30 @@ class DeepAgentsApp(App):
             await dispatch_hook("context.compact", {})
             await self._set_spinner("Offloading")
 
+            from langchain_core.messages.utils import convert_to_messages
+
             raw_messages = state_values.get("messages", [])
             # Checkpointer may return messages as plain dicts (e.g. after a
             # server restart or when reading from SQLite directly). Convert
             # to LangChain message objects so SummarizationMiddleware can
             # process them — same pattern used in _fetch_thread_history_data.
             if raw_messages and isinstance(raw_messages[0], dict):
-                from langchain_core.messages.utils import convert_to_messages
-
                 raw_messages = convert_to_messages(raw_messages)
+
+            prior_event = state_values.get("_summarization_event")
+            # The summary_message inside prior_event also arrives as a plain
+            # dict from the checkpointer. Convert it to a LangChain message
+            # object so SummarizationMiddleware can process it.
+            if isinstance(prior_event, dict):
+                summary_msg_raw = prior_event.get("summary_message")
+                if isinstance(summary_msg_raw, dict):
+                    converted = convert_to_messages([summary_msg_raw])
+                    if converted:
+                        prior_event = {**prior_event, "summary_message": converted[0]}
 
             result = await perform_offload(
                 messages=raw_messages,
-                prior_event=state_values.get("_summarization_event"),
+                prior_event=prior_event,
                 thread_id=self._lc_thread_id,
                 model_spec=(f"{settings.model_provider}:{settings.model_name}"),
                 profile_overrides=self._profile_override,
