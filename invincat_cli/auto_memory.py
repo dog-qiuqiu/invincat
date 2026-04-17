@@ -113,6 +113,8 @@ class AutoMemoryState(AgentState):
 
     _auto_memory_user_turn_count: Annotated[NotRequired[int], PrivateStateAttr]
     _auto_memory_hint_injected: Annotated[NotRequired[bool], PrivateStateAttr]
+    _auto_memory_updated_paths: Annotated[NotRequired[list[str]], PrivateStateAttr]
+    """Paths of memory files written during the last agent turn. Empty when no update occurred."""
 
 
 _DEFAULT_INTERVAL = 10
@@ -369,8 +371,9 @@ class AutoMemoryMiddleware(AgentMiddleware):
                 hashes[path] = ""
         return hashes
 
-    def _memory_files_changed(self, before: dict[str, str]) -> bool:
-        """Return True if any memory file content changed since *before* snapshot."""
+    def _memory_files_changed(self, before: dict[str, str]) -> list[str]:
+        """Return paths of memory files whose content changed since *before* snapshot."""
+        changed: list[str] = []
         for path, old_hash in before.items():
             try:
                 content = Path(path).read_bytes()
@@ -379,8 +382,8 @@ class AutoMemoryMiddleware(AgentMiddleware):
                 new_hash = ""
             if new_hash != old_hash:
                 logger.debug("Memory file content changed: %s", path)
-                return True
-        return False
+                changed.append(path)
+        return changed
 
     def _has_memory_signals(self, state: AutoMemoryState) -> bool:
         """Return True if recent user messages contain memory-worthy keywords.
@@ -556,7 +559,10 @@ class AutoMemoryMiddleware(AgentMiddleware):
 
         self._pre_agent_hashes = self._snapshot_hashes()
 
-        return {"_auto_memory_user_turn_count": user_turn_count}
+        return {
+            "_auto_memory_user_turn_count": user_turn_count,
+            "_auto_memory_updated_paths": [],
+        }
 
     def _check_and_mark_exit_followup(self) -> bool:
         """Check whether an exit marker is present and mark it as consumed.
@@ -705,9 +711,11 @@ class AutoMemoryMiddleware(AgentMiddleware):
             updates["_auto_memory_user_turn_count"] = 0
             updates["_auto_memory_hint_injected"] = False
 
-        if self._memory_paths and self._memory_files_changed(self._pre_agent_hashes):
+        changed_paths = self._memory_files_changed(self._pre_agent_hashes) if self._memory_paths else []
+        if changed_paths:
             updates["memory_contents"] = None
-            logger.debug("Memory file mtime changed, cleared memory_contents for reload")
+            updates["_auto_memory_updated_paths"] = changed_paths
+            logger.debug("Memory file content changed: %s", changed_paths)
 
         return updates if updates else None
 

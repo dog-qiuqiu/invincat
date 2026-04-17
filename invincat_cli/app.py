@@ -3187,6 +3187,26 @@ class DeepAgentsApp(App):
         # Set cooldown regardless of outcome so we don't re-trigger next turn.
         self._auto_offload_cooldown_until = _monotonic() + _AUTO_OFFLOAD_COOLDOWN_SECONDS
 
+    async def _maybe_notify_memory_update(self) -> None:
+        """Show a toast notification when memory files were updated this turn."""
+        try:
+            state_values = await self._get_thread_state_values(self._lc_thread_id)
+            updated_paths = state_values.get("_auto_memory_updated_paths")
+            if not updated_paths:
+                return
+            home = Path.home()
+            if len(updated_paths) == 1:
+                try:
+                    short = "~/" + str(Path(updated_paths[0]).relative_to(home))
+                except ValueError:
+                    short = updated_paths[0]
+                msg = f"Memory updated: {short}"
+            else:
+                msg = f"Memory updated: {len(updated_paths)} files"
+            self.notify(msg, severity="information", timeout=5)
+        except Exception:
+            logger.debug("Failed to check memory update state", exc_info=True)
+
     def _resolve_offload_budget_str(self) -> str | None:
         """Resolve the offload retention budget as a human-readable string.
 
@@ -3545,6 +3565,9 @@ class DeepAgentsApp(App):
 
         # Auto-offload when context window is near full (no-op when below threshold)
         await self._maybe_auto_offload()
+
+        # Notify user if memory files were updated this turn
+        await self._maybe_notify_memory_update()
 
         # Process next message from queue if any
         await self._process_next_from_queue()
