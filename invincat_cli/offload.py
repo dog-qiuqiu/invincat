@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import get_buffer_string
@@ -185,12 +186,11 @@ async def offload_messages_to_backend(
     middleware: SummarizationMiddleware,
     *,
     thread_id: str,
-    backend: BackendProtocol,
 ) -> str | None:
-    """Write messages to backend storage before offloading.
+    """Write messages to persistent local storage before offloading.
 
-    Appends messages as a timestamped markdown section to the conversation
-    history file, matching the `SummarizationMiddleware` offload pattern.
+    Appends messages as a timestamped markdown section to
+    ~/.invincat/conversation_history/{thread_id}.md.
 
     Filters out prior summary messages using the middleware's
     `_filter_summary_messages` to avoid storing summaries-of-summaries.
@@ -198,15 +198,20 @@ async def offload_messages_to_backend(
     Args:
         messages: Messages to offload.
         middleware: `SummarizationMiddleware` instance for filtering.
-        thread_id: Thread identifier used to derive the storage path.
-        backend: Backend to persist conversation history to.
+        thread_id: Thread identifier used to name the history file.
 
     Returns:
-        File path where history was stored, `""` (empty string) if there were no
-            non-summary messages to offload (not an error), or `None` if the
-            write failed.
+        Absolute file path where history was stored, `""` (empty string) if
+            there were no non-summary messages to offload (not an error), or
+            `None` if the write failed.
     """
-    path = f"/conversation_history/{thread_id}.md"
+    # Always write conversation history to a persistent local directory
+    # regardless of what backend the agent uses (which may be virtual/sandbox).
+    # This guarantees the file is recoverable across sessions.
+    history_root = Path.home() / ".invincat" / "conversation_history"
+    history_root.mkdir(parents=True, exist_ok=True)
+    history_file = history_root / f"{thread_id}.md"
+    path = str(history_file)
 
     # Exclude prior summaries so the offloaded history contains only
     # original messages
@@ -218,13 +223,9 @@ async def offload_messages_to_backend(
     buf = get_buffer_string(filtered)
     new_section = f"## Offloaded at {timestamp}\n\n{buf}\n\n"
 
-    existing_content = ""
     try:
-        responses = await backend.adownload_files([path])
-        resp = responses[0] if responses else None
-        if resp and resp.content is not None and resp.error is None:
-            existing_content = resp.content.decode("utf-8")
-    except Exception as exc:  # abort write on read failure
+        existing_content = history_file.read_text(encoding="utf-8") if history_file.exists() else ""
+    except OSError as exc:
         logger.warning(
             "Failed to read existing history at %s; aborting offload to "
             "avoid overwriting prior history: %s",
@@ -237,22 +238,10 @@ async def offload_messages_to_backend(
     combined = existing_content + new_section
 
     try:
-        result = (
-            await backend.aedit(path, existing_content, combined)
-            if existing_content
-            else await backend.awrite(path, combined)
-        )
-        if result is None or result.error:
-            error_detail = result.error if result else "backend returned None"
-            logger.warning(
-                "Failed to offload conversation history to %s: %s",
-                path,
-                error_detail,
-            )
-            return None
-    except Exception as exc:  # defensive: surface write failures gracefully
+        history_file.write_text(combined, encoding="utf-8")
+    except OSError as exc:
         logger.warning(
-            "Exception offloading conversation history to %s: %s",
+            "Failed to write conversation history to %s: %s",
             path,
             exc,
             exc_info=True,
@@ -380,7 +369,6 @@ async def perform_offload(
         to_summarize,  # full content for persistent history
         middleware,
         thread_id=thread_id,
-        backend=offload_backend,
     )
     offload_warning: str | None = None
     if backend_path is None:
