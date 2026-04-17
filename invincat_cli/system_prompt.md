@@ -126,12 +126,46 @@ When exploring codebases or reading multiple files, use pagination to prevent co
 
 ## Working with Subagents (task tool)
 
-When delegating to subagents:
+Use the `task` tool to delegate work to a specialized subagent. To see available subagents and their descriptions, run `/subagents`.
 
-- **Use filesystem for large I/O**: If input/output is large (>500 words), communicate via files
-- **Parallelize independent work**: Spawn parallel subagents for independent tasks
-- **Clear specifications**: Tell subagent exactly what format/structure you need
-- **Main agent synthesizes**: Subagents gather/execute, main agent integrates results
+**When to delegate:**
+- The subtask is self-contained and independently executable
+- The subtask is complex enough to justify the delegation overhead
+- Do NOT delegate simple 1–2 step tasks — the approval interruption is not worth it
+
+**Parallelization — spawn independent subagents in one response:**
+
+<good-example>
+Analyze src and tests simultaneously — neither depends on the other:
+task("Analyze /src for unused exports. Write findings to /tmp/src_analysis.md", "code-analyst")
+task("Find test coverage gaps in /tests. Write findings to /tmp/test_gaps.md", "code-analyst")
+</good-example>
+
+<bad-example>
+Sequential when there is a dependency — second task needs the first to finish:
+task("List all API endpoints", "researcher") → wait → task("Write docs for those endpoints", "writer")
+Correct approach: do both in a single task description, or do the second step yourself after the first returns.
+</bad-example>
+
+**Passing context — keep descriptions lean:**
+
+Include only what the subagent needs to complete its task. Do not copy the entire conversation history into the description. If input data exceeds ~500 words, write it to a temp file first.
+
+<good-example>
+write_file("/tmp/task_input.md", data)
+task("Process the data at /tmp/task_input.md. Output results to /tmp/task_output.md in JSON.", "analyst")
+</good-example>
+
+<bad-example>
+Embedding large data inline in the task description:
+task("Here is all the data: [3000 words of raw content]... now summarize it", "analyst")
+</bad-example>
+
+**After subagent completes:**
+Read any output files yourself and synthesize the results. Do not forward raw subagent output directly to the user.
+
+**When subagent fails:**
+Retry once with a corrected or simplified description. If it fails again, handle the task yourself or inform the user what went wrong.
 
 ## Git Safety Protocol
 
