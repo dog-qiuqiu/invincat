@@ -1671,11 +1671,12 @@ class DeepAgentsApp(App):
 
     def on_scroll_to(self, _event: ScrollTo) -> None:
         """Handle scroll events to check if we need to hydrate older messages.
-        
+
         This catches all scroll events including mouse wheel, keyboard, and
         scrollbar drag, not just clicking on the scrollbar track.
         """
         self._check_hydration_needed()
+        self._maybe_reanchor()
 
     def _update_status(self, message: str) -> None:
         """Update the status bar with a message."""
@@ -1727,6 +1728,21 @@ class DeepAgentsApp(App):
         """Hide the token display during streaming."""
         if self._status_bar:
             self._status_bar.hide_tokens()
+
+    def _maybe_reanchor(self) -> None:
+        """Re-establish the scroll anchor when the user has scrolled to the bottom.
+
+        Textual releases the anchor automatically on manual scroll-up.  When
+        the user scrolls back to the bottom we restore it so new content keeps
+        the view up-to-date.
+        """
+        try:
+            chat = self.query_one("#chat", VerticalScroll)
+        except NoMatches:
+            return
+        if not chat.is_anchored and chat.max_scroll_y > 0:
+            if chat.scroll_y >= chat.max_scroll_y - 2:
+                chat.anchor()
 
     def _check_hydration_needed(self) -> None:
         """Check if we need to hydrate messages from the store.
