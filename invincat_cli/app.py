@@ -5095,7 +5095,7 @@ class DeepAgentsApp(App):
         current = self._session_state.thread_id if self._session_state else None
         thread_limit = get_thread_limit()
 
-        initial_threads = get_cached_threads(limit=thread_limit)
+        initial_threads = get_cached_threads(limit=thread_limit, require_message_counts=True)
 
         def handle_result(result: str | None) -> None:
             """Handle the thread selector result."""

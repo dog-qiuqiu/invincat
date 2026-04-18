@@ -56,7 +56,7 @@ when the inputs (thread data + config) haven't changed."""
 
 _COL_TID = 10
 _COL_AGENT = 12
-_COL_MSGS = 4
+_COL_MSGS = 5
 _COL_BRANCH = 16
 _COL_TIMESTAMP = None
 _MAX_SEARCH_TEXT_LEN = 200
@@ -213,14 +213,25 @@ def _truncate_value(value: str, width: int | None) -> str:
         return value
 
     display = _collapse_whitespace(value)
-    if len(display) <= width:
+    display_width = cell_len(display)
+    if display_width <= width:
         return display
 
     glyphs = get_glyphs()
     ellipsis = glyphs.ellipsis
-    if width <= len(ellipsis):
+    ellipsis_width = cell_len(ellipsis)
+    if width <= ellipsis_width:
         return display[:width]
-    return display[: width - len(ellipsis)] + ellipsis
+
+    result = ""
+    result_width = 0
+    for char in display:
+        char_width = cell_len(char)
+        if result_width + char_width + ellipsis_width > width:
+            break
+        result += char
+        result_width += char_width
+    return result + ellipsis
 
 
 def _format_column_value(
@@ -631,7 +642,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
     }
 
     ThreadSelectorScreen .thread-cell-messages {
-        width: 4;
+        width: 5;
     }
 
     ThreadSelectorScreen .thread-cell-created_at,
@@ -666,6 +677,17 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         color: $text-muted;
         text-align: center;
         margin-top: 2;
+    }
+
+    ThreadSelectorScreen .thread-loading-overlay {
+        height: 1fr;
+        width: 100%;
+        align: center middle;
+        color: $text-muted;
+    }
+
+    ThreadSelectorScreen .thread-loading-overlay Static {
+        text-align: center;
     }
 
     """
@@ -844,25 +866,25 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             )
 
             with Horizontal(classes="thread-selector-body"):
-                with Vertical(classes="thread-table-pane"):
-                    with Horizontal(
-                        classes="thread-list-header",
-                        id="thread-header",
-                    ):
-                        yield Static("", classes="thread-cell thread-cell-cursor")
-                        sort_key = _active_sort_key(self._sort_by_updated)
-                        for key in _visible_column_keys(self._columns):
-                            cell = Static(
-                                _format_header_label(key),
-                                classes=_header_cell_classes(key, sort_key=sort_key),
-                                expand=key == "initial_prompt",
-                                markup=False,
-                            )
-                            _apply_column_width(cell, key, self._column_widths)
-                            yield cell
+                if self._has_initial_threads:
+                    with Vertical(classes="thread-table-pane"):
+                        with Horizontal(
+                            classes="thread-list-header",
+                            id="thread-header",
+                        ):
+                            yield Static("", classes="thread-cell thread-cell-cursor")
+                            sort_key = _active_sort_key(self._sort_by_updated)
+                            for key in _visible_column_keys(self._columns):
+                                cell = Static(
+                                    _format_header_label(key),
+                                    classes=_header_cell_classes(key, sort_key=sort_key),
+                                    expand=key == "initial_prompt",
+                                    markup=False,
+                                )
+                                _apply_column_width(cell, key, self._column_widths)
+                                yield cell
 
-                    with VerticalScroll(classes="thread-list"):
-                        if self._has_initial_threads:
+                        with VerticalScroll(classes="thread-list"):
                             if self._filtered_threads:
                                 self._option_widgets, _ = self._create_option_widgets()
                                 yield from self._option_widgets
@@ -871,12 +893,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                                     Content.styled(t("thread.no_threads"), "dim"),
                                     classes="thread-empty",
                                 )
-                        else:
-                            yield Static(
-                                Content.styled(t("thread.loading"), "dim"),
-                                classes="thread-empty",
-                                id="thread-loading",
-                            )
+                else:
+                    with Vertical(classes="thread-table-pane", id="thread-loading-container"):
+                        with Vertical(classes="thread-loading-overlay"):
+                            yield Static(t("thread.loading"))
 
                 with Vertical(classes="thread-controls"):
                     yield Static(t("thread.options"), classes="thread-controls-title")
@@ -1380,11 +1400,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._update_filtered_list()
         self._sync_selected_index()
 
-        # Short-circuit: when the fresh data matches what is already rendered,
-        # update widget references and cell labels without tearing down the DOM.
-        if (
-            self._has_initial_threads
-            and self._option_widgets
+        if not self._has_initial_threads:
+            await self._build_table_pane()
+            self._has_initial_threads = True
+        elif (
+            self._option_widgets
             and self._threads_match(old_threads, self._filtered_threads)
         ):
             for widget, thread in zip(
@@ -1511,24 +1531,96 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """
         try:
             async with self._render_lock:
-                scroll = self.query_one(".thread-list", VerticalScroll)
-                await scroll.remove_children()
-                await scroll.mount(
-                    Static(
-                        Content.from_markup(
-                            "[red]Failed to load threads: $detail. "
-                            "Press Esc to close.[/red]",
-                            detail=detail,
-                        ),
-                        classes="thread-empty",
+                try:
+                    scroll = self.query_one(".thread-list", VerticalScroll)
+                    await scroll.remove_children()
+                    await scroll.mount(
+                        Static(
+                            Content.from_markup(
+                                "[red]Failed to load threads: $detail. "
+                                "Press Esc to close.[/red]",
+                                detail=detail,
+                            ),
+                            classes="thread-empty",
+                        )
                     )
-                )
+                except NoMatches:
+                    try:
+                        overlay = self.query_one(".thread-loading-overlay", Vertical)
+                        await overlay.remove_children()
+                        await overlay.mount(
+                            Static(
+                                Content.from_markup(
+                                    "[red]Failed to load threads: $detail. "
+                                    "Press Esc to close.[/red]",
+                                    detail=detail,
+                                )
+                            )
+                        )
+                    except NoMatches:
+                        pass
         except Exception:
             logger.warning(
                 "Could not display error message in thread selector UI",
                 exc_info=True,
             )
         self.focus()
+
+    async def _build_table_pane(self) -> None:
+        """Build the table pane after loading completes.
+
+        Replaces the loading overlay with the actual table header and list.
+        """
+        async with self._render_lock:
+            try:
+                body = self.query_one(".thread-selector-body", Horizontal)
+            except NoMatches:
+                return
+
+            try:
+                loading_container = self.query_one("#thread-loading-container", Vertical)
+                await loading_container.remove()
+            except NoMatches:
+                pass
+
+            self._column_widths = self._compute_column_widths()
+
+            table_pane = Vertical(classes="thread-table-pane")
+            await body.mount(table_pane, before=0)
+
+            header = Horizontal(classes="thread-list-header", id="thread-header")
+            await table_pane.mount(header)
+
+            header.mount(Static("", classes="thread-cell thread-cell-cursor"))
+            sort_key = _active_sort_key(self._sort_by_updated)
+            for key in _visible_column_keys(self._columns):
+                cell = Static(
+                    _format_header_label(key),
+                    classes=_header_cell_classes(key, sort_key=sort_key),
+                    expand=key == "initial_prompt",
+                    markup=False,
+                )
+                _apply_column_width(cell, key, self._column_widths)
+                await header.mount(cell)
+
+            scroll = VerticalScroll(classes="thread-list")
+            await table_pane.mount(scroll)
+
+            if not self._filtered_threads:
+                self._option_widgets = []
+                await scroll.mount(
+                    Static(
+                        Content.styled(t("thread.no_threads"), "dim"),
+                        classes="thread-empty",
+                    )
+                )
+                return
+
+            self._option_widgets, selected_widget = self._create_option_widgets()
+            await scroll.mount(*self._option_widgets)
+
+            if selected_widget:
+                self.call_after_refresh(self._scroll_selected_into_view)
 
     async def _build_list(self, *, recompute_widths: bool = True) -> None:
         """Build the thread option widgets.

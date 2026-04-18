@@ -471,12 +471,17 @@ async def prewarm_thread_message_counts(limit: int | None = None) -> None:
 def get_cached_threads(
     agent_name: str | None = None,
     limit: int | None = None,
+    *,
+    require_message_counts: bool = False,
 ) -> list[ThreadInfo] | None:
     """Get cached recent threads, if available.
 
     Args:
         agent_name: Optional agent-name filter key.
         limit: Maximum rows requested. Uses `get_thread_limit()` when `None`.
+        require_message_counts: If True, only return cached threads when all
+            rows have message counts populated. Useful for avoiding "..."
+            placeholders in the thread selector.
 
     Returns:
         Copy of cached rows when available, otherwise `None`.
@@ -494,7 +499,11 @@ def get_cached_threads(
 
     exact = _recent_threads_cache.get((agent_name, thread_limit))
     if exact is not None:
-        return _copy_with_cached_counts(exact)
+        result = _copy_with_cached_counts(exact)
+        if require_message_counts and result:
+            if not all("message_count" in t for t in result):
+                return None
+        return result
 
     best_key: tuple[str | None, int] | None = None
     for key in _recent_threads_cache:
@@ -507,7 +516,11 @@ def get_cached_threads(
     if best_key is None:
         return None
 
-    return _copy_with_cached_counts(_recent_threads_cache[best_key][:thread_limit])
+    result = _copy_with_cached_counts(_recent_threads_cache[best_key][:thread_limit])
+    if require_message_counts and result:
+        if not all("message_count" in t for t in result):
+            return None
+    return result
 
 
 def apply_cached_thread_message_counts(threads: list[ThreadInfo]) -> int:
