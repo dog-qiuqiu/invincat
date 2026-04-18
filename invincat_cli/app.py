@@ -2012,7 +2012,14 @@ class DeepAgentsApp(App):
 
         # If there's already a pending approval, wait for it to complete first
         if self._pending_approval_widget is not None:
-            while self._pending_approval_widget is not None:  # noqa: ASYNC110  # Simple polling is sufficient here
+            _queue_deadline = _monotonic() + 30.0
+            while self._pending_approval_widget is not None:  # noqa: ASYNC110
+                if _monotonic() > _queue_deadline:
+                    logger.warning(
+                        "Timed out waiting for previous approval widget to clear "
+                        "after 30s; proceeding with new approval"
+                    )
+                    break
                 await asyncio.sleep(0.1)
 
         # Create menu with unique ID to avoid conflicts
@@ -2099,37 +2106,47 @@ class DeepAgentsApp(App):
             menu: The `ApprovalMenu` to show once the user stops typing.
             result_future: The future backing this approval flow.
         """
-        deadline = _monotonic() + _DEFERRED_APPROVAL_TIMEOUT_SECONDS
-        while self._is_user_typing():  # Simple polling
-            if _monotonic() > deadline:
-                logger.warning(
-                    "Timed out waiting for user to stop typing; showing approval now"
-                )
-                break
-            await asyncio.sleep(0.2)
-
-        # Guard: if the placeholder was already removed (e.g. agent cancelled
-        # the approval while we were waiting), clean up and cancel the future.
-        if not placeholder.is_attached:
-            logger.warning(
-                "Approval placeholder detached before menu shown (id=%s)",
-                menu.id,
-            )
-            self._approval_placeholder = None
-            self._pending_approval_widget = None
-            if not result_future.done():
-                result_future.cancel()
-            return
-
-        self._approval_placeholder = None
         try:
-            await placeholder.remove()
-        except Exception:
-            logger.warning(
-                "Failed to remove approval placeholder during swap",
-                exc_info=True,
-            )
-        await self._mount_approval_widget(menu, result_future)
+            deadline = _monotonic() + _DEFERRED_APPROVAL_TIMEOUT_SECONDS
+            while self._is_user_typing():  # Simple polling
+                if _monotonic() > deadline:
+                    logger.warning(
+                        "Timed out waiting for user to stop typing; showing approval now"
+                    )
+                    break
+                await asyncio.sleep(0.2)
+
+            # Guard: if the placeholder was already removed (e.g. agent cancelled
+            # the approval while we were waiting), clean up and cancel the future.
+            if not placeholder.is_attached:
+                logger.warning(
+                    "Approval placeholder detached before menu shown (id=%s)",
+                    menu.id,
+                )
+                self._approval_placeholder = None
+                self._pending_approval_widget = None
+                if not result_future.done():
+                    result_future.cancel()
+                return
+
+            self._approval_placeholder = None
+            try:
+                await placeholder.remove()
+            except Exception:
+                logger.warning(
+                    "Failed to remove approval placeholder during swap",
+                    exc_info=True,
+                )
+            await self._mount_approval_widget(menu, result_future)
+        except BaseException:
+            # Worker cancelled (CancelledError) or unexpected crash — ensure the
+            # future is always resolved so the agent is never left deadlocked
+            # awaiting an approval that will never arrive.
+            if not result_future.done():
+                self._pending_approval_widget = None
+                self._approval_placeholder = None
+                result_future.cancel()
+            raise
 
     def _on_auto_approve_enabled(self) -> None:
         """Handle auto-approve being enabled via the HITL approval menu.

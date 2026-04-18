@@ -1786,27 +1786,36 @@ async def _handle_interrupt_cleanup(
     """
     from langchain_core.messages import HumanMessage
 
-    # Clear active message immediately so it won't block pruning.
-    # If we don't do this, the store still thinks it's active and protects
-    # from pruning, which breaks get_messages_to_prune(), potentially
-    # blocking all future pruning.
+    # --- Sync cleanup first: never skipped by CancelledError ---------------------
+    # Clear active message so future pruning isn't blocked on a stale active id.
     if adapter._set_active_message:
         adapter._set_active_message(None)
 
-    # Hide spinner (may still show "Offloading" if interrupted mid-offload)
-    if adapter._set_spinner:
-        await adapter._set_spinner(None)
-
-    await adapter._mount_message(AppMessage("Interrupted by user"))
-
+    # Snapshot pending text so _build_interrupted_ai_message has what it needs
+    # even if subsequent awaits raise CancelledError.
     interrupted_msg = _build_interrupted_ai_message(
         pending_text_by_namespace,
         adapter._current_tool_messages,
     )
 
-    # Save accumulated state before marking tools as rejected (best-effort).
-    # State update failures shouldn't prevent cleanup.
-    # Retry up to 3 times with exponential backoff for transient network errors.
+    # Mark in-flight tools as rejected immediately (sync, never raises).
+    # This must happen before any await so a second CancelledError cannot leave
+    # tool widgets stuck in "pending" indefinitely.
+    for tool_msg in list(adapter._current_tool_messages.values()):
+        tool_msg.set_rejected()
+    adapter._current_tool_messages.clear()
+    # -------------------------------------------------------------------------
+
+    # Best-effort UI updates — wrapped so CancelledError from spinner/mount
+    # doesn't prevent the remaining state-save and token-report steps.
+    try:
+        if adapter._set_spinner:
+            await adapter._set_spinner(None)
+        await adapter._mount_message(AppMessage("Interrupted by user"))
+    except (asyncio.CancelledError, Exception):
+        logger.debug("UI cleanup partially failed during interrupt", exc_info=True)
+
+    # Save accumulated state (best-effort, retry on transient errors).
     async def _aupdate_state_with_retry(update_kwargs: dict) -> None:
         delay = 1.0
         for attempt in range(3):
@@ -1845,25 +1854,23 @@ async def _handle_interrupt_cleanup(
     except Exception:
         logger.warning("Failed to save interrupted state", exc_info=True)
 
-    # Mark tools as rejected AFTER saving state
-    for tool_msg in list(adapter._current_tool_messages.values()):
-        tool_msg.set_rejected()
-    adapter._current_tool_messages.clear()
-
     # Keep the token count marked stale whenever interrupted state was captured,
     # including tool-only turns after assistant text was already flushed.
     approximate = interrupted_msg is not None
 
     turn_stats.wall_time_seconds = time.monotonic() - start_time
-    await _report_and_persist_tokens(
-        adapter,
-        agent,
-        config,
-        captured_input_tokens,
-        captured_output_tokens,
-        shield=True,
-        approximate=approximate,
-    )
+    try:
+        await _report_and_persist_tokens(
+            adapter,
+            agent,
+            config,
+            captured_input_tokens,
+            captured_output_tokens,
+            shield=True,
+            approximate=approximate,
+        )
+    except (asyncio.CancelledError, Exception):
+        logger.debug("Token reporting failed during interrupt cleanup", exc_info=True)
 
 
 async def _persist_context_tokens(
