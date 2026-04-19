@@ -962,6 +962,7 @@ class DeepAgentsApp(App):
             set_active_message=self._set_active_message,
             sync_message_content=self._sync_message_content,
             request_ask_user=self._request_ask_user,
+            request_approve_plan=self._request_approve_plan,
         )
         # Wire token display callbacks
         self._ui_adapter._on_tokens_update = self._on_tokens_update
@@ -2331,6 +2332,64 @@ class DeepAgentsApp(App):
             self._pending_ask_user_widget = None
             await self._remove_ask_user_widget(widget, context="ask-user cancelled")
 
+        if self._chat_input:
+            self.call_after_refresh(self._chat_input.focus_input)
+
+    async def _request_approve_plan(
+        self,
+        todos: list[dict[str, Any]],
+    ) -> asyncio.Future[dict[str, Any]]:
+        """Display the approve_plan widget and return a Future with user response.
+
+        Args:
+            todos: List of todo items, each with `content` and `status` keys.
+
+        Returns:
+            A Future that resolves to a dict with `'type'` (`'approved'` or
+                `'rejected'`).
+        """
+        loop = asyncio.get_running_loop()
+        result_future: asyncio.Future[dict[str, Any]] = loop.create_future()
+
+        from invincat_cli.widgets.approve import ApproveWidget
+
+        unique_id = f"approve-widget-{uuid.uuid4().hex[:8]}"
+        widget = ApproveWidget(todos, id=unique_id)
+        widget.set_future(result_future)
+
+        try:
+            messages = self.query_one("#messages", Container)
+            await self._mount_before_queued(messages, widget)
+            self.call_after_refresh(widget.scroll_visible)
+        except Exception as e:
+            logger.exception(
+                "Failed to mount approve widget (id=%s)",
+                unique_id,
+            )
+            if not result_future.done():
+                result_future.set_exception(e)
+
+        return result_future
+
+    async def on_approve_widget_approved(
+        self,
+        event: Any,  # noqa: ARG002, ANN401
+    ) -> None:
+        """Handle approve widget approval - remove widget and refocus input."""
+        from invincat_cli.i18n import t
+
+        await self._mount_message(AppMessage(t("approve.approved")))
+        if self._chat_input:
+            self.call_after_refresh(self._chat_input.focus_input)
+
+    async def on_approve_widget_rejected(
+        self,
+        event: Any,  # noqa: ARG002, ANN401
+    ) -> None:
+        """Handle approve widget rejection - remove widget and refocus input."""
+        from invincat_cli.i18n import t
+
+        await self._mount_message(AppMessage(t("approve.rejected")))
         if self._chat_input:
             self.call_after_refresh(self._chat_input.focus_input)
 
