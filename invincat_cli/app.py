@@ -2204,7 +2204,7 @@ class DeepAgentsApp(App):
         from invincat_cli.i18n import t
         from invincat_cli.plan_agent import (
             create_planner_agent,
-            extract_todos_from_message,
+            execute_planner_streaming,
         )
 
         if not self._agent:
@@ -2229,57 +2229,11 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage(f"Failed to create planner: {e}"))
             return
 
-        await self._mount_message(AppMessage("Planning..."))
-
         try:
-            result = await planner.ainvoke({"messages": [("user", task)]})
-            messages = result.get("messages", [])
-            last_message = messages[-1] if messages else None
-
-            if last_message is None:
-                await self._mount_message(AppMessage("Planner returned no response."))
-                return
-
-            todos: list[dict[str, str]] | None = None
-            for msg in messages:
-                if hasattr(msg, "tool_calls") and msg.tool_calls:
-                    for tc in msg.tool_calls:
-                        if tc.get("name") == "write_todos":
-                            from invincat_cli.widgets.message import ToolCallMessage
-
-                            tool_msg = ToolCallMessage(
-                                "write_todos",
-                                tc.get("args", {}),
-                                tool_call_id=tc.get("id", ""),
-                            )
-                            await self._mount_message(tool_msg)
-                            tool_msg.set_success("Task list created")
-                            args = tc.get("args", {})
-                            raw_todos = args.get("todos", [])
-                            if raw_todos:
-                                todos = [
-                                    {"content": t.get("content", ""), "status": t.get("status", "pending")}
-                                    for t in raw_todos
-                                    if t.get("content")
-                                ]
+            todos = await execute_planner_streaming(planner, task, self._ui_adapter)
 
             if not todos:
-                content = getattr(last_message, "content", str(last_message))
-                if isinstance(content, list):
-                    content = "\n".join(
-                        block.get("text", "") if isinstance(block, dict) else str(block)
-                        for block in content
-                    )
-                todos = extract_todos_from_message(content)
-
-            if not todos:
-                content = getattr(last_message, "content", str(last_message))
-                if isinstance(content, list):
-                    content = "\n".join(
-                        block.get("text", "") if isinstance(block, dict) else str(block)
-                        for block in content
-                    )
-                await self._mount_message(AppMessage(f"Planner response:\n{content}"))
+                await self._mount_message(AppMessage("Planner did not generate a valid plan."))
                 return
 
             future = await self._request_approve_plan(todos)
