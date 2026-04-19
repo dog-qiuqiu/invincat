@@ -56,7 +56,6 @@ from invincat_cli.local_context import (
     _ExecutableBackend,
 )
 from invincat_cli.project_utils import ProjectContext, get_server_project_context
-from invincat_cli.plan_agent import build_planner_subagent
 from invincat_cli.subagents import list_subagents
 from invincat_cli.unicode_security import (
     check_url_safety,
@@ -999,19 +998,6 @@ def create_cli_agent(
                 ShellAllowListMiddleware(restrictive_shell_allow_list)
             ]
         custom_subagents.append(subagent)
-
-    # Register the built-in planner subagent unless the user already defined
-    # one with the same name.  The planner is a plan-first delegate that the
-    # main agent invokes via task(subagent_type="planner", ...) when the user
-    # runs /plan <task>.  It inherits HITL (plan_mode HITL still applies) but
-    # its system prompt restricts it to write_todos + ask_user.
-    if not any(sa.get("name") == "planner" for sa in custom_subagents):
-        planner = build_planner_subagent()
-        if restrictive_shell_allow_list is not None:
-            planner["middleware"] = [
-                ShellAllowListMiddleware(restrictive_shell_allow_list)
-            ]
-        custom_subagents.append(planner)
 
     if restrictive_shell_allow_list is not None:
         from deepagents.middleware.subagents import (

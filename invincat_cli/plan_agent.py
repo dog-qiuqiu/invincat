@@ -1,49 +1,32 @@
-"""Plan Agent — a dedicated planner subagent.
+"""Plan Agent — a standalone agent for task planning.
 
-The planner is registered as a built-in subagent named `planner`. Its sole
-responsibility is to understand a user task, draft a `write_todos` list,
-and return the todos for user approval.
+The planner is a dedicated agent that:
+1. Understands user requirements
+2. Generates structured todo lists via write_todos
+3. Returns the plan for user approval
 
 How `/plan <task>` works:
   1. The user types `/plan <task description>`.
-  2. The CLI sends a directive message to the main agent instructing it to
-     invoke `task(subagent_type="planner", description=<task>)`.
-  3. The main agent delegates — the planner takes over with a narrowed prompt
-     that allows only `write_todos`.
-  4. The planner drafts todos and returns them with a `<<PLAN_READY>>` marker.
-  5. The main agent displays the approve widget for user confirmation.
-  6. If approved, the main agent executes the plan.
-  7. If rejected, the main agent asks for feedback and re-invokes the planner.
-
-The planner inherits the main agent's tool catalogue but is steered by its
-system prompt to call only `write_todos`. For defense-in-depth,
-the main agent's HITL gate still applies when the session `plan_mode` flag
-is on.
+  2. The CLI creates a planner agent and invokes it with the task.
+  3. The planner generates a todo list and returns with PLAN_READY_MARKER.
+  4. The CLI displays the approve widget for user confirmation.
+  5. If approved, the main agent executes the plan.
+  6. If rejected, the CLI asks for feedback and re-invokes the planner.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from langchain.agents import create_agent
+from langchain.agents.middleware import TodoListMiddleware
+
 if TYPE_CHECKING:
-    from deepagents.middleware.subagents import SubAgent
+    from langchain_core.language_models import BaseChatModel
+    from langgraph.graph.state import CompiledStateGraph
 
 
-PLANNER_SUBAGENT_NAME: str = "planner"
-"""Canonical subagent identifier used when the main agent calls `task(...)`."""
-
-PLANNER_ALLOWED_TOOLS: tuple[str, ...] = ("write_todos",)
-"""Tools the planner is allowed to invoke. Enforced by system prompt."""
-
-PLANNER_DESCRIPTION: str = (
-    "Plan-first subagent. Drafts a step-by-step todo list for a user task "
-    "and returns the todos for user approval. Use this subagent when the "
-    "user runs /plan or explicitly asks for planning before implementation. "
-    "The planner itself never edits files or runs commands — it only plans."
-)
-"""Shown to the main agent in the `task` tool schema so it can route correctly."""
-
-PLANNER_SYSTEM_PROMPT: str = """You are the **Planner** subagent.
+PLANNER_SYSTEM_PROMPT: str = """You are the **Planner** agent.
 
 ## Task boundary (read this first)
 
@@ -113,8 +96,8 @@ If you feel tempted to call any other tool (`read_file`, `edit_file`,
    - Then a one-line restatement of the goal.
    - Then a numbered list of every todo in the plan — the same
      list you wrote via `write_todos`. (The main agent cannot read your
-     `write_todos` state across the subagent boundary, so this list is
-     the actual payload it uses to display and execute. Do not skip it.)
+     `write_todos` state, so this list is the actual payload it uses
+     to display and execute. Do not skip it.)
    Do not add commentary after the list.
 
 ## Style
@@ -132,77 +115,60 @@ PLAN_READY_MARKER: str = "<<PLAN_READY>>"
 is ready for user approval."""
 
 
-def build_planner_subagent() -> SubAgent:
-    """Return the `planner` subagent spec.
+def create_planner_agent(
+    model: str | BaseChatModel,
+) -> CompiledStateGraph:
+    """Create a standalone planner agent.
 
-    The spec is a `SubAgent` TypedDict that plugs into `create_deep_agent`
-    via its `subagents=` argument.
-
-    Note: We do NOT explicitly set `tools` here. The planner inherits the
-    main agent's tools (including `write_todos` from TodoListMiddleware).
-    The system prompt restricts the planner to only use `write_todos`.
-    """
-    return {
-        "name": PLANNER_SUBAGENT_NAME,
-        "description": PLANNER_DESCRIPTION,
-        "system_prompt": PLANNER_SYSTEM_PROMPT,
-    }
-
-
-def build_plan_directive(task: str) -> str:
-    """Build the user-facing directive that triggers planner delegation.
-
-    This string is sent to the main agent as a user message when the user
-    runs `/plan <task>`. It uses imperative language the main agent
-    reliably interprets as a `task()` delegation call.
+    The planner agent has access only to `write_todos` tool and is designed
+    to generate structured task plans for user approval.
 
     Args:
-        task: The raw task description the user typed after `/plan`.
+        model: The language model to use (string identifier or BaseChatModel).
 
     Returns:
-        A directive string ready to submit to the main agent.
+        A compiled planner agent graph.
     """
-    task = task.strip()
-    return (
-        f"Use the `{PLANNER_SUBAGENT_NAME}` subagent to draft a plan for the "
-        f"following task.\n\n"
-        f"Task: {task}\n\n"
-        f"When the planner returns, inspect its final message:\n"
-        f"1. If the message starts with `{PLAN_READY_MARKER}`:\n"
-        f"   a. Extract the numbered todo list from the message\n"
-        f"   b. Convert each item to a structured todo with:\n"
-        f"      - content: the todo text\n"
-        f"      - status: 'in_progress' for the first item, 'pending' for others\n"
-        f"   c. Call `approve_plan` with the structured todo list\n"
-        f"   d. If approved, call `write_todos` with the same list and execute\n"
-        f"   e. If rejected, use `ask_user` to get feedback, then refine\n"
-        f"2. If the message is anything else, stop and tell me what happened."
+    todo_middleware = TodoListMiddleware()
+
+    return create_agent(
+        model=model,
+        tools=todo_middleware.tools,
+        system_prompt=PLANNER_SYSTEM_PROMPT,
+        middleware=[todo_middleware],
+        name="planner",
     )
 
 
-def build_plan_refine_directive(task: str, feedback: str, previous_todos: list[dict]) -> str:
-    """Build a directive for refining a plan based on user feedback.
+def extract_todos_from_message(message: str) -> list[dict[str, str]] | None:
+    """Extract todo items from planner's output message.
 
     Args:
-        task: The original task description.
-        feedback: User's feedback on the previous plan.
-        previous_todos: The previous todo list that was rejected.
+        message: The planner's final message containing the plan.
 
     Returns:
-        A directive string for plan refinement.
+        List of todo dicts with 'content' and 'status' keys, or None if
+        extraction fails.
     """
-    task = task.strip()
-    previous_plan = "\n".join(
-        f"{i + 1}. {todo.get('content', '')}"
-        for i, todo in enumerate(previous_todos)
-    )
-    return (
-        f"Use the `{PLANNER_SUBAGENT_NAME}` subagent to refine the plan for the "
-        f"following task based on user feedback.\n\n"
-        f"Original task: {task}\n\n"
-        f"Previous plan:\n{previous_plan}\n\n"
-        f"User feedback: {feedback}\n\n"
-        f"Create an updated plan that addresses the user's feedback. "
-        f"When done, return with the `{PLAN_READY_MARKER}` marker and the "
-        f"updated numbered todo list. Then use `approve_plan` to get user confirmation."
-    )
+    if not message.startswith(PLAN_READY_MARKER):
+        return None
+
+    lines = message.split("\n")
+    todos: list[dict[str, str]] = []
+    first_todo = True
+
+    for line in lines[1:]:
+        line = line.strip()
+        if not line:
+            continue
+
+        if line.startswith(("1.", "2.", "3.", "4.", "5.", "6.", "7.", "8.", "9.")):
+            content = line.split(".", 1)[1].strip() if "." in line else line
+            if content:
+                todos.append({
+                    "content": content,
+                    "status": "in_progress" if first_todo else "pending",
+                })
+                first_todo = False
+
+    return todos if todos else None

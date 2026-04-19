@@ -2206,18 +2206,21 @@ class DeepAgentsApp(App):
         await self._mount_message(AppMessage(t("plan.exited")))
 
     async def _handle_plan_task(self, task: str) -> None:
-        """Delegate a one-shot planning task to the `planner` subagent.
+        """Run the planner agent to generate a task plan.
 
-        Mounts the user-facing slash-command line, then sends an invisible
-        directive asking the main agent to invoke `task(subagent_type="planner",
-        ...)`. The planner drafts a todo list, confirms it with the user via
-        `ask_user`, and — on approval — the main agent executes the plan.
+        Creates a standalone planner agent, invokes it with the task,
+        extracts the todo list, and displays the approve widget for
+        user confirmation.
 
-        Empty task strings are rejected with a short hint so users don't
-        accidentally trigger an empty planning turn.
+        Args:
+            task: The task description to plan.
         """
         from invincat_cli.i18n import t
-        from invincat_cli.plan_agent import build_plan_directive
+        from invincat_cli.plan_agent import (
+            PLAN_READY_MARKER,
+            create_planner_agent,
+            extract_todos_from_message,
+        )
 
         await self._mount_message(UserMessage(f"/plan {task}"))
 
@@ -2225,8 +2228,65 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage(t("plan.usage")))
             return
 
-        directive = build_plan_directive(task)
-        await self._send_to_agent(directive)
+        if not self._agent:
+            await self._mount_message(AppMessage("Agent not configured."))
+            return
+
+        model_spec = self._model_override or "claude-sonnet-4-6"
+
+        try:
+            planner = create_planner_agent(model_spec)
+        except Exception as e:
+            logger.exception("Failed to create planner agent")
+            await self._mount_message(AppMessage(f"Failed to create planner: {e}"))
+            return
+
+        await self._mount_message(AppMessage("Planning..."))
+
+        try:
+            result = await planner.ainvoke({"messages": [("user", task)]})
+            messages = result.get("messages", [])
+            last_message = messages[-1] if messages else None
+
+            if last_message is None:
+                await self._mount_message(AppMessage("Planner returned no response."))
+                return
+
+            content = getattr(last_message, "content", str(last_message))
+            if isinstance(content, list):
+                content = "\n".join(
+                    block.get("text", "") if isinstance(block, dict) else str(block)
+                    for block in content
+                )
+
+            if not content.startswith(PLAN_READY_MARKER):
+                await self._mount_message(AppMessage(f"Planner response:\n{content}"))
+                return
+
+            todos = extract_todos_from_message(content)
+            if not todos:
+                await self._mount_message(AppMessage("Failed to extract todos from plan."))
+                return
+
+            future = await self._request_approve_plan(todos)
+            result = await future
+
+            if result.get("type") == "approved":
+                plan_text = "\n".join(
+                    f"{i + 1}. {todo['content']}" for i, todo in enumerate(todos)
+                )
+                execution_message = (
+                    f"The plan has been approved. Please execute the following tasks:\n\n"
+                    f"{plan_text}\n\n"
+                    f"Start with the first task and work through each item in order."
+                )
+                await self._send_to_agent(execution_message)
+            else:
+                await self._mount_message(AppMessage(t("plan.exited")))
+
+        except Exception as e:
+            logger.exception("Planner execution failed")
+            await self._mount_message(AppMessage(f"Planner error: {e}"))
 
     async def _remove_ask_user_widget(  # noqa: PLR6301  # Shared helper used by ask_user event handlers
         self,
