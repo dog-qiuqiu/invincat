@@ -203,7 +203,7 @@ async def execute_planner_streaming(
                                         msg_id = f"planner-{uuid.uuid4().hex[:8]}"
                                         assistant_msg = AssistantMessage(id=msg_id)
                                         await adapter._mount_message(assistant_msg)
-                                    assistant_msg.append_text(text)
+                                    await assistant_msg.append_content(text)
 
                     if hasattr(message, "tool_calls") and message.tool_calls:
                         for tc in message.tool_calls:
