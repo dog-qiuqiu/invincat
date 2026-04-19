@@ -88,7 +88,8 @@ def create_planner_agent(
     from invincat_cli.config import create_model
 
     if isinstance(model, str):
-        model = create_model(model, extra_kwargs=model_params)
+        model_result = create_model(model, extra_kwargs=model_params)
+        model = model_result.model
 
     todo_middleware = TodoListMiddleware()
 
