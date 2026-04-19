@@ -195,9 +195,14 @@ def build_plan_directive(task: str) -> str:
         f"following task.\n\n"
         f"Task: {task}\n\n"
         f"When the planner returns, inspect its final message:\n"
-        f"1. If the message starts with `{PLAN_READY_MARKER}`, extract the "
-        f"numbered todo list from the message and display it for user approval. "
-        f"Do NOT execute anything yet — wait for user confirmation.\n"
+        f"1. If the message starts with `{PLAN_READY_MARKER}`:\n"
+        f"   a. Extract the numbered todo list from the message\n"
+        f"   b. Convert each item to a structured todo with:\n"
+        f"      - content: the todo text\n"
+        f"      - status: 'in_progress' for the first item, 'pending' for others\n"
+        f"   c. Call `approve_plan` with the structured todo list\n"
+        f"   d. If approved, call `write_todos` with the same list and execute\n"
+        f"   e. If rejected, use `ask_user` to get feedback, then refine\n"
         f"2. If the message is anything else, stop and tell me what happened."
     )
 
@@ -226,5 +231,5 @@ def build_plan_refine_directive(task: str, feedback: str, previous_todos: list[d
         f"User feedback: {feedback}\n\n"
         f"Create an updated plan that addresses the user's feedback. "
         f"When done, return with the `{PLAN_READY_MARKER}` marker and the "
-        f"updated numbered todo list."
+        f"updated numbered todo list. Then use `approve_plan` to get user confirmation."
     )

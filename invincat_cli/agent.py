@@ -1055,6 +1055,11 @@ def create_cli_agent(
 
         agent_middleware.append(AskUserMiddleware())
 
+    # Add approve_plan middleware for plan confirmation
+    from invincat_cli.approve_plan import ApprovePlanMiddleware
+
+    agent_middleware.append(ApprovePlanMiddleware())
+
     # Add memory middleware
     if enable_memory:
         memory_sources = [str(settings.get_user_agent_md_path(assistant_id))]
