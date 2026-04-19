@@ -153,7 +153,7 @@ async def execute_planner_streaming(
     """
     from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
 
-    from invincat_cli.widgets.message import (
+    from invincat_cli.widgets.messages import (
         AssistantMessage,
         ToolCallMessage,
     )
