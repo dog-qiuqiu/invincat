@@ -2204,6 +2204,29 @@ class DeepAgentsApp(App):
             self._status_bar.set_plan_mode(enabled=False)
         await self._mount_message(AppMessage(t("plan.exited")))
 
+    async def _handle_plan_task(self, task: str) -> None:
+        """Delegate a one-shot planning task to the `planner` subagent.
+
+        Mounts the user-facing slash-command line, then sends an invisible
+        directive asking the main agent to invoke `task(subagent_type="planner",
+        ...)`. The planner drafts a todo list, confirms it with the user via
+        `ask_user`, and — on approval — the main agent executes the plan.
+
+        Empty task strings are rejected with a short hint so users don't
+        accidentally trigger an empty planning turn.
+        """
+        from invincat_cli.i18n import t
+        from invincat_cli.plan_agent import build_plan_directive
+
+        await self._mount_message(UserMessage(f"/plan {task}"))
+
+        if not task:
+            await self._mount_message(AppMessage(t("plan.usage")))
+            return
+
+        directive = build_plan_directive(task)
+        await self._send_to_agent(directive)
+
     async def _remove_ask_user_widget(  # noqa: PLR6301  # Shared helper used by ask_user event handlers
         self,
         widget: AskUserMenu,
@@ -2349,6 +2372,11 @@ class DeepAgentsApp(App):
         if cmd in IMMEDIATE_UI:
             # Only bare form (no args) bypasses — /model opens selector,
             # /model <name> does a direct switch that shouldn't race with agent.
+            return value == cmd
+        if cmd == "/plan":
+            # Bare `/plan` toggles session state (side-effect free). `/plan
+            # <task>` delegates to the planner subagent via an agent turn and
+            # must honour the queue.
             return value == cmd
         return cmd in SIDE_EFFECT_FREE
 
@@ -2881,6 +2909,9 @@ class DeepAgentsApp(App):
             await self._handle_offload()
         elif cmd == "/plan":
             await self._handle_plan_enter()
+        elif cmd.startswith("/plan "):
+            task = command.strip()[len("/plan ") :].strip()
+            await self._handle_plan_task(task)
         elif cmd == "/exit-plan":
             await self._handle_plan_exit()
         elif cmd == "/threads":
