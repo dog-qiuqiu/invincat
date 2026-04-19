@@ -2217,7 +2217,6 @@ class DeepAgentsApp(App):
         """
         from invincat_cli.i18n import t
         from invincat_cli.plan_agent import (
-            PLAN_READY_MARKER,
             create_planner_agent,
             extract_todos_from_message,
         )
@@ -2259,13 +2258,9 @@ class DeepAgentsApp(App):
                     for block in content
                 )
 
-            if not content.startswith(PLAN_READY_MARKER):
-                await self._mount_message(AppMessage(f"Planner response:\n{content}"))
-                return
-
             todos = extract_todos_from_message(content)
             if not todos:
-                await self._mount_message(AppMessage("Failed to extract todos from plan."))
+                await self._mount_message(AppMessage(f"Planner response:\n{content}"))
                 return
 
             future = await self._request_approve_plan(todos)

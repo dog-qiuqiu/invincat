@@ -8,7 +8,7 @@ The planner is a dedicated agent that:
 How `/plan <task>` works:
   1. The user types `/plan <task description>`.
   2. The CLI creates a planner agent and invokes it with the task.
-  3. The planner generates a todo list and returns with PLAN_READY_MARKER.
+  3. The planner generates a todo list via write_todos tool.
   4. The CLI displays the approve widget for user confirmation.
   5. If approved, the main agent executes the plan.
   6. If rejected, the CLI asks for feedback and re-invokes the planner.
@@ -16,6 +16,7 @@ How `/plan <task>` works:
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 from langchain.agents import create_agent
@@ -33,28 +34,22 @@ PLANNER_SYSTEM_PROMPT: str = """You are a task planning agent. Your ONLY job is 
 1. Understand the user's request
 2. Break it down into actionable steps
 3. Call `write_todos` tool to record the plan
-4. Output the plan with `<<PLAN_READY>>` marker
+4. Output the plan as a numbered list
 
 ## Rules
 
 - You can ONLY use the `write_todos` tool
 - Do NOT read files, edit code, run commands, or search the web
-- Do NOT ask questions or seek clarification - make reasonable assumptions
+- Do NOT ask questions - make reasonable assumptions
 - Focus on planning, not implementation
 
 ## Output Format
 
-After calling `write_todos`, your final message must be:
-
-```
-<<PLAN_READY>>
-<one-line goal summary>
+After calling `write_todos`, output a numbered list:
 
 1. First task
 2. Second task
 3. Third task
-...
-```
 
 ## write_todos Example
 
@@ -72,11 +67,6 @@ Each task should be:
 - Ordered by execution sequence
 
 Mark the first task as "in_progress", others as "pending"."""
-
-
-PLAN_READY_MARKER: str = "<<PLAN_READY>>"
-"""Marker the planner writes at the top of its final message when the plan
-is ready for user approval."""
 
 
 def create_planner_agent(
@@ -104,6 +94,9 @@ def create_planner_agent(
     )
 
 
+_TODO_PATTERN = re.compile(r"^\s*(\d+)\.\s+(.+)$")
+
+
 def extract_todos_from_message(message: str) -> list[dict[str, str]] | None:
     """Extract todo items from planner's output message.
 
@@ -114,25 +107,17 @@ def extract_todos_from_message(message: str) -> list[dict[str, str]] | None:
         List of todo dicts with 'content' and 'status' keys, or None if
         extraction fails.
     """
-    if not message.startswith(PLAN_READY_MARKER):
-        return None
-
     lines = message.split("\n")
     todos: list[dict[str, str]] = []
-    first_todo = True
 
-    for line in lines[1:]:
-        line = line.strip()
-        if not line:
-            continue
-
-        if line.startswith(("1.", "2.", "3.", "4.", "5.", "6.", "7.", "8.", "9.")):
-            content = line.split(".", 1)[1].strip() if "." in line else line
+    for line in lines:
+        match = _TODO_PATTERN.match(line)
+        if match:
+            content = match.group(2).strip()
             if content:
                 todos.append({
                     "content": content,
-                    "status": "in_progress" if first_todo else "pending",
+                    "status": "in_progress" if len(todos) == 0 else "pending",
                 })
-                first_todo = False
 
     return todos if todos else None
