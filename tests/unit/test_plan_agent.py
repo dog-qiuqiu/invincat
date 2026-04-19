@@ -53,6 +53,17 @@ class TestPlannerSystemPrompt:
     def test_prompt_mentions_handoff_marker(self) -> None:
         assert PLAN_APPROVED_MARKER in PLANNER_SYSTEM_PROMPT
 
+    def test_prompt_declares_task_boundary(self) -> None:
+        # The opening section must make the planner's narrow contract
+        # unmistakable: input = user query, output = todos via write_todos.
+        # Without this, the model drifts into reading files or "just
+        # trying" things.
+        assert "Task boundary" in PLANNER_SYSTEM_PROMPT
+        lowered = PLANNER_SYSTEM_PROMPT.lower()
+        assert "user query" in lowered or "user's query" in lowered
+        assert "intent" in lowered
+        assert "write_todos" in PLANNER_SYSTEM_PROMPT
+
 
 class TestBuildPlannerSubagent:
     def test_shape_matches_subagent_typeddict(self) -> None:
