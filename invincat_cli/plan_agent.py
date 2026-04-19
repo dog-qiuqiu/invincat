@@ -86,10 +86,9 @@ def create_planner_agent(
     Returns:
         A compiled planner agent graph.
     """
-    from invincat_cli.config import create_model, settings
+    from invincat_cli.config import create_model
 
     if isinstance(model, str):
-        settings.reload_from_environment()
         model_result = create_model(model, extra_kwargs=model_params)
         model = model_result.model
 

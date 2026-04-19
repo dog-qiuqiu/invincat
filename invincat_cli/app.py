@@ -2213,6 +2213,9 @@ class DeepAgentsApp(App):
 
         model = self._model
         if model is None:
+            from invincat_cli.config import settings
+
+            settings.reload_from_environment()
             model_spec = self._model_override or "claude-sonnet-4-6"
             model_params = self._model_params_override
         else:
