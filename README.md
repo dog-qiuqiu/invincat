@@ -1,17 +1,19 @@
 # Invincat CLI
 
-基于python实现的终端 AI 编程助手 — 在你的项目目录里直接与 AI 协作：读写文件、执行命令、浏览网页，跨会话保持记忆。
+[中文文档](README_CN.md)
 
-![](data/cli.png)
+A Python-based terminal AI programming assistant — collaborate with AI directly in your project directory: read/write files, execute commands, browse the web, and maintain memory across sessions.
+
+![](data/cli_en.png)
 
 ---
 
-## 安装
+## Installation
 
-**环境要求**：Python 3.11+
+**Requirements**: Python 3.11+
 
 ```bash
-# 从源码安装（开发模式）
+# Install from source (development mode)
 git clone https://github.com/dog-qiuqiu/invincat.git
 cd invincat
 pip install -e .
@@ -19,63 +21,63 @@ pip install -e .
 
 ---
 
-## 快速开始
+## Quick Start
 
 ```bash
-# 在你的项目目录中启动
+# Start in your project directory
 cd ~/my-project
 invincat-cli
 ```
 
-首次启动后执行 `/model` 配置模型和 API Key，之后就可以直接开始对话。
+After the first launch, run `/model` to configure the model and API Key, then you can start the conversation directly.
 
 ---
 
-## 配置模型
+## Model Configuration
 
-### 通过界面配置
+### Configure via Interface
 
-执行 `/model` 命令打开模型管理界面：
+Run `/model` command to open the model management interface:
 
-![](data/model.png)
+![](data/model_en.png)
 
-1. 按 `Ctrl+N` 注册新模型
-2. 填写提供商、模型名称、API Key
-3. 在列表中选中后按 `Enter` 切换生效
+1. Press `Ctrl+N` to register a new model
+2. Fill in the provider, model name, and API Key
+3. Select from the list and press `Enter` to activate
 
-### 支持的提供商
+### Supported Providers
 
-| 提供商 | 示例模型 |
-|--------|---------|
-| `anthropic` | `claude-sonnet-4-6`、`claude-opus-4-7` |
-| `openai` | `gpt-4o`、`o3` |
-| `google_genai` | `gemini-2.0-flash`、`gemini-2.5-pro` |
-| `openrouter` | 支持 OpenRouter 上的所有模型 |
+| Provider | Example Models |
+|----------|----------------|
+| `anthropic` | `claude-sonnet-4-6`, `claude-opus-4-7` |
+| `openai` | `gpt-4o`, `o3` |
+| `google_genai` | `gemini-2.0-flash`, `gemini-2.5-pro` |
+| `openrouter` | Supports all models on OpenRouter |
 
-OpenAI 兼容接口（DeepSeek、智谱、本地 Ollama 等）设置 `base_url` 即可接入。
+For OpenAI-compatible interfaces (DeepSeek, Zhipu, local Ollama, etc.), simply set the `base_url` to connect.
 
-### 环境变量
+### Environment Variables
 
-| 变量名 | 说明 |
-|--------|------|
+| Variable | Description |
+|----------|-------------|
 | `ANTHROPIC_API_KEY` | Anthropic API Key |
 | `OPENAI_API_KEY` | OpenAI API Key |
 | `GOOGLE_API_KEY` | Google API Key |
 | `OPENROUTER_API_KEY` | OpenRouter API Key |
-| `TAVILY_API_KEY` | Tavily 网页搜索 Key（可选）|
+| `TAVILY_API_KEY` | Tavily web search Key (optional) |
 
 ---
 
-## 基本使用
+## Basic Usage
 
-直接在输入框输入问题或任务，按 `Enter` 发送。AI 会自动选择合适的工具完成任务：
+Type your question or task directly in the input box and press `Enter` to send. AI will automatically select the appropriate tools to complete the task:
 
 ```
-搜索一下 LangGraph interrupt 的最新用法
+Search for the latest usage of LangGraph interrupt
 ```
 ---
 
-### 命令模式（`/` 前缀）
+### Command Mode (`/` prefix)
 
 ```
 /clear
@@ -84,211 +86,210 @@ OpenAI 兼容接口（DeepSeek、智谱、本地 Ollama 等）设置 `base_url` 
 ... ...
 ```
 
-按 `Tab` 自动补全可用命令。完整命令列表见[斜杠命令](#斜杠命令)。
+Press `Tab` to autocomplete available commands. See [Slash Commands](#slash-commands) for the complete list.
 
 ---
 
-## 引用文件
+## File References
 
-在消息中用 `@` 引用文件，AI 会读取并理解其内容：
+Use `@` in your message to reference files, and AI will read and understand their content:
 
 ```
-@src/main.py 这个文件有没有潜在的性能问题？
+@src/main.py Are there any potential performance issues in this file?
 ```
 ---
 
-## 工具批准
+## Tool Approval
 
-AI 执行文件写入、shell 命令、网络请求等操作时，默认会暂停等待确认：
+When AI performs operations like file writing, shell commands, or network requests, it will pause by default for confirmation:
 
+**Auto-approve Mode**: Press `Shift+Tab` to toggle. When enabled, all tool calls are automatically approved, suitable for trusted task scenarios. The status bar will display an `AUTO` indicator.
 
-**自动批准模式**：按`Shift+Tab` 切换，开启后所有工具调用自动通过，适合信任的任务场景。状态栏会显示 `AUTO` 标志。
+> ⚠️ It's recommended to enable auto-approve only after you're familiar with the task content.
 
-> ⚠️ 建议在熟悉任务内容后再开启自动批准。
+## Input Line Breaks
 
-## 输入换行
-
-在输入框中按 `Ctrl+J` 可以换行，适合输入较长的代码或段落。
+Press `Ctrl+J` in the input box to insert a line break, suitable for entering longer code or paragraphs.
 
 ---
 
-## 上下文管理
+## Context Management
 
-### 微压缩
+### Micro Compression
 
-每次模型调用前自动运行的轻量级压缩，**无需 LLM 参与**，耗时 <1ms。
+A lightweight compression that runs automatically before each model call, **no LLM involved**, taking <1ms.
 
-**工作原理**：将对话消息按"工具调用组"分组，保留最近 3 组完整内容，旧组中的大体积工具输出替换为简短占位符（保留首行摘要和行数）。
+**How it works**: Groups conversation messages by "tool call groups", keeps the last 3 groups complete, and replaces large tool outputs in older groups with brief placeholders (keeping the first line summary and line count).
 
-**可压缩的工具输出**：
-| 工具 | 压缩效果 |
-|------|---------|
-| `read_file` | 文件内容 → `[cleared — read_file, 500 lines: def main():…]` |
-| `edit_file` | diff 输出 → 占位符 |
-| `execute` | shell 输出 → 占位符 |
-| `grep`/`glob`/`ls` | 搜索/列表结果 → 占位符 |
-| `web_search`/`fetch_url` | 网页内容 → 占位符 |
+**Compressible Tool Outputs**:
+| Tool | Compression Effect |
+|------|-------------------|
+| `read_file` | File content → `[cleared — read_file, 500 lines: def main():…]` |
+| `edit_file` | diff output → placeholder |
+| `execute` | shell output → placeholder |
+| `grep`/`glob`/`ls` | search/list results → placeholder |
+| `web_search`/`fetch_url` | web content → placeholder |
 
-**不会压缩**：agent/subagent 结果、`ask_user` 响应、MCP 工具输出、`compact_conversation` 结果。
+**Not Compressed**: agent/subagent results, `ask_user` responses, MCP tool outputs, `compact_conversation` results.
 
-> 💡 微压缩只影响发送给模型的上下文，不修改持久化状态，完整历史仍保存在检查点中。
+> 💡 Micro compression only affects the context sent to the model, does not modify persisted state, and complete history is still saved in checkpoints.
 
-### 自动压缩
+### Auto Compression
 
-当上下文窗口使用量超过 **80%** 时，系统自动将较旧的消息压缩为摘要，释放空间，无需手动操作。状态栏 token 计数超过 70% 变橙色、90% 变红色作为预警。
+When context window usage exceeds **80%**, the system automatically compresses older messages into summaries to free up space, requiring no manual operation. The status bar token count turns orange above 70% and red above 90% as warnings.
 
-### 手动压缩
+### Manual Compression
 
 ```
 /offload
 ```
 
-或等效的 `/compact`。执行后显示压缩了多少消息、释放了多少 token。
+Or equivalently `/compact`. After execution, it shows how many messages were compressed and how many tokens were freed.
 
-## 记忆系统
+## Memory System
 
-AI 可以在会话之间记住你的偏好、项目约定和重要信息。
+AI can remember your preferences, project conventions, and important information across sessions.
 
-### 记忆文件
+### Memory Files
 
-| 类型 | 路径 | 适用范围 |
-|------|------|---------|
-| 全局记忆 | `~/.invincat/agent/AGENTS.md` | 所有项目通用（编码风格、个人偏好）|
-| 项目记忆 | `{项目根目录}/.invincat/AGENTS.md` | 仅当前 Git 仓库（架构约定、技术栈）|
+| Type | Path | Scope |
+|------|------|-------|
+| Global Memory | `~/.invincat/agent/AGENTS.md` | Universal for all projects (coding style, personal preferences) |
+| Project Memory | `{project root}/.invincat/AGENTS.md` | Only for current Git repository (architecture conventions, tech stack) |
 
-### 手动更新记忆
+### Manual Memory Update
 
 ```
 /remember
 ```
 
-触发 AI 主动整理对话中值得保存的内容，写入记忆文件。
+Triggers AI to actively organize content worth saving from the conversation and write it to memory files.
 
-### 自动记忆更新
+### Auto Memory Update
 
-系统每隔一定轮数自动检查是否有新内容需要保存，或在检测到对话中出现"规范"、"约定"、"偏好"等关键信息时提前触发。
+The system automatically checks for new content to save every certain number of rounds, or triggers early when detecting keywords like "standards", "conventions", "preferences" in the conversation.
 
-**配置自动记忆**：执行 `/auto-memory` 打开配置界面，或在 `~/.invincat/config.toml` 中手动设置：
+**Configure Auto Memory**: Run `/auto-memory` to open the configuration interface, or manually set in `~/.invincat/config.toml`:
 
 ```toml
 [auto_memory]
-enabled = true   # 启用自动记忆（默认: true）
-interval = 10    # 每隔多少轮触发一次检查（默认: 10）
-on_exit = true   # 退出时写标记，下次启动提前触发（默认: true）
+enabled = true   # Enable auto memory (default: true)
+interval = 10    # Number of rounds between checks (default: 10)
+on_exit = true   # Write marker on exit, trigger early next startup (default: true)
 ```
 
 ---
 
-## 技能系统
+## Skill System
 
-技能是预定义的工作流模板，可复用复杂任务步骤。
+Skills are predefined workflow templates for reusing complex task steps.
 
-### 使用技能
+### Using Skills
 
 ```
-/skill:web-research 搜索 LangGraph 最佳实践
-/skill:code-review 检查 src/ 目录的代码质量
+/skill:web-research Search for LangGraph best practices
+/skill:code-review Check code quality in src/ directory
 ```
 
-### 技能位置
+### Skill Locations
 
-| 位置 | 路径 | 说明 |
-|------|------|------|
-| 内置技能 | 随包安装 | `remember`、`skill-creator` |
-| 全局自定义 | `~/.invincat/agent/skills/` | 跨项目可用 |
-| 项目级 | `.invincat/skills/` | 仅当前项目可用 |
+| Location | Path | Description |
+|----------|------|-------------|
+| Built-in Skills | Installed with package | `remember`, `skill-creator` |
+| Global Custom | `~/.invincat/agent/skills/` | Available across projects |
+| Project-level | `.invincat/skills/` | Only available in current project |
 
-### 创建自定义技能
+### Creating Custom Skills
 
 ```
 /skill-creator
 ```
 
-启动交互式向导，引导你创建并保存新技能。
+Starts an interactive wizard that guides you through creating and saving new skills.
 
 ---
 
-## 会话管理
+## Session Management
 
-### 查看和切换会话
+### View and Switch Sessions
 
 ```
 /threads
 ```
 
-打开会话浏览器，显示所有历史对话（时间、消息数、所在分支等）。
+Opens the session browser, displaying all historical conversations (time, message count, branch, etc.).
 
-### 开始新对话
+### Start New Conversation
 
 ```
 /clear
 ```
 
-清除当前对话，开始新会话（旧会话仍保存，可通过 `/threads` 找回）。
+Clears the current conversation and starts a new session (old sessions are still saved and can be retrieved via `/threads`).
 
 ---
 
-## 斜杠命令
+## Slash Commands
 
-在输入框输入 `/` 后按 `Tab` 可查看并补全所有命令。
+Type `/` in the input box and press `Tab` to view and autocomplete all commands.
 
-### 会话
+### Session
 
-| 命令 | 说明 |
-|------|------|
-| `/clear` | 清除当前对话，开始新会话 |
-| `/threads` | 浏览并恢复历史会话 |
-| `/quit` / `/q` | 退出程序 |
+| Command | Description |
+|---------|-------------|
+| `/clear` | Clear current conversation, start new session |
+| `/threads` | Browse and restore historical sessions |
+| `/quit` / `/q` | Exit program |
 
-### 模型与界面
+### Model & Interface
 
-| 命令 | 说明 |
-|------|------|
-| `/model` | 切换或管理模型配置 |
-| `/theme` | 切换颜色主题 |
-| `/language` | 切换界面语言（中文 / 英文）|
-| `/tokens` | 查看 token 使用详情 |
+| Command | Description |
+|---------|-------------|
+| `/model` | Switch or manage model configurations |
+| `/theme` | Switch color theme |
+| `/language` | Switch interface language (Chinese / English) |
+| `/tokens` | View token usage details |
 
-### 上下文与记忆
+### Context & Memory
 
-| 命令 | 说明 |
-|------|------|
-| `/offload` / `/compact` | 手动压缩上下文，释放 token |
-| `/remember` | 手动触发记忆更新 |
-| `/auto-memory` | 配置自动记忆行为 |
+| Command | Description |
+|---------|-------------|
+| `/offload` / `/compact` | Manually compress context, free tokens |
+| `/remember` | Manually trigger memory update |
+| `/auto-memory` | Configure auto memory behavior |
 
-### 工具与扩展
+### Tools & Extensions
 
-| 命令 | 说明 |
-|------|------|
-| `/mcp` | 查看已连接的 MCP 服务器和工具 |
-| `/editor` | 在外部编辑器中编辑当前输入 |
-| `/skill-creator` | 创建新技能的交互向导 |
+| Command | Description |
+|---------|-------------|
+| `/mcp` | View connected MCP servers and tools |
+| `/editor` | Edit current input in external editor |
+| `/skill-creator` | Interactive wizard for creating new skills |
 
-### 其他
+### Others
 
-| 命令 | 说明 |
-|------|------|
-| `/help` | 显示帮助信息 |
-| `/version` | 显示版本号 |
-| `/reload` | 重新加载配置文件 |
-| `/trace` | 在 LangSmith 中打开当前对话（需配置）|
+| Command | Description |
+|---------|-------------|
+| `/help` | Display help information |
+| `/version` | Display version number |
+| `/reload` | Reload configuration files |
+| `/trace` | Open current conversation in LangSmith (requires configuration) |
 
 ---
 
-## 常见问题
+## FAQ
 
-**Q: 首次启动没有响应？**
-需要先配置模型。执行 `/model` → 按 `Ctrl+N` 注册模型 → 填写 API Key。
+**Q: No response on first launch?**
+You need to configure the model first. Run `/model` → Press `Ctrl+N` to register a model → Fill in the API Key.
 
-**Q: 如何中断正在运行的任务？**
-按 `Esc` 中断 AI 当前响应；如果 AI 正在等待工具批准，`Esc` 相当于拒绝。
+**Q: How to interrupt a running task?**
+Press `Esc` to interrupt the current AI response; if AI is waiting for tool approval, `Esc` acts as a rejection.
 
-**Q: 上下文太长导致响应变慢？**
-执行 `/offload` 手动压缩历史，或等待系统自动压缩（使用量超过 80% 时触发）。
+**Q: Context too long causing slow response?**
+Run `/offload` to manually compress history, or wait for automatic compression (triggers when usage exceeds 80%).
 
-**Q: 如何让 AI 记住我的编码偏好？**
-直接告诉 AI，例如"记住：我的项目使用 4 空格缩进，不加分号"，AI 会在适当时机自动保存到记忆文件。也可执行 `/remember` 手动触发保存。
+**Q: How to make AI remember my coding preferences?**
+Just tell AI directly, for example "Remember: my project uses 4-space indentation, no semicolons", and AI will automatically save it to memory files at the appropriate time. You can also run `/remember` to manually trigger saving.
 
-**Q: 如何在不同项目间共享技能？**
-将技能文件放在 `~/.invincat/agent/skills/` 目录下即可全局生效；放在 `.invincat/skills/` 则仅当前项目可用。
+**Q: How to share skills across different projects?**
+Place skill files in the `~/.invincat/agent/skills/` directory for global availability; place in `.invincat/skills/` for current project only.
