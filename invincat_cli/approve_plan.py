@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Annotated, Any, Literal, TypedDict
 
+from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.types import Command, interrupt
@@ -11,7 +12,7 @@ from langgraph.types import Command, interrupt
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from langchain.agents.middleware.types import AgentMiddleware
+    from langchain.agents.middleware.types import ToolCallRequest
     from langchain_core.runnables import RunnableConfig
 
     from invincat_cli.widgets.approve import ApproveResult
@@ -103,7 +104,7 @@ def _parse_approval_response(
     )
 
 
-class ApprovePlanMiddleware:
+class ApprovePlanMiddleware(AgentMiddleware[Any, Any, Any]):
     """Middleware that provides an approve_plan tool for plan confirmation.
 
     This middleware adds an `approve_plan` tool that allows agents to present
@@ -125,6 +126,7 @@ class ApprovePlanMiddleware:
             tool_description: Description string passed to the `approve_plan` tool
                 decorator, visible to the LLM in the tool schema.
         """
+        super().__init__()
         self.system_prompt = system_prompt
         self.tool_description = tool_description
 
@@ -153,6 +155,38 @@ class ApprovePlanMiddleware:
 
         _approve_plan.name = "approve_plan"
         self.tools = [_approve_plan]
+
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
+        """Pass through tool calls unchanged.
+
+        Args:
+            request: The tool call request being processed.
+            handler: The next handler in the middleware chain.
+
+        Returns:
+            The tool execution result.
+        """
+        return handler(request)
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
+        """Pass through tool calls unchanged (async).
+
+        Args:
+            request: The tool call request being processed.
+            handler: The next handler in the middleware chain.
+
+        Returns:
+            The tool execution result.
+        """
+        return await handler(request)
 
     def wrap_model_call(
         self,
