@@ -45,26 +45,40 @@ logger = logging.getLogger(__name__)
 
 _AUTO_MEMORY_HINT = """\
 
-### Auto Memory Check
+## ⚠️ IMPORTANT: Memory Update Check
 
-You have had {turns} exchanges with the user. Review the recent conversation \
-and proactively update the **appropriate** memory file using edit_file if \
-something worth preserving was learned.
+You have had {turns} exchanges with the user. **This is a mandatory memory review.** \
+Examine the conversation for any of the following that should be persisted:
+
+**MUST SAVE if present:**
+- User preferences (coding style, language, formatting, etc.)
+- Project conventions or decisions made
+- Rules the user asked you to follow ("always do X", "never do Y")
+- Important context about the project or user's workflow
+
+**Action required:** Use `edit_file` to update the appropriate memory file below \
+if ANY of the above was discussed. This is critical for maintaining continuity \
+across sessions.
 {project_section}{global_section}
-Choose the file that matches the scope of the information. \
-Do NOT update on every check — only when something genuinely new was learned. \
-If nothing new is worth saving, simply continue the conversation normally."""
+**Reminder:** Even small preferences matter. When in doubt, save it. \
+If genuinely nothing new was learned, continue normally."""
 
 _EXIT_MEMORY_HINT = """\
 
-### Auto Memory Check (Session Start)
+## ⚠️ IMPORTANT: Memory Update Check (Session Start)
 
-This is a new session. Review the current conversation and proactively update \
-the **appropriate** memory file using edit_file if something worth preserving \
+This is a new session. **Review the conversation and save any valuable information.** \
+Use `edit_file` to update the appropriate memory file if something worth preserving \
 was learned.
+
+**MUST SAVE if present:**
+- User preferences (coding style, language, formatting, etc.)
+- Project conventions or decisions made
+- Rules the user asked you to follow
+- Important context about the project
 {project_section}{global_section}
-Choose the file that matches the scope of the information. \
-If nothing new is worth saving, simply continue the conversation normally."""
+**Reminder:** Even small preferences matter. When in doubt, save it. \
+If genuinely nothing new was learned, continue normally."""
 
 _PROJECT_MEMORY_SECTION = """
 **Project memory** — specific to this codebase, safe to commit with the repo:
@@ -106,7 +120,10 @@ _MAX_PER_FILE_CHARS = 4000
 _MEMORY_SIGNAL_PATTERNS = re.compile(
     r"\b(always|never|prefer(?:ence)?|convention|decided?|policy|"
     r"best\s+practice|should\s+use|don't\s+use|avoid|make\s+sure|"
-    r"remember|important|rule|standard|guideline)\b",
+    r"remember|important|rule|standard|guideline)\b"
+    r"|"
+    r"(记住|偏好|约定|规则|习惯|风格|规范|标准|决策|决定|"
+    r"重要|务必|一定要|以后都|每次都|总是|从不|避免|注意|记得)",
     re.IGNORECASE,
 )
 """Patterns in user messages that indicate memory-worthy content."""
