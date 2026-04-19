@@ -101,3 +101,15 @@ class TestBuildPlanDirective:
     def test_instructs_main_agent_to_execute_on_approval(self) -> None:
         directive = build_plan_directive("ship it").lower()
         assert "implement" in directive or "execute" in directive
+
+    def test_instructs_main_agent_to_rehydrate_todos(self) -> None:
+        # The planner's `todos` channel is filtered out by the subagent
+        # boundary (see deepagents _EXCLUDED_STATE_KEYS). The directive
+        # must tell the main agent to re-record the approved list via its
+        # own `write_todos` so the checkpoint / progress UI reflects it.
+        directive = build_plan_directive("ship it")
+        assert "write_todos" in directive
+
+    def test_instructs_main_agent_to_stop_on_non_approval(self) -> None:
+        directive = build_plan_directive("ship it").lower()
+        assert "stop" in directive or "do not" in directive
