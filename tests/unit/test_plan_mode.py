@@ -10,7 +10,6 @@ from invincat_cli.command_registry import (
 from invincat_cli.plan_mode import (
     PLAN_MODE_PREAMBLE,
     PLAN_MODE_REJECTION_HINT,
-    PLAN_READY_SENTINEL,
     WRITE_TOOL_NAMES,
     is_write_tool,
     split_blocked_tools,
@@ -80,11 +79,6 @@ class TestSplitBlockedTools:
 
 
 class TestPlanPrompts:
-    def test_preamble_mentions_sentinel(self) -> None:
-        # The preamble must instruct the model to emit the sentinel so the
-        # CLI can later prompt the user to approve and exit plan mode.
-        assert PLAN_READY_SENTINEL in PLAN_MODE_PREAMBLE
-
     def test_preamble_lists_blocked_tools(self) -> None:
         # Spot-check that the preamble names every blocked tool so the model
         # knows exactly what is off-limits.

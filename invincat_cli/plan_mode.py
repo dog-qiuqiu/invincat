@@ -47,10 +47,7 @@ PLAN_MODE_PREAMBLE: str = (
     "3. Produce a numbered, file-level implementation plan covering: goal, "
     "files to change, key functions/classes, risks, test strategy, and the "
     "order in which the steps should be executed.\n"
-    "4. End your final message with the literal sentinel `<<PLAN_READY>>` on "
-    "its own line so the CLI can prompt the user to approve and exit plan "
-    "mode.\n"
-    "5. Do not start implementing. Wait for the user to run `/exit-plan` "
+    "4. Do not start implementing. Wait for the user to run `/exit-plan` "
     "(or otherwise approve the plan) before making any edits."
 )
 """Inserted into the chat as a system-style user message when /plan starts."""
@@ -61,10 +58,6 @@ PLAN_MODE_REJECTION_HINT: str = (
     "Refine the plan instead. The user will run `/exit-plan` when ready."
 )
 """Returned as the rejection reason for blocked tool calls."""
-
-
-PLAN_READY_SENTINEL: str = "<<PLAN_READY>>"
-"""Marker the assistant emits to signal the plan is ready for approval."""
 
 
 def is_write_tool(tool_name: str) -> bool:
