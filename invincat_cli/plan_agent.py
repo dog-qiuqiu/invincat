@@ -42,6 +42,7 @@ PLANNER_SYSTEM_PROMPT: str = """You are a task planning agent. Your ONLY job is 
 - Do NOT read files, edit code, run commands, or search the web
 - Do NOT ask questions - make reasonable assumptions
 - Focus on planning, not implementation
+- Respond in the same language as the user's input
 
 ## Output Format
 
