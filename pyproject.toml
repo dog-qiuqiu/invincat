@@ -9,7 +9,28 @@ description = "Terminal interface for Deep Agents - interactive AI agent with fi
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"
+authors = [
+    { name = "dog-qiuqiu", email = "dogqiuqiu@outlook.com" },
+]
+maintainers = [
+    { name = "dog-qiuqiu", email = "dogqiuqiu@outlook.com" },
+]
 keywords = ["agents", "ai", "cli", "terminal", "llm", "langgraph", "langchain", "deep-agent"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Terminals",
+    "Topic :: Text Processing :: Linguistic",
+    "Typing :: Typed",
+]
 dependencies = [
     # Framework
     "deepagents==0.4.11",
@@ -66,6 +87,13 @@ dev = [
 
 [project.scripts]
 invincat-cli = "invincat_cli:cli_main"
+
+[project.urls]
+Homepage = "https://github.com/dog-qiuqiu/invincat"
+Documentation = "https://github.com/dog-qiuqiu/invincat#readme"
+Repository = "https://github.com/dog-qiuqiu/invincat"
+Issues = "https://github.com/dog-qiuqiu/invincat/issues"
+Changelog = "https://github.com/dog-qiuqiu/invincat/releases"
 
 [tool.ruff]
 target-version = "py311"

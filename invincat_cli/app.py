@@ -432,15 +432,18 @@ class TextualSessionState:
         *,
         auto_approve: bool = False,
         thread_id: str | None = None,
+        plan_mode: bool = False,
     ) -> None:
         """Initialize session state.
 
         Args:
             auto_approve: Whether to auto-approve tool calls
             thread_id: Optional thread ID (generates UUID7 if not provided)
+            plan_mode: Whether to start in plan mode (write tools rejected)
         """
         self.auto_approve = auto_approve
         self.thread_id = thread_id or _new_thread_id()
+        self.plan_mode = plan_mode
 
     def reset_thread(self) -> str:
         """Reset to a new thread.
@@ -2162,6 +2165,45 @@ class DeepAgentsApp(App):
         if self._session_state:
             self._session_state.auto_approve = True
 
+    async def _handle_plan_enter(self) -> None:
+        """Enter plan mode.
+
+        Flips `session_state.plan_mode = True` so write tools are blocked at
+        the HITL gate, lights the PLAN pill, and shows the user a banner.
+        The planner preamble is prepended to the user's next agent turn by
+        `_send_to_agent` — no separate hidden message is queued, which keeps
+        checkpointing and the message store coherent.
+        """
+        from invincat_cli.i18n import t
+
+        await self._mount_message(UserMessage("/plan"))
+
+        if self._session_state and self._session_state.plan_mode:
+            await self._mount_message(AppMessage(t("plan.already_on")))
+            return
+
+        if self._session_state:
+            self._session_state.plan_mode = True
+        if self._status_bar:
+            self._status_bar.set_plan_mode(enabled=True)
+
+        await self._mount_message(AppMessage(t("plan.entered")))
+
+    async def _handle_plan_exit(self) -> None:
+        """Leave plan mode — write tools are re-enabled for the next turn."""
+        from invincat_cli.i18n import t
+
+        await self._mount_message(UserMessage("/exit-plan"))
+
+        if not self._session_state or not self._session_state.plan_mode:
+            await self._mount_message(AppMessage(t("plan.already_off")))
+            return
+
+        self._session_state.plan_mode = False
+        if self._status_bar:
+            self._status_bar.set_plan_mode(enabled=False)
+        await self._mount_message(AppMessage(t("plan.exited")))
+
     async def _remove_ask_user_widget(  # noqa: PLR6301  # Shared helper used by ask_user event handlers
         self,
         widget: AskUserMenu,
@@ -2837,6 +2879,10 @@ class DeepAgentsApp(App):
         elif cmd in {"/offload", "/compact"}:
             await self._mount_message(UserMessage(command))
             await self._handle_offload()
+        elif cmd == "/plan":
+            await self._handle_plan_enter()
+        elif cmd == "/exit-plan":
+            await self._handle_plan_exit()
         elif cmd == "/threads":
             await self._show_thread_selector()
         elif cmd == "/trace":
@@ -3492,6 +3538,15 @@ class DeepAgentsApp(App):
         # Anchor to bottom so streaming response stays visible
         with suppress(NoMatches, ScreenStackError):
             self.query_one("#chat", VerticalScroll).anchor()
+
+        # Plan mode: invisibly prepend the planner directive so the model is
+        # reminded every turn that write tools are blocked and a plan is the
+        # expected output. Skill bodies arrive via UserMessage already and
+        # follow the same code path, so they get the directive too.
+        if self._session_state and self._session_state.plan_mode:
+            from invincat_cli.plan_mode import PLAN_MODE_PREAMBLE
+
+            message = f"{PLAN_MODE_PREAMBLE}\n\n---\n\n{message}"
 
         # Check if agent is available
         if self._agent and self._ui_adapter and self._session_state:
