@@ -2203,9 +2203,10 @@ class DeepAgentsApp(App):
             return
 
         model_spec = self._model_override or "claude-sonnet-4-6"
+        model_params = self._model_params_override
 
         try:
-            planner = create_planner_agent(model_spec)
+            planner = create_planner_agent(model_spec, model_params=model_params)
         except Exception as e:
             logger.exception("Failed to create planner agent")
             await self._mount_message(AppMessage(f"Failed to create planner: {e}"))

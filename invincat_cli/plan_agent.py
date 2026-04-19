@@ -17,7 +17,7 @@ How `/plan <task>` works:
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import TodoListMiddleware
@@ -71,6 +71,7 @@ Mark the first task as "in_progress", others as "pending"."""
 
 def create_planner_agent(
     model: str | BaseChatModel,
+    model_params: dict[str, Any] | None = None,
 ) -> CompiledStateGraph:
     """Create a standalone planner agent.
 
@@ -79,10 +80,16 @@ def create_planner_agent(
 
     Args:
         model: The language model to use (string identifier or BaseChatModel).
+        model_params: Optional model parameters to pass to model initialization.
 
     Returns:
         A compiled planner agent graph.
     """
+    from invincat_cli.config import create_model
+
+    if isinstance(model, str):
+        model = create_model(model, extra_kwargs=model_params)
+
     todo_middleware = TodoListMiddleware()
 
     return create_agent(
