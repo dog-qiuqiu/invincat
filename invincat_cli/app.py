@@ -2240,15 +2240,45 @@ class DeepAgentsApp(App):
                 await self._mount_message(AppMessage("Planner returned no response."))
                 return
 
-            content = getattr(last_message, "content", str(last_message))
-            if isinstance(content, list):
-                content = "\n".join(
-                    block.get("text", "") if isinstance(block, dict) else str(block)
-                    for block in content
-                )
+            todos: list[dict[str, str]] | None = None
+            for msg in messages:
+                if hasattr(msg, "tool_calls") and msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        if tc.get("name") == "write_todos":
+                            from invincat_cli.widgets.message import ToolCallMessage
 
-            todos = extract_todos_from_message(content)
+                            tool_msg = ToolCallMessage(
+                                "write_todos",
+                                tc.get("args", {}),
+                                tool_call_id=tc.get("id", ""),
+                            )
+                            await self._mount_message(tool_msg)
+                            tool_msg.set_success("Task list created")
+                            args = tc.get("args", {})
+                            raw_todos = args.get("todos", [])
+                            if raw_todos:
+                                todos = [
+                                    {"content": t.get("content", ""), "status": t.get("status", "pending")}
+                                    for t in raw_todos
+                                    if t.get("content")
+                                ]
+
             if not todos:
+                content = getattr(last_message, "content", str(last_message))
+                if isinstance(content, list):
+                    content = "\n".join(
+                        block.get("text", "") if isinstance(block, dict) else str(block)
+                        for block in content
+                    )
+                todos = extract_todos_from_message(content)
+
+            if not todos:
+                content = getattr(last_message, "content", str(last_message))
+                if isinstance(content, list):
+                    content = "\n".join(
+                        block.get("text", "") if isinstance(block, dict) else str(block)
+                        for block in content
+                    )
                 await self._mount_message(AppMessage(f"Planner response:\n{content}"))
                 return
 
