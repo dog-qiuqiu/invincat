@@ -13,7 +13,13 @@ A Python-based terminal AI programming assistant — collaborate with AI directl
 **Requirements**: Python 3.11+
 
 ```bash
-# Install from source (development mode)
+# Install from PyPI
+pip install invincat-cli
+```
+
+Or install from source:
+
+```bash
 git clone https://github.com/dog-qiuqiu/invincat.git
 cd invincat
 pip install -e .

@@ -11,7 +11,13 @@
 **环境要求**：Python 3.11+
 
 ```bash
-# 从源码安装（开发模式）
+# 从 PyPI 安装
+pip install invincat-cli
+```
+
+或从源码安装：
+
+```bash
 git clone https://github.com/dog-qiuqiu/invincat.git
 cd invincat
 pip install -e .
