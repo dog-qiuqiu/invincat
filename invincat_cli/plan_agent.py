@@ -136,43 +136,16 @@ def build_planner_subagent() -> SubAgent:
     """Return the `planner` subagent spec.
 
     The spec is a `SubAgent` TypedDict that plugs into `create_deep_agent`
-    via its `subagents=` argument. We now explicitly set the `tools` key
-    to ensure the planner has access to write_todos.
+    via its `subagents=` argument.
+
+    Note: We do NOT explicitly set `tools` here. The planner inherits the
+    main agent's tools (including `write_todos` from TodoListMiddleware).
+    The system prompt restricts the planner to only use `write_todos`.
     """
     return {
         "name": PLANNER_SUBAGENT_NAME,
         "description": PLANNER_DESCRIPTION,
         "system_prompt": PLANNER_SYSTEM_PROMPT,
-        "tools": [
-            {
-                "name": "write_todos",
-                "description": "Record and update the plan as a structured todo list",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "todos": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "content": {
-                                        "type": "string",
-                                        "description": "Todo item description"
-                                    },
-                                    "status": {
-                                        "type": "string",
-                                        "enum": ["pending", "in_progress", "completed"],
-                                        "description": "Todo status"
-                                    }
-                                },
-                                "required": ["content", "status"]
-                            }
-                        }
-                    },
-                    "required": ["todos"]
-                }
-            }
-        ]
     }
 
 
