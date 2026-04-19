@@ -533,11 +533,13 @@ class DeepAgentsApp(App):
             agent: Any,  # noqa: ANN401
             server_proc: Any,  # noqa: ANN401
             mcp_server_info: list[Any] | None,
+            model: BaseChatModel | None = None,
         ) -> None:
             super().__init__()
             self.agent = agent
             self.server_proc = server_proc
             self.mcp_server_info = mcp_server_info
+            self.model = model
 
     class ServerStartFailed(Message):
         """Posted by the background server-startup worker on failure."""
@@ -662,6 +664,8 @@ class DeepAgentsApp(App):
         self._model_override: str | None = None
 
         self._model_params_override: dict[str, Any] | None = None
+
+        self._model: BaseChatModel | None = None
 
         self._mcp_tool_count = sum(len(s.tools) for s in (mcp_server_info or []))
 
@@ -1281,6 +1285,7 @@ class DeepAgentsApp(App):
         # are already set eagerly for the status bar display; this call
         # does the heavy langchain import + SDK init and may refine them
         # (e.g., context_limit from the model profile).
+        model_instance: BaseChatModel | None = None
         if self._model_kwargs is not None:
             from invincat_cli.config import create_model
             from invincat_cli.model_config import ModelConfigError, save_recent_model
@@ -1292,6 +1297,7 @@ class DeepAgentsApp(App):
                 return
             result.apply_to_settings()
             save_recent_model(f"{result.provider}:{result.model_name}")
+            model_instance = result.model
             self._model_kwargs = None  # consumed
 
         from invincat_cli.server_manager import start_server_and_get_agent
@@ -1342,6 +1348,7 @@ class DeepAgentsApp(App):
                 agent=agent,
                 server_proc=server_proc,
                 mcp_server_info=mcp_info,
+                model=model_instance,
             )
         )
 
@@ -1352,6 +1359,8 @@ class DeepAgentsApp(App):
         self._server_proc = event.server_proc
         self._mcp_server_info = event.mcp_server_info
         self._mcp_tool_count = sum(len(s.tools) for s in (event.mcp_server_info or []))
+        if event.model is not None:
+            self._model = event.model
 
         # Update welcome banner to show ready state
         try:
@@ -2202,8 +2211,13 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage("Agent not configured."))
             return
 
-        model_spec = self._model_override or "claude-sonnet-4-6"
-        model_params = self._model_params_override
+        model = self._model
+        if model is None:
+            model_spec = self._model_override or "claude-sonnet-4-6"
+            model_params = self._model_params_override
+        else:
+            model_spec = model
+            model_params = None
 
         try:
             planner = create_planner_agent(model_spec, model_params=model_params)
