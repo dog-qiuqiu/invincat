@@ -441,6 +441,7 @@ class TextualSessionState:
         """
         self.auto_approve = auto_approve
         self.thread_id = thread_id or _new_thread_id()
+        self.plan_mode: bool = False
 
     def reset_thread(self) -> str:
         """Reset to a new thread.
@@ -2164,11 +2165,29 @@ class DeepAgentsApp(App):
             self._session_state.auto_approve = True
 
     async def _handle_plan_task(self, task: str) -> None:
-        """Run the planner agent to generate a task plan.
+        """Handle /plan command.
 
-        Creates a standalone planner agent, invokes it with the task,
-        extracts the todo list, and displays the approve widget for
-        user confirmation.
+        If task is empty, enter plan mode and wait for user input.
+        If task is provided, run the planner agent directly.
+
+        Args:
+            task: The task description to plan, or empty to enter plan mode.
+        """
+        from invincat_cli.i18n import t
+
+        if not task:
+            if self._session_state:
+                self._session_state.plan_mode = True
+            if self._status_bar:
+                self._status_bar.set_plan_mode(enabled=True)
+            await self._mount_message(UserMessage("/plan"))
+            await self._mount_message(AppMessage(t("plan.entered")))
+            return
+
+        await self._run_planner(task)
+
+    async def _run_planner(self, task: str) -> None:
+        """Run the planner agent to generate a task plan.
 
         Args:
             task: The task description to plan.
@@ -2178,12 +2197,6 @@ class DeepAgentsApp(App):
             create_planner_agent,
             extract_todos_from_message,
         )
-
-        await self._mount_message(UserMessage(f"/plan {task}"))
-
-        if not task:
-            await self._mount_message(AppMessage(t("plan.usage")))
-            return
 
         if not self._agent:
             await self._mount_message(AppMessage("Agent not configured."))
@@ -2233,6 +2246,10 @@ class DeepAgentsApp(App):
                     f"{plan_text}\n\n"
                     f"Start with the first task and work through each item in order."
                 )
+                if self._session_state:
+                    self._session_state.plan_mode = False
+                if self._status_bar:
+                    self._status_bar.set_plan_mode(enabled=False)
                 await self._send_to_agent(execution_message)
             else:
                 await self._mount_message(AppMessage(t("plan.exited")))
@@ -3615,6 +3632,11 @@ class DeepAgentsApp(App):
         Args:
             message: The user's message
         """
+        if self._session_state and self._session_state.plan_mode:
+            await self._mount_message(UserMessage(message))
+            await self._run_planner(message)
+            return
+
         # Mount the user message
         await self._mount_message(UserMessage(message))
         await self._send_to_agent(message)
