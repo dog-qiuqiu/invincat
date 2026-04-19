@@ -1706,53 +1706,6 @@ async def execute_task_textual(
                 for interrupt_id, hitl_request in list(pending_interrupts.items()):
                     action_requests = hitl_request["action_requests"]
 
-                    # Plan mode: silently reject any workspace-mutating tool
-                    # call with a hint so the model keeps refining the plan.
-                    # Read-only tools (read_file, grep, glob, ls, web_search,
-                    # fetch_url) fall through to the normal approval path so
-                    # the planner can still ground its proposal in real code.
-                    plan_mode_active = bool(getattr(session_state, "plan_mode", False))
-                    if plan_mode_active:
-                        from invincat_cli.plan_mode import (
-                            PLAN_MODE_REJECTION_HINT,
-                            is_write_tool,
-                        )
-
-                        request_names = [r.get("name", "") for r in action_requests]
-                        blocked_names = [n for n in request_names if is_write_tool(n)]
-                        if blocked_names:
-                            decisions = [
-                                RejectDecision(
-                                    type="reject",
-                                    message=(
-                                        f"{PLAN_MODE_REJECTION_HINT} "
-                                        f"(blocked tool: {n})"
-                                    ),
-                                )
-                                if is_write_tool(n)
-                                else ApproveDecision(type="approve")
-                                for n in request_names
-                            ]
-                            for tool_msg in list(
-                                adapter._current_tool_messages.values()
-                            ):
-                                tool_msg.set_rejected()
-                            adapter._current_tool_messages.clear()
-                            resume_payload[interrupt_id] = {"decisions": decisions}
-                            await adapter._mount_message(
-                                AppMessage(
-                                    "Plan mode blocked: "
-                                    + ", ".join(blocked_names)
-                                    + ". Run /exit-plan when ready to implement."
-                                )
-                            )
-                            # NOTE: deliberately *not* setting any_rejected — we
-                            # want the model to receive the rejection messages and
-                            # revise the plan within the same turn, instead of
-                            # short-circuiting to "Command rejected. Tell the
-                            # agent what you'd like instead."
-                            continue
-
                     if session_state.auto_approve:
                         decisions: list[HITLDecision] = [
                             ApproveDecision(type="approve") for _ in action_requests

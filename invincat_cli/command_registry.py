@@ -102,12 +102,6 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="design propose dry-run readonly",
     ),
     SlashCommand(
-        name="/exit-plan",
-        description_key="exit_plan",
-        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
-        hidden_keywords="exitplan resume execute",
-    ),
-    SlashCommand(
         name="/remember",
         description_key="remember",
         bypass_tier=BypassTier.QUEUED,
