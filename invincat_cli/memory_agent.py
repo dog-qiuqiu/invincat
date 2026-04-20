@@ -204,12 +204,11 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 )
 
             start = raw.find("{")
-            end = raw.rfind("}") + 1
-            if start == -1 or end == 0:
+            if start == -1:
                 logger.debug("Memory agent: no JSON found in response")
                 return []
 
-            data = json.loads(raw[start:end])
+            data, _ = json.JSONDecoder().raw_decode(raw, start)
             updates: list[dict[str, str]] = data.get("updates", [])
             if not updates:
                 return []
