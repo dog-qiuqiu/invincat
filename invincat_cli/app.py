@@ -3770,7 +3770,10 @@ class DeepAgentsApp(App):
                 )
 
         # Auto-offload when context window is near full (no-op when below threshold)
-        await self._maybe_auto_offload()
+        try:
+            await self._maybe_auto_offload()
+        except Exception:
+            logger.exception("Auto-offload failed during agent cleanup")
 
         # Notify user if memory files were updated this turn
         await self._maybe_notify_memory_update()

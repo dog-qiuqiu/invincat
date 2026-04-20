@@ -314,10 +314,26 @@ class MemoryAgentMiddleware(AgentMiddleware):
             if last_human_idx < window_start:
                 recent = [messages[last_human_idx]] + list(recent)
 
-        written = await self._extract_and_write(model, recent)
+        written = await self._safe_extract_and_write(model, recent)
         if written:
             return {
                 "memory_contents": None,               # triggers RefreshableMemoryMiddleware reload
                 "_auto_memory_updated_paths": written,  # triggers toast in app.py
             }
         return None
+
+    async def _safe_extract_and_write(self, model: Any, messages: list[Any]) -> list[str]:
+        """Run extraction, absorbing CancelledError so it doesn't escape into agent.astream().
+
+        If the outer task is being cancelled (ESC), we re-request cancellation on the
+        current task so it fires at the next await *outside* the middleware, preserving
+        correct ESC behaviour while preventing a silent no-error interruption here.
+        """
+        try:
+            return await self._extract_and_write(model, messages)
+        except asyncio.CancelledError:
+            logger.debug("Memory agent: extraction cancelled — re-scheduling task cancellation")
+            current = asyncio.current_task()
+            if current is not None:
+                current.cancel()
+            return []
