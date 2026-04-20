@@ -139,6 +139,10 @@ class StatusBar(Horizontal):
         color: $warning;
     }
 
+    StatusBar .status-message.memory {
+        color: $success;
+    }
+
     StatusBar .status-cwd {
         width: auto;
         text-align: right;
@@ -339,11 +343,14 @@ class StatusBar(Horizontal):
         except NoMatches:
             return
 
-        msg_widget.remove_class("thinking")
+        msg_widget.remove_class("thinking", "memory")
         if new_value:
             msg_widget.update(new_value)
-            if "thinking" in new_value.lower() or "executing" in new_value.lower():
+            lower = new_value.lower()
+            if "thinking" in lower or "executing" in lower:
                 msg_widget.add_class("thinking")
+            elif "memory" in lower or "记忆" in lower:
+                msg_widget.add_class("memory")
         else:
             msg_widget.update("")
 

@@ -744,6 +744,7 @@ class DeepAgentsApp(App):
         self._shell_running = False
 
         self._loading_widget: LoadingWidget | None = None
+        self._memory_status_clear_timer: Any | None = None
 
         self._context_tokens: int = 0
         """Local cache of the last total-context token count.
@@ -3325,7 +3326,7 @@ class DeepAgentsApp(App):
         self._auto_offload_cooldown_until = _monotonic() + _AUTO_OFFLOAD_COOLDOWN_SECONDS
 
     async def _maybe_notify_memory_update(self) -> None:
-        """Show a toast notification when memory files were updated this turn."""
+        """Show a status bar notification when memory files were updated this turn."""
         try:
             state_values = await self._get_thread_state_values(self._lc_thread_id)
             updated_paths = state_values.get("_auto_memory_updated_paths")
@@ -3337,12 +3338,22 @@ class DeepAgentsApp(App):
                     short = "~/" + str(Path(updated_paths[0]).relative_to(home))
                 except ValueError:
                     short = updated_paths[0]
-                msg = f"Memory updated: {short}"
+                msg = t("status.memory_updated").format(path=short)
             else:
-                msg = f"Memory updated: {len(updated_paths)} files"
-            self.notify(msg, severity="information", timeout=5)
+                msg = t("status.memory_updated_n").format(n=len(updated_paths))
+            self._update_status(msg)
+            if self._memory_status_clear_timer is not None:
+                self._memory_status_clear_timer.stop()
+            self._memory_status_clear_timer = self.set_timer(
+                4.0, self._clear_memory_status
+            )
         except Exception:
             logger.debug("Failed to check memory update state", exc_info=True)
+
+    def _clear_memory_status(self) -> None:
+        """Clear the memory-update status bar message."""
+        self._memory_status_clear_timer = None
+        self._update_status("")
 
     def _resolve_offload_budget_str(self) -> str | None:
         """Resolve the offload retention budget as a human-readable string.
