@@ -289,6 +289,13 @@ class MemoryAgentMiddleware(AgentMiddleware):
         if model is None:
             return None
 
+        # Only extract when the task is truly complete — not mid-turn while waiting
+        # for HITL approval.  LangGraph stores pending interrupts in state under
+        # "__interrupt__"; if that key is non-empty the user still needs to respond.
+        if state.get("__interrupt__"):
+            logger.debug("Memory agent: skipping extraction — pending interrupts")
+            return None
+
         messages = state.get("messages", [])
         if not messages:
             return None
