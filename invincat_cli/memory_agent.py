@@ -233,13 +233,16 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 p = Path(file_path).expanduser()
                 await asyncio.to_thread(p.parent.mkdir, parents=True, exist_ok=True)
                 await asyncio.to_thread(p.write_text, content, "utf-8")
-                written.append(file_path)
-                logger.debug("Memory agent wrote: %s", file_path)
+                written.append(str(p))  # store the expanded path for consistent display
+                logger.debug("Memory agent wrote: %s", p)
 
             return written
 
+        except json.JSONDecodeError:
+            logger.debug("Memory agent: model returned malformed JSON", exc_info=True)
+            return []
         except Exception:
-            logger.debug("Memory agent extraction failed", exc_info=True)
+            logger.warning("Memory agent extraction failed unexpectedly", exc_info=True)
             return []
 
     # ------------------------------------------------------------------
@@ -271,12 +274,14 @@ class MemoryAgentMiddleware(AgentMiddleware):
         if not messages:
             return None
 
-        recent = messages[-self._context_messages :]
-
-        if _is_trivial_turn(recent):
+        # Trivial check uses the FULL message list so that a user message
+        # followed by many tool calls is not mistakenly skipped because the
+        # human message fell outside the context window.
+        if _is_trivial_turn(messages):
             logger.debug("Memory agent: skipping trivial turn")
             return None
 
+        recent = messages[-self._context_messages :]
         written = await self._extract_and_write(model, recent)
         if written:
             return {
