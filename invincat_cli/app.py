@@ -12,6 +12,45 @@ import sys
 import time
 import uuid
 import webbrowser
+
+
+def _patch_textual_utf8_decoder() -> None:
+    """Patch Textual's Linux input driver to tolerate invalid UTF-8 bytes.
+
+    Textual's LinuxDriver reads raw bytes from the terminal file descriptor and
+    decodes them with a *strict* UTF-8 incremental decoder.  On terminals that
+    fall back to X10-style mouse tracking (i.e. they don't honour the SGR mouse
+    mode escape ``\\x1b[?1006h``), mouse-move events encode coordinates as raw
+    bytes: ``\\x1b[M<button+32><x+32><y+32>``.  At column positions > 95,
+    ``x+32 > 127``.  Certain combinations of button modifiers and large column
+    values produce byte pairs that are invalid UTF-8 (e.g. a 2-byte lead byte
+    followed by another lead byte), which crashes the input thread.
+
+    Replacing the strict decoder with a ``'replace'`` mode decoder silently
+    substitutes any invalid byte with U+FFFD instead of raising an exception,
+    preserving all normal keyboard and mouse input.
+    """
+    try:
+        import textual.drivers.linux_driver as _ld
+        from codecs import getincrementaldecoder as _orig_get
+
+        def _tolerant_getincrementaldecoder(encoding: str):  # type: ignore[return]
+            decoder_cls = _orig_get(encoding)
+            if encoding.lower().replace("-", "") == "utf8":
+
+                class _TolerantDecoder(decoder_cls):  # type: ignore[valid-type]
+                    def __init__(self, errors: str = "replace") -> None:
+                        super().__init__(errors)
+
+                return _TolerantDecoder
+            return decoder_cls
+
+        _ld.getincrementaldecoder = _tolerant_getincrementaldecoder  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        pass  # Best-effort — don't break startup if patching fails
+
+
+_patch_textual_utf8_decoder()
 from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass, field
