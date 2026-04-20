@@ -148,7 +148,7 @@ class MemoryAgentMiddleware(AgentMiddleware):
         parts: list[str] = []
         for path in self._memory_paths:
             try:
-                content = Path(path).read_text(encoding="utf-8").strip()
+                content = Path(path).expanduser().read_text(encoding="utf-8").strip()
                 if len(content) > _MAX_PER_FILE_CHARS:
                     content = content[:_MAX_PER_FILE_CHARS] + f"\n[...{len(content) - _MAX_PER_FILE_CHARS} chars truncated]"
                 parts.append(f"[{path}]\n{content}" if content else f"[{path}]\n(empty)")
@@ -281,6 +281,19 @@ class MemoryAgentMiddleware(AgentMiddleware):
             return None
 
         recent = messages[-self._context_messages :]
+
+        # If the last human message was pushed out of the window by many tool
+        # calls in the same turn, prepend it so the memory agent always sees
+        # what the user actually said.
+        human_indices = [
+            i for i, m in enumerate(messages) if getattr(m, "type", "") == "human"
+        ]
+        if human_indices:
+            last_human_idx = human_indices[-1]
+            window_start = len(messages) - self._context_messages
+            if last_human_idx < window_start:
+                recent = [messages[last_human_idx]] + list(recent)
+
         written = await self._extract_and_write(model, recent)
         if written:
             return {
