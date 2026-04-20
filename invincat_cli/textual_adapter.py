@@ -168,6 +168,9 @@ def print_usage_table(
 _ask_user_adapter_cache: TypeAdapter | None = None
 """Lazy singleton for the `ask_user` interrupt validator."""
 
+_approve_plan_adapter_cache: TypeAdapter | None = None
+"""Lazy singleton for the `approve_plan` interrupt validator."""
+
 
 def _get_ask_user_adapter() -> TypeAdapter:
     """Return a cached `TypeAdapter(AskUserRequest)`.
@@ -181,6 +184,22 @@ def _get_ask_user_adapter() -> TypeAdapter:
 
         _ask_user_adapter_cache = TypeAdapter(AskUserRequest)
     return _ask_user_adapter_cache
+
+
+def _get_approve_plan_adapter() -> TypeAdapter:
+    """Return a cached `TypeAdapter(ApprovePlanRequest)`.
+
+    Returns:
+        Shared `TypeAdapter` instance.
+    """
+    global _approve_plan_adapter_cache  # noqa: PLW0603
+    if _approve_plan_adapter_cache is None:
+        from pydantic import TypeAdapter
+
+        from invincat_cli.approve_plan import ApprovePlanRequest
+
+        _approve_plan_adapter_cache = TypeAdapter(ApprovePlanRequest)
+    return _approve_plan_adapter_cache
 
 
 def _is_summarization_chunk(metadata: dict | None) -> bool:
@@ -267,6 +286,13 @@ class TextualUIAdapter:
             ]
             | None
         ) = None,
+        request_approve_plan: (
+            Callable[
+                [list[dict[str, Any]]],
+                Awaitable[asyncio.Future[dict[str, Any]] | None],
+            ]
+            | None
+        ) = None,
     ) -> None:
         """Initialize the adapter."""
         self._mount_message = mount_message
@@ -299,6 +325,12 @@ class TextualUIAdapter:
         """Async callback for `ask_user` interrupts.
 
         When awaited, returns a `Future` that resolves to user answers.
+        """
+
+        self._request_approve_plan = request_approve_plan
+        """Async callback for `approve_plan` interrupts.
+
+        When awaited, returns a `Future` that resolves to user approval decision.
         """
 
         # State tracking
@@ -631,6 +663,7 @@ async def execute_task_textual(
             suppress_resumed_output = False
             pending_interrupts: dict[str, HITLRequest] = {}
             pending_ask_user: dict[str, AskUserRequest] = {}
+            pending_approve_plan: dict[str, Any] = {}
             error_ask_user_ids: dict[str, str] = {}
 
             _astream_attempt = 0
@@ -692,6 +725,31 @@ async def execute_task_textual(
                                                 )
                                                 error_ask_user_ids[interrupt_obj.id] = (
                                                     "invalid ask_user payload"
+                                                )
+                                                interrupt_occurred = True
+                                        elif (
+                                            isinstance(iv, dict)
+                                            and iv.get("type") == "approve_plan"
+                                        ):
+                                            try:
+                                                approve_plan_adapter = (
+                                                    _get_approve_plan_adapter()
+                                                )
+                                                validated_approve_plan = (
+                                                    approve_plan_adapter.validate_python(iv)
+                                                )
+                                                pending_approve_plan[interrupt_obj.id] = (
+                                                    validated_approve_plan
+                                                )
+                                                interrupt_occurred = True
+                                                await dispatch_hook("input.required", {})
+                                            except ValidationError:
+                                                logger.exception(
+                                                    "Invalid approve_plan interrupt payload; "
+                                                    "resuming with error so the agent can recover"
+                                                )
+                                                error_ask_user_ids[interrupt_obj.id] = (
+                                                    "invalid approve_plan payload"
                                                 )
                                                 interrupt_occurred = True
                                         else:
@@ -1565,55 +1623,88 @@ async def execute_task_textual(
                             "answers": ["" for _ in questions],
                         }
 
+                for interrupt_id, approve_req in list(pending_approve_plan.items()):
+                    todos = approve_req["todos"]
+
+                    if adapter._request_approve_plan:
+                        if adapter._set_spinner:
+                            await adapter._set_spinner(None)
+                        result: dict[str, Any] = {
+                            "type": "error",
+                            "error": "approve_plan callback returned no response",
+                        }
+                        try:
+                            future = await adapter._request_approve_plan(todos)
+                        except Exception:
+                            logger.exception("Failed to mount approve_plan widget")
+                            result = {
+                                "type": "error",
+                                "error": "failed to display approve_plan prompt",
+                            }
+                            future = None
+
+                        if future is None:
+                            logger.error(
+                                "approve_plan callback returned no Future; "
+                                "reporting as error"
+                            )
+                        else:
+                            try:
+                                future_result = await future
+                                if isinstance(future_result, dict):
+                                    result = future_result
+                                else:
+                                    logger.error(
+                                        "approve_plan future returned non-dict result: %s",
+                                        type(future_result).__name__,
+                                    )
+                                    result = {
+                                        "type": "error",
+                                        "error": "invalid approve_plan widget result",
+                                    }
+                            except Exception:
+                                logger.exception(
+                                    "approve_plan future resolution failed; "
+                                    "reporting as error"
+                                )
+                                result = {
+                                    "type": "error",
+                                    "error": "failed to receive approve_plan response",
+                                }
+
+                        result_type = result.get("type")
+                        if result_type == "approved":
+                            resume_payload[interrupt_id] = {"type": "approved"}
+                            tool_id = approve_req["tool_call_id"]
+                            norm_tool_id = _normalize_tool_id(tool_id)
+                            if norm_tool_id and norm_tool_id in adapter._current_tool_messages:
+                                tool_msg = adapter._current_tool_messages[norm_tool_id]
+                                tool_msg.set_success("Plan approved")
+                                adapter._current_tool_messages.pop(norm_tool_id, None)
+                        elif result_type == "rejected":
+                            resume_payload[interrupt_id] = {"type": "rejected"}
+                            any_rejected = True
+                        else:
+                            error_text = result.get("error")
+                            if not isinstance(error_text, str) or not error_text:
+                                error_text = "approve_plan interaction failed"
+                            resume_payload[interrupt_id] = {
+                                "type": "error",
+                                "error": error_text,
+                            }
+                            any_rejected = True
+                    else:
+                        logger.warning(
+                            "approve_plan interrupt received but no UI callback is "
+                            "registered; reporting as error"
+                        )
+                        resume_payload[interrupt_id] = {
+                            "type": "error",
+                            "error": "approve_plan not supported by this UI",
+                        }
+
                 for interrupt_id, hitl_request in list(pending_interrupts.items()):
                     action_requests = hitl_request["action_requests"]
-
-                    # Plan mode: silently reject any workspace-mutating tool
-                    # call with a hint so the model keeps refining the plan.
-                    # Read-only tools (read_file, grep, glob, ls, web_search,
-                    # fetch_url) fall through to the normal approval path so
-                    # the planner can still ground its proposal in real code.
-                    plan_mode_active = bool(getattr(session_state, "plan_mode", False))
-                    if plan_mode_active:
-                        from invincat_cli.plan_mode import (
-                            PLAN_MODE_REJECTION_HINT,
-                            is_write_tool,
-                        )
-
-                        request_names = [r.get("name", "") for r in action_requests]
-                        blocked_names = [n for n in request_names if is_write_tool(n)]
-                        if blocked_names:
-                            decisions = [
-                                RejectDecision(
-                                    type="reject",
-                                    message=(
-                                        f"{PLAN_MODE_REJECTION_HINT} "
-                                        f"(blocked tool: {n})"
-                                    ),
-                                )
-                                if is_write_tool(n)
-                                else ApproveDecision(type="approve")
-                                for n in request_names
-                            ]
-                            for tool_msg in list(
-                                adapter._current_tool_messages.values()
-                            ):
-                                tool_msg.set_rejected()
-                            adapter._current_tool_messages.clear()
-                            resume_payload[interrupt_id] = {"decisions": decisions}
-                            await adapter._mount_message(
-                                AppMessage(
-                                    "Plan mode blocked: "
-                                    + ", ".join(blocked_names)
-                                    + ". Run /exit-plan when ready to implement."
-                                )
-                            )
-                            # NOTE: deliberately *not* setting any_rejected — we
-                            # want the model to receive the rejection messages and
-                            # revise the plan within the same turn, instead of
-                            # short-circuiting to "Command rejected. Tell the
-                            # agent what you'd like instead."
-                            continue
 
                     if session_state.auto_approve:
                         decisions: list[HITLDecision] = [

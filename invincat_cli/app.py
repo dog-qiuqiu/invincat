@@ -471,18 +471,16 @@ class TextualSessionState:
         *,
         auto_approve: bool = False,
         thread_id: str | None = None,
-        plan_mode: bool = False,
     ) -> None:
         """Initialize session state.
 
         Args:
             auto_approve: Whether to auto-approve tool calls
             thread_id: Optional thread ID (generates UUID7 if not provided)
-            plan_mode: Whether to start in plan mode (write tools rejected)
         """
         self.auto_approve = auto_approve
         self.thread_id = thread_id or _new_thread_id()
-        self.plan_mode = plan_mode
+        self.plan_mode: bool = False
 
     def reset_thread(self) -> str:
         """Reset to a new thread.
@@ -574,11 +572,13 @@ class DeepAgentsApp(App):
             agent: Any,  # noqa: ANN401
             server_proc: Any,  # noqa: ANN401
             mcp_server_info: list[Any] | None,
+            model: BaseChatModel | None = None,
         ) -> None:
             super().__init__()
             self.agent = agent
             self.server_proc = server_proc
             self.mcp_server_info = mcp_server_info
+            self.model = model
 
     class ServerStartFailed(Message):
         """Posted by the background server-startup worker on failure."""
@@ -703,6 +703,8 @@ class DeepAgentsApp(App):
         self._model_override: str | None = None
 
         self._model_params_override: dict[str, Any] | None = None
+
+        self._model: BaseChatModel | None = None
 
         self._mcp_tool_count = sum(len(s.tools) for s in (mcp_server_info or []))
 
@@ -1002,6 +1004,7 @@ class DeepAgentsApp(App):
             set_active_message=self._set_active_message,
             sync_message_content=self._sync_message_content,
             request_ask_user=self._request_ask_user,
+            request_approve_plan=self._request_approve_plan,
         )
         # Wire token display callbacks
         self._ui_adapter._on_tokens_update = self._on_tokens_update
@@ -1322,6 +1325,7 @@ class DeepAgentsApp(App):
         # are already set eagerly for the status bar display; this call
         # does the heavy langchain import + SDK init and may refine them
         # (e.g., context_limit from the model profile).
+        model_instance: BaseChatModel | None = None
         if self._model_kwargs is not None:
             from invincat_cli.config import create_model
             from invincat_cli.model_config import ModelConfigError, save_recent_model
@@ -1333,6 +1337,7 @@ class DeepAgentsApp(App):
                 return
             result.apply_to_settings()
             save_recent_model(f"{result.provider}:{result.model_name}")
+            model_instance = result.model
             self._model_kwargs = None  # consumed
 
         from invincat_cli.server_manager import start_server_and_get_agent
@@ -1383,6 +1388,7 @@ class DeepAgentsApp(App):
                 agent=agent,
                 server_proc=server_proc,
                 mcp_server_info=mcp_info,
+                model=model_instance,
             )
         )
 
@@ -1393,6 +1399,8 @@ class DeepAgentsApp(App):
         self._server_proc = event.server_proc
         self._mcp_server_info = event.mcp_server_info
         self._mcp_tool_count = sum(len(s.tools) for s in (event.mcp_server_info or []))
+        if event.model is not None:
+            self._model = event.model
 
         # Update welcome banner to show ready state
         try:
@@ -2205,44 +2213,92 @@ class DeepAgentsApp(App):
         if self._session_state:
             self._session_state.auto_approve = True
 
-    async def _handle_plan_enter(self) -> None:
-        """Enter plan mode.
+    async def _handle_plan_task(self, task: str) -> None:
+        """Handle /plan command.
 
-        Flips `session_state.plan_mode = True` so write tools are blocked at
-        the HITL gate, lights the PLAN pill, and shows the user a banner.
-        The planner preamble is prepended to the user's next agent turn by
-        `_send_to_agent` — no separate hidden message is queued, which keeps
-        checkpointing and the message store coherent.
+        If task is empty, enter plan mode and wait for user input.
+        If task is provided, run the planner agent directly.
+
+        Args:
+            task: The task description to plan, or empty to enter plan mode.
         """
         from invincat_cli.i18n import t
 
-        await self._mount_message(UserMessage("/plan"))
-
-        if self._session_state and self._session_state.plan_mode:
-            await self._mount_message(AppMessage(t("plan.already_on")))
+        if not task:
+            if self._session_state:
+                self._session_state.plan_mode = True
+            if self._status_bar:
+                self._status_bar.set_plan_mode(enabled=True)
+            await self._mount_message(UserMessage("/plan"))
+            await self._mount_message(AppMessage(t("plan.entered")))
             return
 
-        if self._session_state:
-            self._session_state.plan_mode = True
-        if self._status_bar:
-            self._status_bar.set_plan_mode(enabled=True)
+        await self._run_planner(task)
 
-        await self._mount_message(AppMessage(t("plan.entered")))
+    async def _run_planner(self, task: str) -> None:
+        """Run the planner agent to generate a task plan.
 
-    async def _handle_plan_exit(self) -> None:
-        """Leave plan mode — write tools are re-enabled for the next turn."""
+        Args:
+            task: The task description to plan.
+        """
         from invincat_cli.i18n import t
+        from invincat_cli.plan_agent import (
+            create_planner_agent,
+            execute_planner_streaming,
+        )
 
-        await self._mount_message(UserMessage("/exit-plan"))
-
-        if not self._session_state or not self._session_state.plan_mode:
-            await self._mount_message(AppMessage(t("plan.already_off")))
+        if not self._agent:
+            await self._mount_message(AppMessage("Agent not configured."))
             return
 
-        self._session_state.plan_mode = False
-        if self._status_bar:
-            self._status_bar.set_plan_mode(enabled=False)
-        await self._mount_message(AppMessage(t("plan.exited")))
+        model = self._model
+        if model is None:
+            from invincat_cli.config import settings
+
+            settings.reload_from_environment()
+            model_spec = self._model_override or "claude-sonnet-4-6"
+            model_params = self._model_params_override
+        else:
+            model_spec = model
+            model_params = None
+
+        try:
+            planner = create_planner_agent(model_spec, model_params=model_params)
+        except Exception as e:
+            logger.exception("Failed to create planner agent")
+            await self._mount_message(AppMessage(f"Failed to create planner: {e}"))
+            return
+
+        try:
+            todos = await execute_planner_streaming(planner, task, self._ui_adapter)
+
+            if not todos:
+                await self._mount_message(AppMessage("Planner did not generate a valid plan."))
+                return
+
+            future = await self._request_approve_plan(todos)
+            result = await future
+
+            if result.get("type") == "approved":
+                plan_text = "\n".join(
+                    f"{i + 1}. {todo['content']}" for i, todo in enumerate(todos)
+                )
+                execution_message = (
+                    f"The plan has been approved. Please execute the following tasks:\n\n"
+                    f"{plan_text}\n\n"
+                    f"Start with the first task and work through each item in order."
+                )
+                if self._session_state:
+                    self._session_state.plan_mode = False
+                if self._status_bar:
+                    self._status_bar.set_plan_mode(enabled=False)
+                await self._send_to_agent(execution_message)
+            else:
+                await self._mount_message(AppMessage(t("plan.exited")))
+
+        except Exception as e:
+            logger.exception("Planner execution failed")
+            await self._mount_message(AppMessage(f"Planner error: {e}"))
 
     async def _remove_ask_user_widget(  # noqa: PLR6301  # Shared helper used by ask_user event handlers
         self,
@@ -2351,6 +2407,64 @@ class DeepAgentsApp(App):
         if self._chat_input:
             self.call_after_refresh(self._chat_input.focus_input)
 
+    async def _request_approve_plan(
+        self,
+        todos: list[dict[str, Any]],
+    ) -> asyncio.Future[dict[str, Any]]:
+        """Display the approve_plan widget and return a Future with user response.
+
+        Args:
+            todos: List of todo items, each with `content` and `status` keys.
+
+        Returns:
+            A Future that resolves to a dict with `'type'` (`'approved'` or
+                `'rejected'`).
+        """
+        loop = asyncio.get_running_loop()
+        result_future: asyncio.Future[dict[str, Any]] = loop.create_future()
+
+        from invincat_cli.widgets.approve import ApproveWidget
+
+        unique_id = f"approve-widget-{uuid.uuid4().hex[:8]}"
+        widget = ApproveWidget(todos, id=unique_id)
+        widget.set_future(result_future)
+
+        try:
+            messages = self.query_one("#messages", Container)
+            await self._mount_before_queued(messages, widget)
+            self.call_after_refresh(widget.scroll_visible)
+        except Exception as e:
+            logger.exception(
+                "Failed to mount approve widget (id=%s)",
+                unique_id,
+            )
+            if not result_future.done():
+                result_future.set_exception(e)
+
+        return result_future
+
+    async def on_approve_widget_approved(
+        self,
+        event: Any,  # noqa: ARG002, ANN401
+    ) -> None:
+        """Handle approve widget approval - remove widget and refocus input."""
+        from invincat_cli.i18n import t
+
+        await self._mount_message(AppMessage(t("approve.approved")))
+        if self._chat_input:
+            self.call_after_refresh(self._chat_input.focus_input)
+
+    async def on_approve_widget_rejected(
+        self,
+        event: Any,  # noqa: ARG002, ANN401
+    ) -> None:
+        """Handle approve widget rejection - remove widget and refocus input."""
+        from invincat_cli.i18n import t
+
+        await self._mount_message(AppMessage(t("approve.rejected")))
+        if self._chat_input:
+            self.call_after_refresh(self._chat_input.focus_input)
+
     async def _process_message(self, value: str, mode: InputMode) -> None:
         """Route a message to the appropriate handler based on mode.
 
@@ -2389,6 +2503,11 @@ class DeepAgentsApp(App):
         if cmd in IMMEDIATE_UI:
             # Only bare form (no args) bypasses — /model opens selector,
             # /model <name> does a direct switch that shouldn't race with agent.
+            return value == cmd
+        if cmd == "/plan":
+            # Bare `/plan` toggles session state (side-effect free). `/plan
+            # <task>` delegates to the planner subagent via an agent turn and
+            # must honour the queue.
             return value == cmd
         return cmd in SIDE_EFFECT_FREE
 
@@ -2920,9 +3039,10 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             await self._handle_offload()
         elif cmd == "/plan":
-            await self._handle_plan_enter()
-        elif cmd == "/exit-plan":
-            await self._handle_plan_exit()
+            await self._handle_plan_task("")
+        elif cmd.startswith("/plan "):
+            task = command.strip()[len("/plan ") :].strip()
+            await self._handle_plan_task(task)
         elif cmd == "/threads":
             await self._show_thread_selector()
         elif cmd == "/trace":
@@ -3576,6 +3696,11 @@ class DeepAgentsApp(App):
         Args:
             message: The user's message
         """
+        if self._session_state and self._session_state.plan_mode:
+            await self._mount_message(UserMessage(message))
+            await self._run_planner(message)
+            return
+
         # Mount the user message
         await self._mount_message(UserMessage(message))
         await self._send_to_agent(message)
@@ -3600,15 +3725,6 @@ class DeepAgentsApp(App):
         # Anchor to bottom so streaming response stays visible
         with suppress(NoMatches, ScreenStackError):
             self.query_one("#chat", VerticalScroll).anchor()
-
-        # Plan mode: invisibly prepend the planner directive so the model is
-        # reminded every turn that write tools are blocked and a plan is the
-        # expected output. Skill bodies arrive via UserMessage already and
-        # follow the same code path, so they get the directive too.
-        if self._session_state and self._session_state.plan_mode:
-            from invincat_cli.plan_mode import PLAN_MODE_PREAMBLE
-
-            message = f"{PLAN_MODE_PREAMBLE}\n\n---\n\n{message}"
 
         # Check if agent is available
         if self._agent and self._ui_adapter and self._session_state:
