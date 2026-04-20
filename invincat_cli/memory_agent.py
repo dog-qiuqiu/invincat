@@ -2,10 +2,8 @@
 
 Runs an independent model call with a focused system prompt after every
 conversation turn to extract and persist important information to memory
-files.  Unlike ``AutoMemoryMiddleware`` (hint injection into the main
-agent), this middleware is fully autonomous: it uses its own system
-prompt, outputs structured JSON, and writes directly to disk — no
-reliance on the main agent's judgment.
+files.  Uses its own system prompt, outputs structured JSON, and writes
+directly to disk — independent of the main agent's judgment.
 
 The extraction runs in ``aafter_agent`` so it does not block the user
 from receiving the main response.

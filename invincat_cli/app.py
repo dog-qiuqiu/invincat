@@ -2993,8 +2993,6 @@ class DeepAgentsApp(App):
             await self._show_mcp_viewer()
         elif cmd == "/theme":
             await self._show_theme_selector()
-        elif cmd == "/auto-memory":
-            await self._show_auto_memory_config()
         elif cmd == "/language":
             await self._show_language_selector()
         elif cmd == "/model" or cmd.startswith("/model "):
@@ -4748,30 +4746,8 @@ class DeepAgentsApp(App):
             ).encode()
             _dispatch_hook_sync("session.end", payload, hooks)
 
-        # Trigger auto-memory exit check if configured
-        self._trigger_auto_memory_exit()
-
         _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
         super().exit(result=result, return_code=return_code, message=message)
-
-    def _trigger_auto_memory_exit(self) -> None:
-        """Trigger auto-memory exit check if configured.
-
-        When on_exit is enabled, saves a lightweight marker file that the
-        next session can pick up to trigger a memory review on the first
-        few exchanges.
-        """
-        try:
-            from invincat_cli.auto_memory import _read_auto_memory_config, write_exit_marker
-
-            config = _read_auto_memory_config()
-            if not config.get("on_exit", True):
-                return
-
-            thread_id = getattr(self, "_lc_thread_id", "")
-            write_exit_marker(thread_id)
-        except Exception:
-            logger.debug("Failed to write auto-memory exit marker", exc_info=True)
 
     def action_toggle_auto_approve(self) -> None:
         """Toggle auto-approve mode for the current session.
@@ -5115,26 +5091,6 @@ class DeepAgentsApp(App):
 
         i18n = get_i18n()
         screen = LanguageSelectorScreen(current_language=i18n.language)
-        self.push_screen(screen, handle_result)
-
-    async def _show_auto_memory_config(self) -> None:
-        """Show interactive auto-memory configuration as a modal screen."""
-        from invincat_cli.widgets.auto_memory_config import AutoMemoryConfigScreen
-
-        chat = self.query_one("#chat", VerticalScroll)
-        saved_y = chat.scroll_y
-        was_anchored = chat.is_anchored
-        chat.release_anchor()
-
-        def handle_result(result: AutoMemoryConfig | None) -> None:
-            """Handle the auto-memory config result."""
-            chat.scroll_to(y=saved_y, animate=False)
-            if was_anchored:
-                chat.anchor()
-            if self._chat_input:
-                self._chat_input.focus_input()
-
-        screen = AutoMemoryConfigScreen()
         self.push_screen(screen, handle_result)
 
     def _refresh_all_ui_text(self) -> None:

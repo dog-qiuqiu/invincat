@@ -146,12 +146,6 @@ COMMANDS: tuple[SlashCommand, ...] = (
         bypass_tier=BypassTier.IMMEDIATE_UI,
         hidden_keywords="dark light color appearance",
     ),
-    SlashCommand(
-        name="/auto-memory",
-        description_key="auto_memory",
-        bypass_tier=BypassTier.IMMEDIATE_UI,
-        hidden_keywords="memory auto remember",
-    ),
     # SlashCommand(
     #     name="/update",
     #     description_key="update",
