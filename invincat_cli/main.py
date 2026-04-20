@@ -1145,12 +1145,58 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     return False
 
 
+def _ensure_utf8_locale() -> None:
+    """Force a UTF-8 locale so Textual's terminal input driver can decode bytes.
+
+    Textual hardcodes UTF-8 decoding in its Linux input driver. If the process
+    locale uses a non-UTF-8 encoding (e.g. GBK on Chinese systems), any
+    non-ASCII keystrokes produce bytes that fail UTF-8 decoding and crash the
+    input thread.  Setting LANG/LC_ALL before the driver starts is sufficient
+    to prevent this.
+    """
+    import locale
+
+    try:
+        locale.setlocale(locale.LC_ALL, "")
+    except locale.Error:
+        pass
+
+    preferred = locale.getpreferredencoding(False)
+    if preferred.upper().replace("-", "") == "UTF8":
+        return
+
+    # Encoding is not UTF-8; try common UTF-8 locales in order.
+    for utf8_locale in ("C.UTF-8", "en_US.UTF-8", "POSIX"):
+        try:
+            locale.setlocale(locale.LC_ALL, utf8_locale)
+            os.environ["LANG"] = utf8_locale
+            os.environ["LC_ALL"] = utf8_locale
+            return
+        except locale.Error:
+            continue
+
+    # Last resort: just set the env vars so child processes and Textual see
+    # UTF-8; the Python process itself may still use the wrong encoding.
+    os.environ.setdefault("LANG", "en_US.UTF-8")
+    os.environ.setdefault("LC_ALL", "en_US.UTF-8")
+    sys.stderr.write(
+        "Warning: terminal locale is not UTF-8; non-ASCII input may cause errors.\n"
+        "Set LANG=en_US.UTF-8 to suppress this message.\n"
+    )
+
+
 def cli_main() -> None:
     """Entry point for console script."""
     # Fix for gRPC fork issue on macOS
     # https://github.com/grpc/grpc/issues/37642
     if sys.platform == "darwin":
         os.environ["GRPC_ENABLE_FORK_SUPPORT"] = "0"
+
+    # Textual's Linux input driver decodes terminal bytes as UTF-8. Enforce a
+    # UTF-8 locale early so non-UTF-8 terminals (e.g. GBK on Chinese systems)
+    # don't cause a UnicodeDecodeError in the input thread.
+    if sys.platform != "darwin":
+        _ensure_utf8_locale()
 
     # Note: LANGSMITH_PROJECT override is handled lazily by config.py's
     # _ensure_bootstrap() (triggered on first access of `settings`).
