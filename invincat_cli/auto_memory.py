@@ -66,7 +66,7 @@ class RefreshableMemoryMiddleware(AgentMiddleware):
         """
         if state.get("memory_contents") is None:
             logger.debug("Refreshing memory contents")
-            return self._memory_middleware.before_agent(state, runtime, None)
+            return self._memory_middleware.before_agent(state, runtime)
         return None
 
     async def abefore_agent(self, state: dict[str, Any], runtime: Any) -> dict[str, Any] | None:
@@ -84,7 +84,7 @@ class RefreshableMemoryMiddleware(AgentMiddleware):
         """
         if state.get("memory_contents") is None:
             logger.debug("Refreshing memory contents (async)")
-            return await self._memory_middleware.abefore_agent(state, runtime, None)
+            return await self._memory_middleware.abefore_agent(state, runtime)
         return None
 
     def wrap_model_call(self, request: ModelRequest, handler: Any) -> ModelResponse:
