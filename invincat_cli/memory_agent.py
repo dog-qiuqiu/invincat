@@ -1,9 +1,9 @@
 """Dedicated memory agent middleware.
 
 Runs an independent model call with a focused system prompt after every
-conversation turn to extract and persist important information to memory
-files.  Uses its own system prompt, outputs structured JSON, and writes
-directly to disk — independent of the main agent's judgment.
+non-trivial conversation turn to extract and persist important information
+to memory files.  Uses its own system prompt, outputs structured JSON,
+and writes directly to disk — independent of the main agent's judgment.
 
 The extraction runs in ``aafter_agent`` so it does not block the user
 from receiving the main response.
@@ -12,18 +12,16 @@ from receiving the main response.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
+import re
 from pathlib import Path
-from typing import Annotated, Any, NotRequired
+from typing import Any
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
-    AgentState,
     ModelRequest,
     ModelResponse,
-    PrivateStateAttr,
 )
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -74,14 +72,32 @@ What (if anything) should be persisted to memory?
 """
 
 # ---------------------------------------------------------------------------
-# State
+# Trivial-turn detection
 # ---------------------------------------------------------------------------
 
+# Short acknowledgment messages that carry no memory-worthy information.
+_TRIVIAL_RE = re.compile(
+    r"^\s*("
+    r"ok|okay|thanks|thank you|got it|sure|yes|no|confirmed|done|"
+    r"continue|go ahead|proceed|sounds good|great|perfect|nice|"
+    r"好的|谢谢|明白|知道了|好|嗯|是的|对|继续|好的好的|没问题|可以"
+    r")\s*[.!?。！？]?\s*$",
+    re.IGNORECASE,
+)
 
-class MemoryAgentState(AgentState):
-    """Private state carried by MemoryAgentMiddleware."""
 
-    _memory_agent_model: Annotated[NotRequired[Any], PrivateStateAttr]
+def _is_trivial_turn(messages: list[Any]) -> bool:
+    """Return True when the last user message carries no extractable information."""
+    user_msgs = [m for m in messages if getattr(m, "type", "") == "human"]
+    if not user_msgs:
+        return True
+    content = getattr(user_msgs[-1], "content", "")
+    if isinstance(content, list):
+        content = " ".join(
+            p.get("text", "") if isinstance(p, dict) else str(p) for p in content
+        )
+    text = str(content).strip()
+    return len(text) < 10 or bool(_TRIVIAL_RE.match(text))
 
 
 # ---------------------------------------------------------------------------
@@ -90,17 +106,16 @@ class MemoryAgentState(AgentState):
 
 
 class MemoryAgentMiddleware(AgentMiddleware):
-    """Dedicated memory agent that runs after every conversation turn.
+    """Dedicated memory agent that runs after every non-trivial conversation turn.
 
-    Captures ``request.model`` from the middleware chain and uses it in
-    ``aafter_agent`` to make an independent extraction call.  Results are
-    written directly to the configured memory files; the standard
-    ``_auto_memory_updated_paths`` state key is set so the app's existing
-    toast notification and ``RefreshableMemoryMiddleware`` refresh still
-    fire correctly.
+    Captures ``request.model`` on every ``wrap_model_call`` so that runtime
+    model switches (``/model``) are picked up immediately.  In ``aafter_agent``
+    an independent extraction call is made; results are written directly to the
+    configured memory files.
+
+    Security: only paths present in ``memory_paths`` (resolved to absolute) are
+    ever written; any other path returned by the model is rejected with a warning.
     """
-
-    state_schema = MemoryAgentState
 
     def __init__(
         self,
@@ -116,49 +131,25 @@ class MemoryAgentMiddleware(AgentMiddleware):
         """
         self._memory_paths = memory_paths
         self._context_messages = context_messages
-        self._pre_agent_hashes: dict[str, str] = {}
+        # Pre-resolve allowed paths once so the whitelist check is O(1).
+        self._allowed_paths: frozenset[str] = frozenset(
+            str(Path(p).expanduser().resolve()) for p in memory_paths
+        )
         self._captured_model: Any = None
 
     # ------------------------------------------------------------------
-    # File helpers
+    # Helpers
     # ------------------------------------------------------------------
-
-    def _snapshot_hashes(self) -> dict[str, str]:
-        hashes: dict[str, str] = {}
-        for path in self._memory_paths:
-            try:
-                data = Path(path).read_bytes()
-                hashes[path] = hashlib.md5(data, usedforsecurity=False).hexdigest()
-            except OSError:
-                hashes[path] = ""
-        return hashes
-
-    def _changed_paths(self, before: dict[str, str]) -> list[str]:
-        changed: list[str] = []
-        for path, old_hash in before.items():
-            try:
-                data = Path(path).read_bytes()
-                new_hash = hashlib.md5(data, usedforsecurity=False).hexdigest()
-            except OSError:
-                new_hash = ""
-            if new_hash != old_hash:
-                changed.append(path)
-        return changed
 
     def _read_memory_files(self) -> str:
         parts: list[str] = []
         for path in self._memory_paths:
             try:
                 content = Path(path).read_text(encoding="utf-8").strip()
-                label = f"[{path}]\n{content}" if content else f"[{path}]\n(empty)"
+                parts.append(f"[{path}]\n{content}" if content else f"[{path}]\n(empty)")
             except OSError:
-                label = f"[{path}]\n(file does not exist yet)"
-            parts.append(label)
+                parts.append(f"[{path}]\n(file does not exist yet)")
         return "\n\n".join(parts) if parts else "(no memory files configured)"
-
-    # ------------------------------------------------------------------
-    # Conversation formatting
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _format_messages(messages: list[Any]) -> str:
@@ -187,27 +178,24 @@ class MemoryAgentMiddleware(AgentMiddleware):
     async def _extract_and_write(
         self, model: Any, messages: list[Any]
     ) -> list[str]:
-        """Run the memory agent and write any updates.  Returns changed paths."""
+        """Run the memory agent and write updates.  Returns list of written paths."""
         try:
-            conversation = await asyncio.to_thread(self._format_messages, messages)
+            conversation = self._format_messages(messages)
             memory = await asyncio.to_thread(self._read_memory_files)
-            pre_hashes = await asyncio.to_thread(self._snapshot_hashes)
 
-            lc_messages = [
+            response = await model.ainvoke([
                 SystemMessage(content=_SYSTEM_PROMPT),
                 HumanMessage(
                     content=_USER_TEMPLATE.format(
                         conversation=conversation, memory=memory
                     )
                 ),
-            ]
-            response = await model.ainvoke(lc_messages)
+            ])
 
             raw: str = response.content
             if isinstance(raw, list):
                 raw = " ".join(
-                    p.get("text", "") if isinstance(p, dict) else str(p)
-                    for p in raw
+                    p.get("text", "") if isinstance(p, dict) else str(p) for p in raw
                 )
 
             start = raw.find("{")
@@ -221,17 +209,29 @@ class MemoryAgentMiddleware(AgentMiddleware):
             if not updates:
                 return []
 
+            written: list[str] = []
             for update in updates:
                 file_path = update.get("file")
                 content = update.get("content")
                 if not file_path or content is None:
                     continue
-                p = Path(file_path)
+
+                # Security: reject any path not in the pre-approved whitelist.
+                resolved = str(Path(file_path).expanduser().resolve())
+                if resolved not in self._allowed_paths:
+                    logger.warning(
+                        "Memory agent: rejected write to unauthorized path %s",
+                        file_path,
+                    )
+                    continue
+
+                p = Path(file_path).expanduser()
                 await asyncio.to_thread(p.parent.mkdir, parents=True, exist_ok=True)
                 await asyncio.to_thread(p.write_text, content, "utf-8")
+                written.append(file_path)
                 logger.debug("Memory agent wrote: %s", file_path)
 
-            return await asyncio.to_thread(self._changed_paths, pre_hashes)
+            return written
 
         except Exception:
             logger.debug("Memory agent extraction failed", exc_info=True)
@@ -241,34 +241,21 @@ class MemoryAgentMiddleware(AgentMiddleware):
     # Middleware hooks
     # ------------------------------------------------------------------
 
-    def before_agent(
-        self, state: MemoryAgentState, runtime: Any
-    ) -> dict[str, Any] | None:
-        self._pre_agent_hashes = self._snapshot_hashes()
-        return None
-
-    async def abefore_agent(
-        self, state: MemoryAgentState, runtime: Any
-    ) -> dict[str, Any] | None:
-        self._pre_agent_hashes = await asyncio.to_thread(self._snapshot_hashes)
-        return None
-
     def wrap_model_call(
         self, request: ModelRequest, handler: Any
     ) -> ModelResponse:
-        if self._captured_model is None:
-            self._captured_model = request.model
+        # Always update so /model switches are reflected immediately.
+        self._captured_model = request.model
         return handler(request)
 
     async def awrap_model_call(
         self, request: ModelRequest, handler: Any
     ) -> ModelResponse:
-        if self._captured_model is None:
-            self._captured_model = request.model
+        self._captured_model = request.model
         return await handler(request)
 
     async def aafter_agent(
-        self, state: MemoryAgentState, runtime: Any
+        self, state: Any, runtime: Any
     ) -> dict[str, Any] | None:
         model = self._captured_model
         if model is None:
@@ -279,34 +266,15 @@ class MemoryAgentMiddleware(AgentMiddleware):
             return None
 
         recent = messages[-self._context_messages :]
-        changed = await self._extract_and_write(model, recent)
 
-        if changed:
+        if _is_trivial_turn(recent):
+            logger.debug("Memory agent: skipping trivial turn")
+            return None
+
+        written = await self._extract_and_write(model, recent)
+        if written:
             return {
-                "memory_contents": None,        # triggers RefreshableMemoryMiddleware
-                "_auto_memory_updated_paths": changed,  # triggers toast in app.py
+                "memory_contents": None,               # triggers RefreshableMemoryMiddleware reload
+                "_auto_memory_updated_paths": written,  # triggers toast in app.py
             }
-        return None
-
-    def after_agent(
-        self, state: MemoryAgentState, runtime: Any
-    ) -> dict[str, Any] | None:
-        # Sync fallback: fire-and-forget if an event loop is already running.
-        # aafter_agent is preferred; this path only runs in sync execution contexts.
-        model = self._captured_model
-        if model is None:
-            return None
-
-        messages = state.get("messages", [])
-        if not messages:
-            return None
-
-        recent = messages[-self._context_messages :]
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.create_task(self._extract_and_write(model, recent))
-        except RuntimeError:
-            logger.debug("Memory agent: no running event loop for sync fallback")
-
         return None
