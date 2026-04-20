@@ -3326,7 +3326,11 @@ class DeepAgentsApp(App):
         self._auto_offload_cooldown_until = _monotonic() + _AUTO_OFFLOAD_COOLDOWN_SECONDS
 
     async def _maybe_notify_memory_update(self) -> None:
-        """Show a status bar notification when memory files were updated this turn."""
+        """Show a status bar notification when memory files were updated this turn.
+
+        Shows "记忆整理中..." immediately, then transitions to the success message
+        after a brief pause so the user sees the two-phase notification.
+        """
         try:
             state_values = await self._get_thread_state_values(self._lc_thread_id)
             updated_paths = state_values.get("_auto_memory_updated_paths")
@@ -3338,17 +3342,27 @@ class DeepAgentsApp(App):
                     short = "~/" + str(Path(updated_paths[0]).relative_to(home))
                 except ValueError:
                     short = updated_paths[0]
-                msg = t("status.memory_updated").format(path=short)
+                success_msg = t("status.memory_updated").format(path=short)
             else:
-                msg = t("status.memory_updated_n").format(n=len(updated_paths))
-            self._update_status(msg)
+                success_msg = t("status.memory_updated_n").format(n=len(updated_paths))
+
+            # Phase 1: show "记忆整理中..."
+            self._update_status(t("status.memory_updating"))
             if self._memory_status_clear_timer is not None:
                 self._memory_status_clear_timer.stop()
+            # Phase 2: transition to success message after a short delay
             self._memory_status_clear_timer = self.set_timer(
-                4.0, self._clear_memory_status
+                0.8, lambda msg=success_msg: self._on_memory_update_done(msg)
             )
         except Exception:
             logger.debug("Failed to check memory update state", exc_info=True)
+
+    def _on_memory_update_done(self, msg: str) -> None:
+        """Transition from '记忆整理中...' to the success message."""
+        self._update_status(msg)
+        if self._memory_status_clear_timer is not None:
+            self._memory_status_clear_timer.stop()
+        self._memory_status_clear_timer = self.set_timer(4.0, self._clear_memory_status)
 
     def _clear_memory_status(self) -> None:
         """Clear the memory-update status bar message."""
