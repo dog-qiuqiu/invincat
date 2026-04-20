@@ -1073,11 +1073,11 @@ def create_cli_agent(
             if expected_str not in auto_memory_paths:
                 auto_memory_paths.append(expected_str)
 
-        # Add auto-memory middleware (periodic memory update hints)
-        from invincat_cli.auto_memory import AutoMemoryMiddleware
+        # Add memory agent middleware (dedicated per-turn memory extraction)
+        from invincat_cli.memory_agent import MemoryAgentMiddleware
 
         agent_middleware.append(
-            AutoMemoryMiddleware(
+            MemoryAgentMiddleware(
                 memory_paths=auto_memory_paths,
             )
         )

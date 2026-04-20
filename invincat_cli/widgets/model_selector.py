@@ -977,6 +977,8 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
         Binding("enter", "submit", "Submit", show=False, priority=True),
         Binding("tab", "next_field", "Next field", show=False, priority=True),
         Binding("shift+tab", "prev_field", "Prev field", show=False, priority=True),
+        Binding("down", "next_field", "Next field", show=False, priority=True),
+        Binding("up", "prev_field", "Prev field", show=False, priority=True),
     ]
 
     CSS = """

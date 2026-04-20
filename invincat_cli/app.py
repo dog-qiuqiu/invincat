@@ -744,6 +744,7 @@ class DeepAgentsApp(App):
         self._shell_running = False
 
         self._loading_widget: LoadingWidget | None = None
+        self._memory_status_clear_timer: Any | None = None
 
         self._context_tokens: int = 0
         """Local cache of the last total-context token count.
@@ -2993,8 +2994,6 @@ class DeepAgentsApp(App):
             await self._show_mcp_viewer()
         elif cmd == "/theme":
             await self._show_theme_selector()
-        elif cmd == "/auto-memory":
-            await self._show_auto_memory_config()
         elif cmd == "/language":
             await self._show_language_selector()
         elif cmd == "/model" or cmd.startswith("/model "):
@@ -3327,7 +3326,7 @@ class DeepAgentsApp(App):
         self._auto_offload_cooldown_until = _monotonic() + _AUTO_OFFLOAD_COOLDOWN_SECONDS
 
     async def _maybe_notify_memory_update(self) -> None:
-        """Show a toast notification when memory files were updated this turn."""
+        """Show a status bar notification when memory files were updated this turn."""
         try:
             state_values = await self._get_thread_state_values(self._lc_thread_id)
             updated_paths = state_values.get("_auto_memory_updated_paths")
@@ -3339,12 +3338,22 @@ class DeepAgentsApp(App):
                     short = "~/" + str(Path(updated_paths[0]).relative_to(home))
                 except ValueError:
                     short = updated_paths[0]
-                msg = f"Memory updated: {short}"
+                msg = t("status.memory_updated").format(path=short)
             else:
-                msg = f"Memory updated: {len(updated_paths)} files"
-            self.notify(msg, severity="information", timeout=5)
+                msg = t("status.memory_updated_n").format(n=len(updated_paths))
+            self._update_status(msg)
+            if self._memory_status_clear_timer is not None:
+                self._memory_status_clear_timer.stop()
+            self._memory_status_clear_timer = self.set_timer(
+                4.0, self._clear_memory_status
+            )
         except Exception:
             logger.debug("Failed to check memory update state", exc_info=True)
+
+    def _clear_memory_status(self) -> None:
+        """Clear the memory-update status bar message."""
+        self._memory_status_clear_timer = None
+        self._update_status("")
 
     def _resolve_offload_budget_str(self) -> str | None:
         """Resolve the offload retention budget as a human-readable string.
@@ -3761,7 +3770,10 @@ class DeepAgentsApp(App):
                 )
 
         # Auto-offload when context window is near full (no-op when below threshold)
-        await self._maybe_auto_offload()
+        try:
+            await self._maybe_auto_offload()
+        except Exception:
+            logger.exception("Auto-offload failed during agent cleanup")
 
         # Notify user if memory files were updated this turn
         await self._maybe_notify_memory_update()
@@ -4748,30 +4760,8 @@ class DeepAgentsApp(App):
             ).encode()
             _dispatch_hook_sync("session.end", payload, hooks)
 
-        # Trigger auto-memory exit check if configured
-        self._trigger_auto_memory_exit()
-
         _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
         super().exit(result=result, return_code=return_code, message=message)
-
-    def _trigger_auto_memory_exit(self) -> None:
-        """Trigger auto-memory exit check if configured.
-
-        When on_exit is enabled, saves a lightweight marker file that the
-        next session can pick up to trigger a memory review on the first
-        few exchanges.
-        """
-        try:
-            from invincat_cli.auto_memory import _read_auto_memory_config, write_exit_marker
-
-            config = _read_auto_memory_config()
-            if not config.get("on_exit", True):
-                return
-
-            thread_id = getattr(self, "_lc_thread_id", "")
-            write_exit_marker(thread_id)
-        except Exception:
-            logger.debug("Failed to write auto-memory exit marker", exc_info=True)
 
     def action_toggle_auto_approve(self) -> None:
         """Toggle auto-approve mode for the current session.
@@ -5115,26 +5105,6 @@ class DeepAgentsApp(App):
 
         i18n = get_i18n()
         screen = LanguageSelectorScreen(current_language=i18n.language)
-        self.push_screen(screen, handle_result)
-
-    async def _show_auto_memory_config(self) -> None:
-        """Show interactive auto-memory configuration as a modal screen."""
-        from invincat_cli.widgets.auto_memory_config import AutoMemoryConfigScreen
-
-        chat = self.query_one("#chat", VerticalScroll)
-        saved_y = chat.scroll_y
-        was_anchored = chat.is_anchored
-        chat.release_anchor()
-
-        def handle_result(result: AutoMemoryConfig | None) -> None:
-            """Handle the auto-memory config result."""
-            chat.scroll_to(y=saved_y, animate=False)
-            if was_anchored:
-                chat.anchor()
-            if self._chat_input:
-                self._chat_input.focus_input()
-
-        screen = AutoMemoryConfigScreen()
         self.push_screen(screen, handle_result)
 
     def _refresh_all_ui_text(self) -> None:
