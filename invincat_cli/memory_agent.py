@@ -27,6 +27,9 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 logger = logging.getLogger(__name__)
 
+_MAX_PER_FILE_CHARS = 4000   # truncation limit per memory file sent to the agent
+_MAX_OUTPUT_TOKENS = 2000    # upper bound for memory agent JSON response
+
 # ---------------------------------------------------------------------------
 # Prompts
 # ---------------------------------------------------------------------------
@@ -146,6 +149,8 @@ class MemoryAgentMiddleware(AgentMiddleware):
         for path in self._memory_paths:
             try:
                 content = Path(path).read_text(encoding="utf-8").strip()
+                if len(content) > _MAX_PER_FILE_CHARS:
+                    content = content[:_MAX_PER_FILE_CHARS] + f"\n[...{len(content) - _MAX_PER_FILE_CHARS} chars truncated]"
                 parts.append(f"[{path}]\n{content}" if content else f"[{path}]\n(empty)")
             except OSError:
                 parts.append(f"[{path}]\n(file does not exist yet)")
@@ -183,7 +188,7 @@ class MemoryAgentMiddleware(AgentMiddleware):
             conversation = self._format_messages(messages)
             memory = await asyncio.to_thread(self._read_memory_files)
 
-            response = await model.ainvoke([
+            response = await model.bind(max_tokens=_MAX_OUTPUT_TOKENS).ainvoke([
                 SystemMessage(content=_SYSTEM_PROMPT),
                 HumanMessage(
                     content=_USER_TEMPLATE.format(
@@ -257,6 +262,7 @@ class MemoryAgentMiddleware(AgentMiddleware):
     async def aafter_agent(
         self, state: Any, runtime: Any
     ) -> dict[str, Any] | None:
+        logger.debug("Memory agent: aafter_agent called")
         model = self._captured_model
         if model is None:
             return None
