@@ -16,12 +16,14 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, NotRequired
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
+    AgentState,
     ModelRequest,
     ModelResponse,
+    PrivateStateAttr,
 )
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -104,6 +106,22 @@ def _is_trivial_turn(messages: list[Any]) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Private state schema
+# ---------------------------------------------------------------------------
+
+
+class MemoryAgentState(AgentState):
+    """Private state fields for MemoryAgentMiddleware.
+
+    Declared with ``PrivateStateAttr`` so LangGraph resets them automatically
+    at the start of every agent turn, preventing stale values from leaking
+    between turns.
+    """
+
+    _auto_memory_updated_paths: Annotated[NotRequired[list[str]], PrivateStateAttr]
+
+
+# ---------------------------------------------------------------------------
 # Middleware
 # ---------------------------------------------------------------------------
 
@@ -119,6 +137,8 @@ class MemoryAgentMiddleware(AgentMiddleware):
     Security: only paths present in ``memory_paths`` (resolved to absolute) are
     ever written; any other path returned by the model is rejected with a warning.
     """
+
+    state_schema = MemoryAgentState
 
     def __init__(
         self,
@@ -184,6 +204,7 @@ class MemoryAgentMiddleware(AgentMiddleware):
         self, model: Any, messages: list[Any]
     ) -> list[str]:
         """Run the memory agent and write updates.  Returns list of written paths."""
+        written: list[str] = []
         try:
             conversation = self._format_messages(messages)
             memory = await asyncio.to_thread(self._read_memory_files)
@@ -209,11 +230,10 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 return []
 
             data, _ = json.JSONDecoder().raw_decode(raw, start)
-            updates: list[dict[str, str]] = data.get("updates", [])
-            if not updates:
+            updates = data.get("updates", [])
+            if not updates or not isinstance(updates, list):
                 return []
 
-            written: list[str] = []
             for update in updates:
                 file_path = update.get("file")
                 content = update.get("content")
@@ -239,10 +259,10 @@ class MemoryAgentMiddleware(AgentMiddleware):
 
         except json.JSONDecodeError:
             logger.debug("Memory agent: model returned malformed JSON", exc_info=True)
-            return []
+            return []  # JSONDecodeError occurs before any writes, written is always []
         except Exception:
             logger.warning("Memory agent extraction failed unexpectedly", exc_info=True)
-            return []
+            return written  # return any paths successfully written before the failure
 
     # ------------------------------------------------------------------
     # Middleware hooks
