@@ -74,9 +74,9 @@ flowchart TD
 
 | 变量 | 默认值 | 说明 |
 |---|---:|---|
-| `INVINCAT_MEMORY_MIN_TURN_INTERVAL` | `10` | 最小轮次间隔 |
-| `INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS` | `30` | 最小时间间隔 |
-| `INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS` | `15` | 文件最近修改冷却 |
+| `INVINCAT_MEMORY_MIN_TURN_INTERVAL` | `5` | 最小轮次间隔 |
+| `INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS` | `15` | 最小时间间隔 |
+| `INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS` | `8` | 文件最近修改冷却 |
 
 ## 7. 模型输出协议与校验
 
@@ -152,4 +152,3 @@ Memory agent 只接受如下 JSON 契约：
 - 有更新提示但内容没变：可能被“结构化合并 + 去重”判定为无实质变化。
 - 记忆写不进去：优先检查路径是否在白名单内。
 - 内容异常增长：检查是否未命中冲突 key，或非规则条目持续累加。
-

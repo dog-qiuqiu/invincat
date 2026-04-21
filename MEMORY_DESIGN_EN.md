@@ -77,9 +77,9 @@ Environment knobs:
 
 | Variable | Default | Meaning |
 |---|---:|---|
-| `INVINCAT_MEMORY_MIN_TURN_INTERVAL` | `10` | Minimum turn interval |
-| `INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS` | `30` | Minimum wall-clock interval |
-| `INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS` | `15` | Cooldown after recent file update |
+| `INVINCAT_MEMORY_MIN_TURN_INTERVAL` | `5` | Minimum turn interval |
+| `INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS` | `15` | Minimum wall-clock interval |
+| `INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS` | `8` | Cooldown after recent file update |
 
 ## 7. Model Output Contract and Validation
 
@@ -155,4 +155,3 @@ Also, internal memory-agent JSON is filtered and not rendered as assistant chat 
 - Update status shown but no content changed: likely dedupe/merge deemed no material delta.
 - Writes silently missing: verify target path is in whitelist.
 - Unexpected growth: check whether entries bypass conflict-key detection or are non-rule accumulations.
-
