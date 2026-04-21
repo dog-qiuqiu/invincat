@@ -226,6 +226,43 @@ def _normalize_line_for_dedupe(line: str) -> str:
     return re.sub(r"\s+", " ", stripped).casefold()
 
 
+def _extract_rule_conflict_key(line: str) -> str | None:
+    """Extract a normalized rule topic key for conflict resolution.
+
+    Returns a key when the line looks like an imperative preference/rule, so
+    newer contradictory rules can replace older ones.
+    """
+    text = line.strip()
+    if not text:
+        return None
+
+    # Strip common markdown bullet prefixes.
+    if text.startswith(("- ", "* ")):
+        text = text[2:].strip()
+
+    # English rule markers (always/never/prefer/avoid/must/should).
+    eng = re.match(
+        r"^(always|never|prefer|avoid|must|should|do not|don't)\s+(.+)$",
+        text,
+        re.IGNORECASE,
+    )
+    if eng:
+        tail = eng.group(2)
+        tail = re.sub(r"^(to\s+)", "", tail, flags=re.IGNORECASE)
+        tail = re.sub(r"[.。!！?？]+$", "", tail).strip()
+        key = re.sub(r"\s+", " ", tail).casefold()
+        return f"rule:{key}" if key else None
+
+    # Chinese rule markers.
+    zh = re.match(r"^(总是|不要|避免|优先|尽量|必须|应该)\s*(.+)$", text)
+    if zh:
+        tail = re.sub(r"[。！!？?]+$", "", zh.group(2)).strip()
+        key = re.sub(r"\s+", " ", tail).casefold()
+        return f"rule:{key}" if key else None
+
+    return None
+
+
 def _parse_markdown_sections(content: str) -> tuple[list[str], dict[str, list[str]]]:
     ordered: list[str] = []
     sections: dict[str, list[str]] = {}
@@ -248,21 +285,41 @@ def _parse_markdown_sections(content: str) -> tuple[list[str], dict[str, list[st
 
 def _merge_section_lines(existing: list[str], proposed: list[str]) -> list[str]:
     merged: list[str] = []
-    seen: set[str] = set()
+    seen_exact: set[str] = set()
+    conflict_index: dict[str, int] = {}
     for line in [*existing, *proposed]:
-        if len(merged) >= _MAX_SECTION_LINES:
-            break
         key = _normalize_line_for_dedupe(line)
         if not key:
             # collapse repeated blank lines
             if merged and merged[-1] == "":
                 continue
+            if len(merged) >= _MAX_SECTION_LINES:
+                break
             merged.append("")
             continue
-        if key in seen:
+        if key in seen_exact:
             continue
-        seen.add(key)
+
+        # If this line is a rule on the same topic as an existing one, keep
+        # only the latest line (latest wins) to avoid stale contradictions.
+        conflict_key = _extract_rule_conflict_key(line)
+        if conflict_key is not None and conflict_key in conflict_index:
+            idx = conflict_index[conflict_key]
+            old_line = merged[idx]
+            old_key = _normalize_line_for_dedupe(old_line)
+            if old_key:
+                seen_exact.discard(old_key)
+            merged[idx] = line
+            seen_exact.add(key)
+            continue
+
+        if len(merged) >= _MAX_SECTION_LINES:
+            break
+
         merged.append(line)
+        seen_exact.add(key)
+        if conflict_key is not None:
+            conflict_index[conflict_key] = len(merged) - 1
     return merged
 
 
