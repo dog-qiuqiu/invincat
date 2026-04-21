@@ -189,6 +189,10 @@ Triggers AI to actively organize content worth saving from the conversation and 
 
 Memory updates are triggered after non-trivial completed turns, with:
 
+- incremental extraction: consume only messages added since the previous
+  memory extraction in the same thread
+- cursor invalidation fallback: if history is rewritten (for example,
+  compaction/checkpoint replay), fallback to one full-history pass
 - turn-interval throttling
 - keyword-based early triggers (preferences/rules/conventions)
 - time/file cooldown guards

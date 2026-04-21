@@ -60,6 +60,14 @@ flowchart TD
 
 Triggering is two-layered.
 
+Extraction input strategy (thread-local):
+
+- Default: incremental delta only (messages appended since last successful
+  extraction cursor in the same thread).
+- Safety fallback: if the cursor is invalidated by history rewrite
+  (e.g. compaction/checkpoint replay), the middleware performs one full-history
+  pass and re-establishes the cursor.
+
 Hard gates:
 
 - No pending interrupts.
