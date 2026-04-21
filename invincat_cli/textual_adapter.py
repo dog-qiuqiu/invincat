@@ -665,6 +665,7 @@ async def execute_task_textual(
             pending_ask_user: dict[str, AskUserRequest] = {}
             pending_approve_plan: dict[str, Any] = {}
             error_ask_user_ids: dict[str, str] = {}
+            malformed_hitl_interrupt_ids: set[str] = set()
 
             _astream_attempt = 0
             while True:  # stream-retry loop; only retries on transient errors with zero chunks received
@@ -765,17 +766,13 @@ async def execute_task_textual(
                                             except ValidationError:
                                                 logger.exception(
                                                     "Invalid HITL interrupt payload; "
-                                                    "aborting turn cleanly"
+                                                    "resuming with rejection so the "
+                                                    "agent can recover"
                                                 )
-                                                if adapter._set_spinner:
-                                                    await adapter._set_spinner(None)
-                                                await adapter._mount_message(
-                                                    AppMessage(
-                                                        "Internal error: could not parse tool approval request. "
-                                                        "Please try again."
-                                                    )
+                                                malformed_hitl_interrupt_ids.add(
+                                                    interrupt_obj.id
                                                 )
-                                                return turn_stats
+                                                interrupt_occurred = True
         
                             # Check for todo updates (not yet implemented in Textual UI)
                             chunk_data = next(iter(data.values())) if data else None
@@ -1457,11 +1454,25 @@ async def execute_task_textual(
                     break  # stream completed successfully — exit retry loop
 
                 _astream_attempt += 1
-                if (
-                    _astream_chunks > 0
-                    or _astream_attempt > 3
-                    or not _is_transient_stream_error(_astream_exc)
-                ):
+                is_transient_stream_error = _is_transient_stream_error(_astream_exc)
+                if _astream_chunks > 0 and is_transient_stream_error:
+                    # Stream failed after partial output. Avoid surfacing this as
+                    # a fatal "Agent error" and keep already-rendered content.
+                    logger.warning(
+                        "astream interrupted after %d chunk(s); preserving partial "
+                        "output and ending turn gracefully: %s",
+                        _astream_chunks,
+                        _astream_exc,
+                    )
+                    await adapter._mount_message(
+                        AppMessage(
+                            "Connection dropped mid-response. Partial output was kept; "
+                            "you can ask the agent to continue."
+                        )
+                    )
+                    break
+
+                if _astream_attempt > 3 or not is_transient_stream_error:
                     raise _astream_exc
 
                 _retry_delay = 2.0 * (2 ** (_astream_attempt - 1))  # 2s, 4s, 8s
@@ -1522,6 +1533,18 @@ async def execute_task_textual(
                     resume_payload[interrupt_id] = {
                         "status": "error",
                         "error": error_msg,
+                    }
+
+                # Fail-closed for malformed generic HITL payloads: reject so the
+                # graph can recover instead of aborting this turn.
+                for interrupt_id in malformed_hitl_interrupt_ids:
+                    resume_payload[interrupt_id] = {
+                        "decisions": [
+                            RejectDecision(
+                                type="reject",
+                                message="Malformed interrupt payload",
+                            )
+                        ]
                     }
 
                 for interrupt_id, ask_req in list(pending_ask_user.items()):

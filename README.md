@@ -175,7 +175,7 @@ Triggers AI to actively organize content worth saving from the conversation and 
 
 The system automatically checks for new content to save every certain number of rounds, or triggers early when detecting keywords like "standards", "conventions", "preferences" in the conversation.
 
-**Configure Auto Memory**: Run `/auto-memory` to open the configuration interface, or manually set in `~/.invincat/config.toml`:
+**Configure Auto Memory**: Set it in `~/.invincat/config.toml`:
 
 ```toml
 [auto_memory]
@@ -262,7 +262,6 @@ Type `/` in the input box and press `Tab` to view and autocomplete all commands.
 |---------|-------------|
 | `/offload` / `/compact` | Manually compress context, free tokens |
 | `/remember` | Manually trigger memory update |
-| `/auto-memory` | Configure auto memory behavior |
 
 ### Tools & Extensions
 
