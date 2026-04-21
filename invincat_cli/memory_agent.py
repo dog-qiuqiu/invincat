@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 from typing import Annotated, Any, NotRequired
 
+from langgraph.config import get_config
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -422,7 +423,7 @@ class MemoryAgentMiddleware(AgentMiddleware):
         self,
         *,
         memory_paths: list[str],
-        context_messages: int = 10,
+        context_messages: int | None = None,
         min_turn_interval: int | None = None,
         min_seconds_between_runs: float | None = None,
         file_cooldown_seconds: float | None = None,
@@ -431,12 +432,19 @@ class MemoryAgentMiddleware(AgentMiddleware):
         Args:
             memory_paths: Absolute paths to AGENTS.md files to maintain.
             context_messages: Number of recent messages fed to the memory
-                agent (default 10, roughly 5 turns).
+                agent from the incremental delta since last extraction.
+                `0` means no cap (consume full delta).
             min_turn_interval: Minimum turns between extraction runs.
             min_seconds_between_runs: Minimum wall-clock seconds between runs.
             file_cooldown_seconds: Skip extraction when memory file was
                 updated too recently.
         """
+        if context_messages is None:
+            context_messages = _env_int(
+                "INVINCAT_MEMORY_CONTEXT_MESSAGES",
+                default=0,
+                minimum=0,
+            )
         if min_turn_interval is None:
             min_turn_interval = _env_int(
                 "INVINCAT_MEMORY_MIN_TURN_INTERVAL",
@@ -457,7 +465,7 @@ class MemoryAgentMiddleware(AgentMiddleware):
             )
 
         self._memory_paths = memory_paths
-        self._context_messages = context_messages
+        self._context_messages = max(0, context_messages)
         self._min_turn_interval = max(1, min_turn_interval)
         self._min_seconds_between_runs = max(0.0, min_seconds_between_runs)
         self._file_cooldown_seconds = max(0.0, file_cooldown_seconds)
@@ -469,6 +477,10 @@ class MemoryAgentMiddleware(AgentMiddleware):
         self._turn_index = 0
         self._last_run_turn = 0
         self._last_run_at = 0.0
+        # Per-thread incremental cursor: memory agent consumes only messages
+        # appended since the previous extraction run for that thread.
+        self._cursor_by_thread: dict[str, int] = {}
+        self._anchor_by_thread: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Helpers
@@ -515,6 +527,74 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 return " ".join(filter(None, parts)).strip()
             return str(content).strip()
         return ""
+
+    @staticmethod
+    def _message_anchor(message: Any) -> str:
+        """Build a compact stability anchor for cursor validation."""
+        msg_type = getattr(message, "type", "")
+        content = getattr(message, "content", "")
+        if isinstance(content, list):
+            content = " ".join(
+                p.get("text", "") if isinstance(p, dict) else str(p) for p in content
+            )
+        text = str(content)
+        tool_calls = getattr(message, "tool_calls", None)
+        return f"{msg_type}|{len(text)}|{text[:160]}|{bool(tool_calls)}"
+
+    @staticmethod
+    def _resolve_thread_id() -> str:
+        """Resolve current thread id from RunnableConfig."""
+        try:
+            cfg = get_config()
+            configurable = cfg.get("configurable", {})
+            thread_id = configurable.get("thread_id")
+            if isinstance(thread_id, str) and thread_id.strip():
+                return thread_id
+        except Exception:
+            logger.debug("Memory agent: failed to resolve thread_id", exc_info=True)
+        return "__default_thread__"
+
+    def _slice_incremental_messages(self, thread_id: str, messages: list[Any]) -> list[Any]:
+        """Return only messages added since the last processed cursor for this thread.
+
+        Falls back to full history when cursor is invalidated by history rewrite
+        (e.g., compaction or checkpoint replay).
+        """
+        if not messages:
+            return []
+
+        cursor = self._cursor_by_thread.get(thread_id, 0)
+        if cursor <= 0:
+            return list(messages)
+
+        if cursor > len(messages):
+            logger.debug(
+                "Memory agent: cursor reset for %s (cursor=%d > len=%d)",
+                thread_id,
+                cursor,
+                len(messages),
+            )
+            return list(messages)
+
+        anchor = self._anchor_by_thread.get(thread_id)
+        if anchor and cursor - 1 >= 0:
+            current_anchor = self._message_anchor(messages[cursor - 1])
+            if current_anchor != anchor:
+                logger.debug(
+                    "Memory agent: cursor reset for %s (history changed before cursor)",
+                    thread_id,
+                )
+                return list(messages)
+
+        return list(messages[cursor:])
+
+    def _advance_cursor(self, thread_id: str, messages: list[Any]) -> None:
+        """Mark all current messages as processed for incremental extraction."""
+        self._cursor_by_thread[thread_id] = len(messages)
+        if messages:
+            self._anchor_by_thread[thread_id] = self._message_anchor(messages[-1])
+        else:
+            self._anchor_by_thread.pop(thread_id, None)
 
     def _should_run_for_turn(self, messages: list[Any]) -> bool:
         self._turn_index += 1
@@ -737,21 +817,31 @@ class MemoryAgentMiddleware(AgentMiddleware):
         if not self._should_run_for_turn(messages):
             return None
 
-        recent = messages[-self._context_messages :]
+        thread_id = self._resolve_thread_id()
+        incremental = self._slice_incremental_messages(thread_id, messages)
+        if not incremental:
+            return None
+
+        if self._context_messages <= 0:
+            recent = incremental
+        else:
+            recent = incremental[-self._context_messages :]
 
         # If the last human message was pushed out of the window by many tool
         # calls in the same turn, prepend it so the memory agent always sees
         # what the user actually said.
-        human_indices = [
-            i for i, m in enumerate(messages) if getattr(m, "type", "") == "human"
-        ]
-        if human_indices:
-            last_human_idx = human_indices[-1]
-            window_start = len(messages) - self._context_messages
-            if last_human_idx < window_start:
-                recent = [messages[last_human_idx]] + list(recent)
+        if self._context_messages > 0:
+            human_indices = [
+                i for i, m in enumerate(messages) if getattr(m, "type", "") == "human"
+            ]
+            if human_indices:
+                last_human_idx = human_indices[-1]
+                window_start = len(messages) - self._context_messages
+                if last_human_idx < window_start:
+                    recent = [messages[last_human_idx]] + list(recent)
 
         written = await self._safe_extract_and_write(model, recent)
+        self._advance_cursor(thread_id, messages)
         if written:
             return {
                 "memory_contents": None,               # triggers RefreshableMemoryMiddleware reload

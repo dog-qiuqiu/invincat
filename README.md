@@ -196,10 +196,15 @@ Memory updates are triggered after non-trivial completed turns, with:
 Tune behavior via environment variables:
 
 ```bash
+INVINCAT_MEMORY_CONTEXT_MESSAGES=0
 INVINCAT_MEMORY_MIN_TURN_INTERVAL=5
 INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS=15
 INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=8
 ```
+
+`INVINCAT_MEMORY_CONTEXT_MESSAGES=0` means no cap on the incremental delta
+since the last memory extraction. Set a positive integer to cap the delta
+to recent N messages.
 
 ### Memory Design Docs
 

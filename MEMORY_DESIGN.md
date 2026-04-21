@@ -65,15 +65,16 @@ flowchart TD
 
 第二层是节流与早触发：
 
-- 轮次间隔触发：默认每 `10` 轮才允许一次。
+- 轮次间隔触发：默认每 `5` 轮才允许一次。
 - 关键词早触发：用户输入命中偏好/规则类信号词可提前触发。
-- 时间冷却：默认两次运行至少间隔 `30s`。
-- 文件冷却：默认 memory 文件刚更新后 `15s` 内不重复运行。
+- 时间冷却：默认两次运行至少间隔 `15s`。
+- 文件冷却：默认 memory 文件刚更新后 `8s` 内不重复运行。
 
 环境变量（可调）：
 
 | 变量 | 默认值 | 说明 |
 |---|---:|---|
+| `INVINCAT_MEMORY_CONTEXT_MESSAGES` | `0` | 增量消息窗口上限（`0` 为不截断增量） |
 | `INVINCAT_MEMORY_MIN_TURN_INTERVAL` | `5` | 最小轮次间隔 |
 | `INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS` | `15` | 最小时间间隔 |
 | `INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS` | `8` | 文件最近修改冷却 |

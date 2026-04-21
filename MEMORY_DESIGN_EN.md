@@ -68,15 +68,16 @@ Hard gates:
 
 Throttle + early-trigger layer:
 
-- Turn interval trigger: default once every `10` turns.
+- Turn interval trigger: default once every `5` turns.
 - Keyword early trigger: preference/rule signals can trigger earlier.
-- Time cooldown: default minimum `30s` between runs.
-- File cooldown: default `15s` after recent memory file update.
+- Time cooldown: default minimum `15s` between runs.
+- File cooldown: default `8s` after recent memory file update.
 
 Environment knobs:
 
 | Variable | Default | Meaning |
 |---|---:|---|
+| `INVINCAT_MEMORY_CONTEXT_MESSAGES` | `0` | Max messages from incremental delta (`0` means uncapped delta) |
 | `INVINCAT_MEMORY_MIN_TURN_INTERVAL` | `5` | Minimum turn interval |
 | `INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS` | `15` | Minimum wall-clock interval |
 | `INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS` | `8` | Cooldown after recent file update |
