@@ -326,6 +326,15 @@ class MemoryAgentMiddleware(AgentMiddleware):
             logger.debug("Memory agent: skipping trivial turn")
             return None
 
+        # aafter_agent fires after EVERY agent node execution, not only at the
+        # end of the full task.  When the last AI message still has tool_calls,
+        # the agent is mid-task (waiting for tool results) — skip extraction so
+        # we only run once, on the final response.
+        ai_msgs = [m for m in messages if getattr(m, "type", "") == "ai"]
+        if ai_msgs and getattr(ai_msgs[-1], "tool_calls", None):
+            logger.debug("Memory agent: skipping — agent has pending tool calls")
+            return None
+
         written = await self._safe_extract_and_write(model, messages)
         if written:
             return {
