@@ -376,10 +376,8 @@ def _process_message_chunk(
 
     message_obj, metadata = data
 
-    # The summarization middleware injects synthetic messages to compress
-    # conversation history for the LLM. These are internal bookkeeping and
-    # should not be rendered to the user.
-    if metadata and metadata.get("lc_source") == "summarization":
+    # Internal middleware model output is bookkeeping and should not be shown.
+    if metadata and metadata.get("lc_source") in {"summarization", "memory_agent"}:
         return
 
     if isinstance(message_obj, AIMessage):

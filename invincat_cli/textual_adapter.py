@@ -221,6 +221,17 @@ def _is_summarization_chunk(metadata: dict | None) -> bool:
     return metadata.get("lc_source") == "summarization"
 
 
+def _is_internal_model_chunk(metadata: dict | None) -> bool:
+    """Check if a message chunk is internal middleware model output.
+
+    Internal model runs are bookkeeping and should never be rendered as
+    user-facing assistant text.
+    """
+    if metadata is None:
+        return False
+    return metadata.get("lc_source") == "memory_agent"
+
+
 def _normalize_tool_id(tool_id: Any) -> str | None:
     """Normalize a tool call ID to a string for consistent comparison.
 
@@ -818,6 +829,8 @@ async def execute_task_textual(
                                     summarization_in_progress = True
                                     if adapter._set_spinner:
                                         await adapter._set_spinner("Offloading")
+                                continue
+                            if _is_internal_model_chunk(metadata):
                                 continue
         
                             # Regular (non-summarization) chunks resumed — summarization

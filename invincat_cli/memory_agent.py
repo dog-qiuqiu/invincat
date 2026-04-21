@@ -268,7 +268,7 @@ class MemoryAgentMiddleware(AgentMiddleware):
                         conversation=conversation, memory=memory
                     )
                 ),
-            ])
+            ], config={"metadata": {"lc_source": "memory_agent"}})
 
             raw: str = response.content
             if isinstance(raw, list):
