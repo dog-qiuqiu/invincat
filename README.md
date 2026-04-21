@@ -160,7 +160,7 @@ AI can remember your preferences, project conventions, and important information
 
 | Type | Path | Scope |
 |------|------|-------|
-| Global Memory | `~/.invincat/agent/AGENTS.md` | Universal for all projects (coding style, personal preferences) |
+| Global Memory | `~/.invincat/{assistant_id}/AGENTS.md` (default: `~/.invincat/agent/AGENTS.md`) | Universal for all projects (coding style, personal preferences) |
 | Project Memory | `{project root}/.invincat/AGENTS.md` | Only for current Git repository (architecture conventions, tech stack) |
 
 ### Manual Memory Update
@@ -173,16 +173,24 @@ Triggers AI to actively organize content worth saving from the conversation and 
 
 ### Auto Memory Update
 
-The system automatically checks for new content to save every certain number of rounds, or triggers early when detecting keywords like "standards", "conventions", "preferences" in the conversation.
+Memory updates are triggered after non-trivial completed turns, with:
 
-**Configure Auto Memory**: Run `/auto-memory` to open the configuration interface, or manually set in `~/.invincat/config.toml`:
+- turn-interval throttling
+- keyword-based early triggers (preferences/rules/conventions)
+- time/file cooldown guards
 
-```toml
-[auto_memory]
-enabled = true   # Enable auto memory (default: true)
-interval = 10    # Number of rounds between checks (default: 10)
-on_exit = true   # Write marker on exit, trigger early next startup (default: true)
+Tune behavior via environment variables:
+
+```bash
+INVINCAT_MEMORY_MIN_TURN_INTERVAL=10
+INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS=30
+INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=15
 ```
+
+### Memory Design Docs
+
+- [Memory Design (Chinese)](./MEMORY_DESIGN.md)
+- [Memory Design (English)](./MEMORY_DESIGN_EN.md)
 
 ---
 
@@ -262,7 +270,6 @@ Type `/` in the input box and press `Tab` to view and autocomplete all commands.
 |---------|-------------|
 | `/offload` / `/compact` | Manually compress context, free tokens |
 | `/remember` | Manually trigger memory update |
-| `/auto-memory` | Configure auto memory behavior |
 
 ### Tools & Extensions
 
