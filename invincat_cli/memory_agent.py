@@ -448,19 +448,19 @@ class MemoryAgentMiddleware(AgentMiddleware):
         if min_turn_interval is None:
             min_turn_interval = _env_int(
                 "INVINCAT_MEMORY_MIN_TURN_INTERVAL",
-                default=5,
+                default=1,
                 minimum=1,
             )
         if min_seconds_between_runs is None:
             min_seconds_between_runs = _env_float(
                 "INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS",
-                default=15.0,
+                default=0.0,
                 minimum=0.0,
             )
         if file_cooldown_seconds is None:
             file_cooldown_seconds = _env_float(
                 "INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS",
-                default=8.0,
+                default=0.0,
                 minimum=0.0,
             )
 
@@ -769,6 +769,16 @@ class MemoryAgentMiddleware(AgentMiddleware):
     # Middleware hooks
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _emit_memory_status(runtime: Any, status: str) -> None:
+        """Emit memory-agent lifecycle status to custom stream events."""
+        try:
+            writer = getattr(runtime, "stream_writer", None)
+            if callable(writer):
+                writer({"event": "memory_agent", "status": status})
+        except Exception:
+            logger.debug("Memory agent: failed to emit status=%s", status, exc_info=True)
+
     def wrap_model_call(
         self, request: ModelRequest, handler: Any
     ) -> ModelResponse:
@@ -840,7 +850,11 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 if last_human_idx < window_start:
                     recent = [messages[last_human_idx]] + list(recent)
 
-        written = await self._safe_extract_and_write(model, recent)
+        self._emit_memory_status(runtime, "running")
+        try:
+            written = await self._safe_extract_and_write(model, recent)
+        finally:
+            self._emit_memory_status(runtime, "done")
         self._advance_cursor(thread_id, messages)
         if written:
             return {

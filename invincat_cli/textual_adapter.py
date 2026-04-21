@@ -685,7 +685,7 @@ async def execute_task_textual(
                 try:
                     async for chunk in agent.astream(
                         stream_input,
-                        stream_mode=["messages", "updates"],
+                        stream_mode=["messages", "updates", "custom"],
                         subgraphs=True,
                         config=config,
                         context=context,
@@ -706,6 +706,28 @@ async def execute_task_textual(
                         # report back to the main agent
                         is_main_agent = ns_key == ()
         
+                        # Handle CUSTOM stream - middleware lifecycle events
+                        if current_stream_mode == "custom":
+                            if (
+                                isinstance(data, dict)
+                                and data.get("event") == "memory_agent"
+                            ):
+                                status = data.get("status")
+                                if status == "running":
+                                    if not memory_update_in_progress:
+                                        memory_update_in_progress = True
+                                        if adapter._set_spinner:
+                                            await adapter._set_spinner("Updating memory")
+                                elif status == "done":
+                                    if memory_update_in_progress:
+                                        memory_update_in_progress = False
+                                        if (
+                                            adapter._set_spinner
+                                            and not adapter._current_tool_messages
+                                        ):
+                                            await adapter._set_spinner("Thinking")
+                            continue
+
                         # Handle UPDATES stream - for interrupts and todos
                         if current_stream_mode == "updates":
                             if not isinstance(data, dict):
