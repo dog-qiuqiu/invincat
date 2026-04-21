@@ -125,18 +125,32 @@ Press `Ctrl+J` in the input box to insert a line break, suitable for entering lo
 
 A lightweight compression that runs automatically before each model call, **no LLM involved**, taking <1ms.
 
-**How it works**: Groups conversation messages by "tool call groups", keeps the last 3 groups complete, and replaces large tool outputs in older groups with brief placeholders (keeping the first line summary and line count).
+**How it works**: Groups conversation messages by "tool call groups", keeps a **dynamic recent window** intact, and compresses older large tool outputs in two levels:
+
+- `cleared-light`: richer placeholder near the cutoff (keeps head/tail signals)
+- `cleared-heavy`: stronger placeholder for older groups (keeps concise summary)
 
 **Compressible Tool Outputs**:
 | Tool | Compression Effect |
 |------|-------------------|
-| `read_file` | File content → `[cleared — read_file, 500 lines: def main():…]` |
-| `edit_file` | diff output → placeholder |
-| `execute` | shell output → placeholder |
-| `grep`/`glob`/`ls` | search/list results → placeholder |
-| `web_search`/`fetch_url` | web content → placeholder |
+| `read_file` | file content → light/heavy placeholder |
+| `edit_file` | diff output → light/heavy placeholder |
+| `write_file` | write result → light/heavy placeholder |
+| `execute` | shell output → light/heavy placeholder |
+| `grep`/`glob`/`ls` | search/list output → light/heavy placeholder |
+| `web_search`/`fetch_url` | web content → light/heavy placeholder |
 
 **Not Compressed**: agent/subagent results, `ask_user` responses, MCP tool outputs, `compact_conversation` results.
+
+Tune micro compression with environment variables:
+
+```bash
+INVINCAT_MICRO_COMPACT_KEEP_RECENT_GROUPS=3
+INVINCAT_MICRO_COMPACT_DYNAMIC_GROUP_FACTOR=12
+INVINCAT_MICRO_COMPACT_MAX_KEEP_RECENT_GROUPS=8
+INVINCAT_MICRO_COMPACT_LIGHT_NEAR_CUTOFF_GROUPS=2
+INVINCAT_MICRO_COMPACT_MIN_COMPRESS_CHARS=240
+```
 
 > 💡 Micro compression only affects the context sent to the model, does not modify persisted state, and complete history is still saved in checkpoints.
 
