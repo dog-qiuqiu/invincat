@@ -13,6 +13,7 @@ from invincat_cli.config import (
     is_ascii_mode,
     is_shell_command_allowed,
 )
+from invincat_cli.model_config import ModelConfigError
 
 
 class TestSettings:
@@ -41,50 +42,36 @@ class TestSettings:
     def test_get_agent_dir(self):
         """Test getting agent directory path."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Mock config directory
-            with patch("invincat_cli.config.settings.config_dir", Path(tmpdir)):
+            with patch("invincat_cli.config.Path.home", return_value=Path(tmpdir)):
                 settings = Settings.from_environment()
                 agent_dir = settings.get_agent_dir("test-agent")
-                
-                expected = Path(tmpdir) / "agents" / "test-agent"
+
+                expected = Path(tmpdir) / ".invincat" / "test-agent"
                 assert agent_dir == expected
                 assert "test-agent" in str(agent_dir)
 
-    def test_get_model_config_path(self):
-        """Test getting model configuration path."""
+    def test_get_user_agent_md_path(self):
+        """Test getting user-level AGENTS.md path."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("invincat_cli.config.settings.config_dir", Path(tmpdir)):
-                settings = Settings.from_environment()
-                config_path = settings.get_model_config_path()
-                
-                expected = Path(tmpdir) / "models.json"
-                assert config_path == expected
+            with patch("invincat_cli.config.Path.home", return_value=Path(tmpdir)):
+                md_path = Settings.get_user_agent_md_path("test-agent")
 
-    def test_has_api_key(self):
-        """Test checking for API keys."""
-        settings = Settings.from_environment()
-        
-        # Initially no keys set
-        assert not settings.has_api_key("openai")
-        assert not settings.has_api_key("anthropic")
-        
-        # Set keys and test
-        settings.openai_api_key = "test-key"
-        settings.anthropic_api_key = "test-key"
-        
-        assert settings.has_api_key("openai")
-        assert settings.has_api_key("anthropic")
-        assert not settings.has_api_key("unknown")
+                expected = Path(tmpdir) / ".invincat" / "test-agent" / "AGENTS.md"
+                assert md_path == expected
 
-    def test_get_api_key(self):
-        """Test getting API keys."""
-        settings = Settings.from_environment()
-        settings.openai_api_key = "openai-test"
-        settings.anthropic_api_key = "anthropic-test"
-        
-        assert settings.get_api_key("openai") == "openai-test"
-        assert settings.get_api_key("anthropic") == "anthropic-test"
-        assert settings.get_api_key("unknown") is None
+    def test_provider_key_properties(self):
+        """Test provider key availability properties."""
+        with patch.dict(os.environ, {}, clear=True):
+            settings = Settings.from_environment()
+
+            assert not settings.has_openai
+            assert not settings.has_anthropic
+
+            settings.openai_api_key = "test-key"
+            settings.anthropic_api_key = "test-key"
+
+            assert settings.has_openai
+            assert settings.has_anthropic
 
 
 class TestUtilityFunctions:
@@ -92,95 +79,80 @@ class TestUtilityFunctions:
 
     def test_is_ascii_mode(self):
         """Test ASCII mode detection."""
-        # Test with ASCII locale
-        with patch.dict(os.environ, {"LC_ALL": "C", "LANG": "C"}):
+        # Test with ASCII locale when stdout encoding is non-UTF.
+        with (
+            patch("sys.stdout", new=Mock(encoding="ascii")),
+            patch.dict(os.environ, {"LC_ALL": "C", "LANG": "C"}),
+        ):
             assert is_ascii_mode() is True
-        
-        # Test with UTF-8 locale
-        with patch.dict(os.environ, {"LC_ALL": "en_US.UTF-8", "LANG": "en_US.UTF-8"}):
-            assert is_ascii_mode() is False
-        
-        # Test with no locale (defaults to False)
-        with patch.dict(os.environ, {}, clear=True):
+
+        # UTF-8 stdout encoding should force Unicode mode.
+        with (
+            patch("sys.stdout", new=Mock(encoding="UTF-8")),
+            patch.dict(os.environ, {"LC_ALL": "C", "LANG": "C"}),
+        ):
             assert is_ascii_mode() is False
 
     def test_is_shell_command_allowed(self):
         """Test shell command allow list checking."""
         # Test with no allow list (all commands require approval)
-        assert is_shell_command_allowed("ls") is False
-        assert is_shell_command_allowed("cd /tmp") is False
-        
+        assert is_shell_command_allowed("ls", None) is False
+        assert is_shell_command_allowed("cd /tmp", None) is False
+
         # Test with allow list
-        with patch("invincat_cli.config.settings.shell_allow_list", ["ls", "cd", "pwd"]):
-            assert is_shell_command_allowed("ls") is True
-            assert is_shell_command_allowed("cd /tmp") is True
-            assert is_shell_command_allowed("rm -rf /") is False
-            assert is_shell_command_allowed("ls -la") is True  # ls with args
-            
-            # Test command with path
-            assert is_shell_command_allowed("/bin/ls") is True
-            assert is_shell_command_allowed("./script.sh") is False
+        allow_list = ["ls", "cd", "pwd", "/bin/ls"]
+        assert is_shell_command_allowed("ls", allow_list) is True
+        assert is_shell_command_allowed("cd /tmp", allow_list) is True
+        assert is_shell_command_allowed("rm -rf /", allow_list) is False
+        assert is_shell_command_allowed("ls -la", allow_list) is True  # ls with args
+        assert is_shell_command_allowed("/bin/ls", allow_list) is True
+        assert is_shell_command_allowed("./script.sh", allow_list) is False
 
     def test_build_stream_config(self):
         """Test building stream configuration."""
-        config = build_stream_config()
-        
-        assert "callbacks" in config
+        config = build_stream_config("thread-1", "assistant-1")
+
         assert "configurable" in config
-        assert "model_name" in config["configurable"]
-        assert "model_provider" in config["configurable"]
-        
-        # Test with custom model
-        custom_config = build_stream_config(model_name="gpt-4", model_provider="openai")
-        assert custom_config["configurable"]["model_name"] == "gpt-4"
-        assert custom_config["configurable"]["model_provider"] == "openai"
+        assert "metadata" in config
+        assert config["configurable"]["thread_id"] == "thread-1"
+        assert config["metadata"]["assistant_id"] == "assistant-1"
 
 
 class TestModelCreation:
     """Tests for model creation functions."""
 
-    @patch("invincat_cli.config.ChatOpenAI")
-    def test_create_model_openai(self, mock_chat_openai):
-        """Test creating OpenAI model."""
+    @patch("invincat_cli.config._create_model_via_init")
+    @patch("invincat_cli.model_config.ModelConfig.load")
+    @patch("invincat_cli.config._get_provider_kwargs", return_value={"api_key": "test-key"})
+    def test_create_model_openai(
+        self, _mock_kwargs, mock_model_config_load, mock_create_via_init
+    ):
+        """Test creating OpenAI model returns ModelResult."""
         from invincat_cli.config import create_model
-        
-        mock_instance = Mock()
-        mock_chat_openai.return_value = mock_instance
-        
-        # Mock settings
-        with patch("invincat_cli.config.settings.openai_api_key", "test-key"):
-            model = create_model("gpt-4", "openai")
-            
-            assert model == mock_instance
-            mock_chat_openai.assert_called_once()
-            call_kwargs = mock_chat_openai.call_args[1]
-            assert call_kwargs["model"] == "gpt-4"
-            assert call_kwargs["api_key"] == "test-key"
 
-    @patch("invincat_cli.config.ChatAnthropic")
-    def test_create_model_anthropic(self, mock_chat_anthropic):
-        """Test creating Anthropic model."""
-        from invincat_cli.config import create_model
-        
-        mock_instance = Mock()
-        mock_chat_anthropic.return_value = mock_instance
-        
-        # Mock settings
-        with patch("invincat_cli.config.settings.anthropic_api_key", "test-key"):
-            model = create_model("claude-3-opus", "anthropic")
-            
-            assert model == mock_instance
-            mock_chat_anthropic.assert_called_once()
-            call_kwargs = mock_chat_anthropic.call_args[1]
-            assert "claude-3-opus" in call_kwargs["model"]
-            assert call_kwargs["api_key"] == "test-key"
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "image_inputs": False}
+        mock_create_via_init.return_value = mock_model
 
-    def test_create_model_unknown_provider(self):
-        """Test creating model with unknown provider."""
+        mock_cfg = Mock()
+        mock_cfg.get_class_path.return_value = None
+        mock_cfg.get_profile_overrides.return_value = {}
+        mock_model_config_load.return_value = mock_cfg
+
+        result = create_model("openai:gpt-4o")
+
+        assert result.model is mock_model
+        assert result.model_name == "gpt-4o"
+        assert result.provider == "openai"
+        assert result.context_limit == 128000
+        assert "image" in result.unsupported_modalities
+
+    def test_create_model_invalid_model_spec(self):
+        """Test invalid provider:model syntax."""
         from invincat_cli.config import create_model
-        
-        with pytest.raises(ValueError, match="Unsupported provider"):
-            create_model("test-model", "unknown-provider")
+
+        with pytest.raises(ModelConfigError, match="model name is required"):
+            create_model("openai:")
 
 
 if __name__ == "__main__":

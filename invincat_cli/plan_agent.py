@@ -31,38 +31,68 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-PLANNER_SYSTEM_PROMPT: str = """You are a task planning agent. Your ONLY job is to create structured task plans.
+PLANNER_SUBAGENT_NAME = "planner"
+"""Canonical planner subagent name used in directives and metadata."""
+
+PLAN_APPROVED_MARKER = "<<PLAN_APPROVED>>"
+"""Distinct marker inserted by planner when user approves execution."""
+
+PLANNER_ALLOWED_TOOLS: tuple[str, ...] = ("write_todos", "ask_user")
+"""Planner-visible tool contract documented in the system prompt."""
+
+PLANNER_DESCRIPTION = (
+    "Read-only planning specialist. It only creates plans and never edits files, "
+    "executes commands, or performs implementation work."
+)
+"""Subagent description surfaced to the main agent."""
+
+PLANNER_SYSTEM_PROMPT: str = f"""You are a task planning agent. Your ONLY job is to create structured task plans.
+
+## Task boundary
+
+Input is the user's query and intent.
+Output is a structured plan recorded via write_todos.
 
 ## Your Task
 
 1. Understand the user's request
 2. Break it down into actionable steps
 3. Call `write_todos` tool to record the plan
-4. Output the plan as a numbered list
+4. Ask for confirmation using `ask_user` with the exact choices below
+5. If approved, include `{PLAN_APPROVED_MARKER}` in your final response
+6. If not approved, stop and do NOT execute implementation
 
 ## Rules
 
-- You can ONLY use the `write_todos` tool
-- Do NOT read files, edit code, run commands, or search the web
+- You can ONLY use these tools: {", ".join(PLANNER_ALLOWED_TOOLS)}
+- Do NOT read files, edit code, run commands, search the web, call task, edit_file, write_file, or execute
 - Do NOT ask questions - make reasonable assumptions
 - Focus on planning, not implementation
 - Respond in the same language as the user's input
 
 ## Output Format
 
-After calling `write_todos`, output a numbered list:
+After calling `write_todos`, output a numbered plan:
 
 1. First task
 2. Second task
 3. Third task
 
+Then call ask_user with these exact options:
+- Approve and execute
+- Refine
+- Cancel
+
+Only when the user selects "Approve and execute", append:
+`{PLAN_APPROVED_MARKER}`
+
 ## write_todos Example
 
 ```
 write_todos([
-    {"content": "First task description", "status": "in_progress"},
-    {"content": "Second task description", "status": "pending"},
-    {"content": "Third task description", "status": "pending"}
+    {{"content": "First task description", "status": "in_progress"}},
+    {{"content": "Second task description", "status": "pending"}},
+    {{"content": "Third task description", "status": "pending"}}
 ])
 ```
 
@@ -72,6 +102,33 @@ Each task should be:
 - Ordered by execution sequence
 
 Mark the first task as "in_progress", others as "pending"."""
+
+
+def build_planner_subagent() -> dict[str, str]:
+    """Build planner subagent metadata for main-agent delegation."""
+    return {
+        "name": PLANNER_SUBAGENT_NAME,
+        "description": PLANNER_DESCRIPTION,
+        "system_prompt": PLANNER_SYSTEM_PROMPT,
+    }
+
+
+def build_plan_directive(task: str) -> str:
+    """Build directive text instructing the main agent to invoke planner.
+
+    The directive encodes the handoff protocol so the main agent can safely
+    execute only after planner confirmation.
+    """
+    normalized_task = task.strip()
+    return (
+        f"Delegate planning to subagent '{PLANNER_SUBAGENT_NAME}' for this task:\n"
+        f"{normalized_task}\n\n"
+        f"The planner will provide a todo list and use ask_user for confirmation. "
+        f"Only implement/execute when the response includes {PLAN_APPROVED_MARKER}. "
+        f"If approval is missing (Refine/Cancel), stop and do not execute.\n"
+        "After approval, mirror the approved plan into your own write_todos call "
+        "so progress state is persisted in the main thread."
+    )
 
 
 def create_planner_agent(
@@ -103,7 +160,7 @@ def create_planner_agent(
         tools=todo_middleware.tools,
         system_prompt=PLANNER_SYSTEM_PROMPT,
         middleware=[todo_middleware],
-        name="planner",
+        name=PLANNER_SUBAGENT_NAME,
     )
 
 
