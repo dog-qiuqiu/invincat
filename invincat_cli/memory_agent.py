@@ -14,7 +14,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
+import tempfile
+import time
 from pathlib import Path
 from typing import Annotated, Any, NotRequired
 
@@ -31,6 +34,18 @@ logger = logging.getLogger(__name__)
 
 _MAX_PER_FILE_CHARS = 4000   # truncation limit per memory file sent to the agent
 _MAX_OUTPUT_TOKENS = 2000    # upper bound for memory agent JSON response
+_MAX_UPDATES = 4
+_MAX_UPDATE_CONTENT_CHARS = 32000
+_MAX_SECTION_LINES = 400
+_ROOT_SECTION = "__root__"
+_MEMORY_SIGNAL_RE = re.compile(
+    r"\b("
+    r"always|never|prefer|preference|style|convention|rule|guideline|"
+    r"remember|remember this|best practice|pattern|decision|constraint"
+    r")\b|"
+    r"(记住|偏好|规范|约定|规则|风格|最佳实践|约束|决策)",
+    re.IGNORECASE,
+)
 
 # ---------------------------------------------------------------------------
 # Prompts
@@ -49,9 +64,12 @@ Output ONLY valid JSON — no prose, no markdown code fences:
 
 Return {"updates": []} when nothing needs updating.
 
-## File roles
+## Mission
 
-You will be given one or two memory files. Identify each by its path:
+Write only durable, reusable guidance for future turns. Memory should read like
+an operating manual, not a chat transcript.
+
+## File roles
 
 - **User-level** (`~/.invincat/.../AGENTS.md`): personal preferences that apply
   across ALL projects — coding style, language, tone, tool preferences, general
@@ -67,26 +85,48 @@ When both are present, route each piece of information to the correct file.
 If a project file does not exist yet ("file does not exist yet"), create it only
 when there is genuine project-specific content to store.
 
-## Writing rules
+## Output contract (strict)
 
-- Provide the **complete new file content** (not a patch).
-- Preserve existing entries unless superseded or contradicted.
-- Keep entries concise and scannable — bullet points, not paragraphs.
-- Group related entries under short headings when the file grows beyond a few items.
+- Return EXACTLY one JSON object with key `"updates"`.
+- Each update must include:
+  - `"file"`: absolute path, must match one of the provided files
+  - `"content"`: complete replacement content for that file
+- If nothing should change, return `{"updates": []}`.
+- Do not emit comments, explanations, or extra keys.
 
-## Capture
+## Editing policy
+
+- Preserve existing useful content; do not rewrite for style-only reasons.
+- Merge new facts incrementally; avoid broad reformatting.
+- Deduplicate semantically similar bullets.
+- If a new rule conflicts with old memory, keep only the latest explicit rule.
+- Keep content compact and scannable:
+  - short headings
+  - bullet points
+  - no long narrative paragraphs
+
+## What to capture
 
 - Explicit user preferences and rules ("always X", "never Y", "prefer Z")
 - Coding style: language choice, formatting, naming, comment style
 - Project decisions: chosen frameworks, patterns, constraints, rationale
 - Recurring workflow patterns unique to this user or project
 
-## Skip
+## What to skip hard
 
 - Transient one-off task details that will not recur
 - Information already present verbatim in current memory
 - Generic knowledge not specific to this user or project
 - Intermediate reasoning or tool outputs with no lasting relevance
+
+## Quality gate before writing
+
+Each kept bullet should be:
+- Actionable: changes future behavior
+- Stable: likely useful beyond this single task
+- Specific: concrete enough to apply consistently
+
+If fewer than one high-confidence item exists, output `{"updates": []}`.
 """
 
 _USER_TEMPLATE = """\
@@ -96,7 +136,8 @@ Recent conversation:
 Current memory files:
 {memory}
 
-What (if anything) should be persisted to memory?
+Decide whether memory should be updated.
+Apply the rules above and output JSON only.
 """
 
 # ---------------------------------------------------------------------------
@@ -112,6 +153,26 @@ _TRIVIAL_RE = re.compile(
     r")\s*[.!?。！？]?\s*$",
     re.IGNORECASE,
 )
+
+
+def _env_int(name: str, default: int, minimum: int = 0) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return max(minimum, float(raw))
+    except ValueError:
+        return default
 
 
 def _is_trivial_turn(messages: list[Any]) -> bool:
@@ -157,6 +218,114 @@ def _is_task_complete(messages: list[Any]) -> bool:
     return False
 
 
+def _normalize_line_for_dedupe(line: str) -> str:
+    stripped = line.strip()
+    # Treat markdown list marker variants as equivalent for dedupe.
+    if stripped.startswith(("- ", "* ")):
+        stripped = stripped[2:].strip()
+    return re.sub(r"\s+", " ", stripped).casefold()
+
+
+def _parse_markdown_sections(content: str) -> tuple[list[str], dict[str, list[str]]]:
+    ordered: list[str] = []
+    sections: dict[str, list[str]] = {}
+    current = _ROOT_SECTION
+    ordered.append(current)
+    sections[current] = []
+
+    for raw_line in content.splitlines():
+        line = raw_line.rstrip()
+        if re.match(r"^#{1,6}\s+", line):
+            current = line.strip()
+            if current not in sections:
+                ordered.append(current)
+                sections[current] = []
+            continue
+        sections[current].append(line)
+
+    return ordered, sections
+
+
+def _merge_section_lines(existing: list[str], proposed: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for line in [*existing, *proposed]:
+        if len(merged) >= _MAX_SECTION_LINES:
+            break
+        key = _normalize_line_for_dedupe(line)
+        if not key:
+            # collapse repeated blank lines
+            if merged and merged[-1] == "":
+                continue
+            merged.append("")
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(line)
+    return merged
+
+
+def _structured_merge_memory(existing: str, proposed: str) -> str:
+    existing = existing.strip()
+    proposed = proposed.strip()
+    if not existing:
+        return proposed
+    if not proposed:
+        return existing
+
+    existing_order, existing_sections = _parse_markdown_sections(existing)
+    proposed_order, proposed_sections = _parse_markdown_sections(proposed)
+
+    final_order = list(existing_order)
+    for heading in proposed_order:
+        if heading not in final_order:
+            final_order.append(heading)
+
+    final_sections: dict[str, list[str]] = {}
+    for heading in final_order:
+        final_sections[heading] = _merge_section_lines(
+            existing_sections.get(heading, []),
+            proposed_sections.get(heading, []),
+        )
+
+    lines: list[str] = []
+    for idx, heading in enumerate(final_order):
+        if heading != _ROOT_SECTION:
+            if lines and lines[-1] != "":
+                lines.append("")
+            lines.append(heading)
+        section_lines = final_sections[heading]
+        if section_lines:
+            if heading != _ROOT_SECTION and lines[-1] != "":
+                lines.append("")
+            lines.extend(section_lines)
+        # Keep sections visually separated.
+        if idx < len(final_order) - 1 and lines and lines[-1] != "":
+            lines.append("")
+
+    merged = "\n".join(lines).strip()
+    return merged if merged else proposed
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=str(path.parent),
+        delete=False,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    ) as tmp:
+        tmp.write(content)
+        tmp.flush()
+        os.fsync(tmp.fileno())
+        tmp_name = tmp.name
+
+    os.replace(tmp_name, path)
+
+
 # ---------------------------------------------------------------------------
 # Private state schema
 # ---------------------------------------------------------------------------
@@ -197,20 +366,52 @@ class MemoryAgentMiddleware(AgentMiddleware):
         *,
         memory_paths: list[str],
         context_messages: int = 10,
+        min_turn_interval: int | None = None,
+        min_seconds_between_runs: float | None = None,
+        file_cooldown_seconds: float | None = None,
     ) -> None:
         """
         Args:
             memory_paths: Absolute paths to AGENTS.md files to maintain.
             context_messages: Number of recent messages fed to the memory
                 agent (default 10, roughly 5 turns).
+            min_turn_interval: Minimum turns between extraction runs.
+            min_seconds_between_runs: Minimum wall-clock seconds between runs.
+            file_cooldown_seconds: Skip extraction when memory file was
+                updated too recently.
         """
+        if min_turn_interval is None:
+            min_turn_interval = _env_int(
+                "INVINCAT_MEMORY_MIN_TURN_INTERVAL",
+                default=10,
+                minimum=1,
+            )
+        if min_seconds_between_runs is None:
+            min_seconds_between_runs = _env_float(
+                "INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS",
+                default=30.0,
+                minimum=0.0,
+            )
+        if file_cooldown_seconds is None:
+            file_cooldown_seconds = _env_float(
+                "INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS",
+                default=15.0,
+                minimum=0.0,
+            )
+
         self._memory_paths = memory_paths
         self._context_messages = context_messages
+        self._min_turn_interval = max(1, min_turn_interval)
+        self._min_seconds_between_runs = max(0.0, min_seconds_between_runs)
+        self._file_cooldown_seconds = max(0.0, file_cooldown_seconds)
         # Pre-resolve allowed paths once so the whitelist check is O(1).
         self._allowed_paths: frozenset[str] = frozenset(
             str(Path(p).expanduser().resolve()) for p in memory_paths
         )
         self._captured_model: Any = None
+        self._turn_index = 0
+        self._last_run_turn = 0
+        self._last_run_at = 0.0
 
     # ------------------------------------------------------------------
     # Helpers
@@ -227,6 +428,110 @@ class MemoryAgentMiddleware(AgentMiddleware):
             except OSError:
                 parts.append(f"[{path}]\n(file does not exist yet)")
         return "\n\n".join(parts) if parts else "(no memory files configured)"
+
+    def _memory_files_recently_updated(self) -> bool:
+        if self._file_cooldown_seconds <= 0:
+            return False
+        now = time.time()
+        for path in self._memory_paths:
+            p = Path(path).expanduser()
+            try:
+                if p.exists():
+                    age = now - p.stat().st_mtime
+                    if age < self._file_cooldown_seconds:
+                        return True
+            except OSError:
+                continue
+        return False
+
+    @staticmethod
+    def _last_human_text(messages: list[Any]) -> str:
+        for msg in reversed(messages):
+            if getattr(msg, "type", "") != "human":
+                continue
+            content = getattr(msg, "content", "")
+            if isinstance(content, list):
+                parts = [
+                    p.get("text", "") if isinstance(p, dict) else str(p)
+                    for p in content
+                ]
+                return " ".join(filter(None, parts)).strip()
+            return str(content).strip()
+        return ""
+
+    def _should_run_for_turn(self, messages: list[Any]) -> bool:
+        self._turn_index += 1
+        turns_since_last = self._turn_index - self._last_run_turn
+        interval_due = turns_since_last >= self._min_turn_interval
+        human_text = self._last_human_text(messages)
+        signal_match = bool(_MEMORY_SIGNAL_RE.search(human_text))
+
+        if self._min_seconds_between_runs > 0:
+            elapsed = time.monotonic() - self._last_run_at
+            if elapsed < self._min_seconds_between_runs and not signal_match:
+                logger.debug(
+                    "Memory agent: throttled by wall-clock cooldown (%.2fs < %.2fs)",
+                    elapsed,
+                    self._min_seconds_between_runs,
+                )
+                return False
+
+        if self._memory_files_recently_updated() and not signal_match:
+            logger.debug("Memory agent: throttled by file-update cooldown")
+            return False
+
+        if interval_due or signal_match:
+            return True
+
+        logger.debug(
+            "Memory agent: throttled by turn interval (%d < %d)",
+            turns_since_last,
+            self._min_turn_interval,
+        )
+        return False
+
+    def _normalize_and_validate_updates(self, data: Any) -> list[tuple[str, str]]:
+        if not isinstance(data, dict):
+            return []
+
+        updates_raw = data.get("updates", [])
+        if not isinstance(updates_raw, list):
+            logger.debug("Memory agent: updates field is not a list")
+            return []
+        if len(updates_raw) > _MAX_UPDATES:
+            logger.warning(
+                "Memory agent: too many updates (%d > %d), truncating",
+                len(updates_raw),
+                _MAX_UPDATES,
+            )
+            updates_raw = updates_raw[:_MAX_UPDATES]
+
+        normalized: list[tuple[str, str]] = []
+        for idx, update in enumerate(updates_raw):
+            if not isinstance(update, dict):
+                logger.debug("Memory agent: skipping non-object update at idx=%d", idx)
+                continue
+            file_path = update.get("file")
+            content = update.get("content")
+            if not isinstance(file_path, str) or not file_path.strip():
+                logger.debug("Memory agent: skipping update with invalid file at idx=%d", idx)
+                continue
+            if not isinstance(content, str):
+                logger.debug(
+                    "Memory agent: skipping update with non-string content at idx=%d",
+                    idx,
+                )
+                continue
+            if len(content) > _MAX_UPDATE_CONTENT_CHARS:
+                logger.warning(
+                    "Memory agent: skipping oversize content at idx=%d (%d chars)",
+                    idx,
+                    len(content),
+                )
+                continue
+            normalized.append((file_path, content.strip()))
+
+        return normalized
 
     @staticmethod
     def _format_messages(messages: list[Any]) -> str:
@@ -282,16 +587,11 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 return []
 
             data, _ = json.JSONDecoder().raw_decode(raw, start)
-            updates = data.get("updates", [])
-            if not updates or not isinstance(updates, list):
+            updates = self._normalize_and_validate_updates(data)
+            if not updates:
                 return []
 
-            for update in updates:
-                file_path = update.get("file")
-                content = update.get("content")
-                if not file_path or content is None:
-                    continue
-
+            for file_path, content in updates:
                 # Security: reject any path not in the pre-approved whitelist.
                 resolved = str(Path(file_path).expanduser().resolve())
                 if resolved not in self._allowed_paths:
@@ -301,12 +601,24 @@ class MemoryAgentMiddleware(AgentMiddleware):
                     )
                     continue
 
-                p = Path(file_path).expanduser()
-                await asyncio.to_thread(p.parent.mkdir, parents=True, exist_ok=True)
-                await asyncio.to_thread(p.write_text, content, "utf-8")
+                p = Path(resolved)
+                current = ""
+                try:
+                    current = await asyncio.to_thread(p.read_text, "utf-8")
+                except OSError:
+                    current = ""
+
+                merged = _structured_merge_memory(current, content)
+                if merged.strip() == current.strip():
+                    logger.debug("Memory agent: merged content unchanged for %s", p)
+                    continue
+                await asyncio.to_thread(_atomic_write_text, p, merged + "\n")
                 written.append(str(p))  # store the expanded path for consistent display
                 logger.debug("Memory agent wrote: %s", p)
 
+            if written:
+                self._last_run_turn = self._turn_index
+                self._last_run_at = time.monotonic()
             return written
 
         except json.JSONDecodeError:
@@ -363,6 +675,9 @@ class MemoryAgentMiddleware(AgentMiddleware):
         # human message fell outside the context window.
         if _is_trivial_turn(messages):
             logger.debug("Memory agent: skipping trivial turn")
+            return None
+
+        if not self._should_run_for_turn(messages):
             return None
 
         recent = messages[-self._context_messages :]
