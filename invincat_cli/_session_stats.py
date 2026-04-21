@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-SpinnerStatus = Literal["Thinking", "Offloading"] | None
+SpinnerStatus = Literal["Thinking", "Offloading", "Updating memory"] | None
 """Valid spinner display states, or `None` to hide."""
 
 

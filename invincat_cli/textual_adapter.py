@@ -646,8 +646,9 @@ async def execute_task_textual(
         user_msg.update(message_kwargs)
     stream_input: dict | Command = {"messages": [user_msg]}
 
-    # Track summarization lifecycle so spinner status and notification stay in sync.
+    # Track internal middleware lifecycle so spinner status stays in sync.
     summarization_in_progress = False
+    memory_update_in_progress = False
 
     _MAX_RESUME_ITERATIONS = 50
     _resume_iteration = 0
@@ -831,6 +832,10 @@ async def execute_task_textual(
                                         await adapter._set_spinner("Offloading")
                                 continue
                             if _is_internal_model_chunk(metadata):
+                                if not memory_update_in_progress:
+                                    memory_update_in_progress = True
+                                    if adapter._set_spinner:
+                                        await adapter._set_spinner("Updating memory")
                                 continue
         
                             # Regular (non-summarization) chunks resumed — summarization
@@ -844,6 +849,11 @@ async def execute_task_textual(
                                         "Failed to mount summarization notification",
                                         exc_info=True,
                                     )
+                                if adapter._set_spinner and not adapter._current_tool_messages:
+                                    await adapter._set_spinner("Thinking")
+
+                            if memory_update_in_progress:
+                                memory_update_in_progress = False
                                 if adapter._set_spinner and not adapter._current_tool_messages:
                                     await adapter._set_spinner("Thinking")
         
@@ -1502,6 +1512,12 @@ async def execute_task_textual(
                         "Failed to mount summarization notification",
                         exc_info=True,
                     )
+                if adapter._set_spinner and not adapter._current_tool_messages:
+                    await adapter._set_spinner("Thinking")
+
+            # Reset memory status if stream ended while memory middleware was running.
+            if memory_update_in_progress:
+                memory_update_in_progress = False
                 if adapter._set_spinner and not adapter._current_tool_messages:
                     await adapter._set_spinner("Thinking")
 
