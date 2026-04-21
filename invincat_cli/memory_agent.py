@@ -178,6 +178,9 @@ class MemoryAgentMiddleware(AgentMiddleware):
             str(Path(p).expanduser().resolve()) for p in memory_paths
         )
         self._captured_model: Any = None
+        # Set by aafter_agent; consumed by abefore_agent at the START of the
+        # next user turn to reload memory without risking mid-task interference.
+        self._trigger_memory_refresh: bool = False
 
     # ------------------------------------------------------------------
     # Helpers
@@ -287,6 +290,18 @@ class MemoryAgentMiddleware(AgentMiddleware):
     # Middleware hooks
     # ------------------------------------------------------------------
 
+    def before_agent(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        if self._trigger_memory_refresh:
+            self._trigger_memory_refresh = False
+            return {"memory_contents": None}
+        return None
+
+    async def abefore_agent(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        if self._trigger_memory_refresh:
+            self._trigger_memory_refresh = False
+            return {"memory_contents": None}
+        return None
+
     def wrap_model_call(
         self, request: ModelRequest, handler: Any
     ) -> ModelResponse:
@@ -326,10 +341,15 @@ class MemoryAgentMiddleware(AgentMiddleware):
             logger.debug("Memory agent: skipping trivial turn")
             return None
 
-        # aafter_agent fires after EVERY agent node execution, not only at the
-        # end of the full task.  When the last AI message still has tool_calls,
-        # the agent is mid-task (waiting for tool results) — skip extraction so
-        # we only run once, on the final response.
+        # Guard 1: last message is a ToolMessage → tool just ran, agent hasn't
+        # processed the result yet.  A subsequent agent node is guaranteed to
+        # follow, so we are not at the end of the task.
+        if getattr(messages[-1], "type", "") == "tool":
+            logger.debug("Memory agent: skipping — last message is a tool result")
+            return None
+
+        # Guard 2: last AI message still carries tool_calls → the model has
+        # decided to call more tools; we are mid-task.
         ai_msgs = [m for m in messages if getattr(m, "type", "") == "ai"]
         if ai_msgs and getattr(ai_msgs[-1], "tool_calls", None):
             logger.debug("Memory agent: skipping — agent has pending tool calls")
@@ -337,10 +357,11 @@ class MemoryAgentMiddleware(AgentMiddleware):
 
         written = await self._safe_extract_and_write(model, messages)
         if written:
-            return {
-                "memory_contents": None,               # triggers RefreshableMemoryMiddleware reload
-                "_auto_memory_updated_paths": written,  # triggers toast in app.py
-            }
+            # Signal abefore_agent to set memory_contents=None on the NEXT
+            # user turn (not here) so the current task's agent nodes are
+            # never interrupted by a mid-task memory reload.
+            self._trigger_memory_refresh = True
+            return {"_auto_memory_updated_paths": written}
         return None
 
     async def _safe_extract_and_write(self, model: Any, messages: list[Any]) -> list[str]:
