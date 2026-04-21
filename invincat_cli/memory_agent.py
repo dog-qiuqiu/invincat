@@ -90,7 +90,7 @@ when there is genuine project-specific content to store.
 """
 
 _USER_TEMPLATE = """\
-Recent conversation:
+Complete conversation:
 {conversation}
 
 Current memory files:
@@ -167,16 +167,12 @@ class MemoryAgentMiddleware(AgentMiddleware):
         self,
         *,
         memory_paths: list[str],
-        context_messages: int = 10,
     ) -> None:
         """
         Args:
             memory_paths: Absolute paths to AGENTS.md files to maintain.
-            context_messages: Number of recent messages fed to the memory
-                agent (default 10, roughly 5 turns).
         """
         self._memory_paths = memory_paths
-        self._context_messages = context_messages
         # Pre-resolve allowed paths once so the whitelist check is O(1).
         self._allowed_paths: frozenset[str] = frozenset(
             str(Path(p).expanduser().resolve()) for p in memory_paths
@@ -330,21 +326,7 @@ class MemoryAgentMiddleware(AgentMiddleware):
             logger.debug("Memory agent: skipping trivial turn")
             return None
 
-        recent = messages[-self._context_messages :]
-
-        # If the last human message was pushed out of the window by many tool
-        # calls in the same turn, prepend it so the memory agent always sees
-        # what the user actually said.
-        human_indices = [
-            i for i, m in enumerate(messages) if getattr(m, "type", "") == "human"
-        ]
-        if human_indices:
-            last_human_idx = human_indices[-1]
-            window_start = len(messages) - self._context_messages
-            if last_human_idx < window_start:
-                recent = [messages[last_human_idx]] + list(recent)
-
-        written = await self._safe_extract_and_write(model, recent)
+        written = await self._safe_extract_and_write(model, messages)
         if written:
             return {
                 "memory_contents": None,               # triggers RefreshableMemoryMiddleware reload
