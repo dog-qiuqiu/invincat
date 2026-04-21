@@ -128,6 +128,35 @@ def _is_trivial_turn(messages: list[Any]) -> bool:
     return len(text) < 10 or bool(_TRIVIAL_RE.match(text))
 
 
+def _is_task_complete(messages: list[Any]) -> bool:
+    """Return True when all tool calls have completed and AI has given final response.
+
+    A task is considered complete when:
+    - The last message is an AI message with no pending tool calls
+    - This means the agent has finished all tool invocations and provided a response
+
+    Returns False when:
+    - The last message is a ToolMessage (tool just finished, AI hasn't responded yet)
+    - The last message is an AI message with non-empty tool_calls (pending tools)
+    """
+    if not messages:
+        return False
+
+    last_msg = messages[-1]
+    msg_type = getattr(last_msg, "type", "")
+
+    if msg_type == "tool":
+        return False
+
+    if msg_type == "ai":
+        tool_calls = getattr(last_msg, "tool_calls", None)
+        if tool_calls:
+            return False
+        return True
+
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Private state schema
 # ---------------------------------------------------------------------------
@@ -321,6 +350,12 @@ class MemoryAgentMiddleware(AgentMiddleware):
 
         messages = state.get("messages", [])
         if not messages:
+            return None
+
+        # Only extract when all tool calls have completed and AI has given final response.
+        # This ensures memory extraction happens at task boundaries, not mid-turn.
+        if not _is_task_complete(messages):
+            logger.debug("Memory agent: skipping extraction — task not complete (pending tool calls)")
             return None
 
         # Trivial check uses the FULL message list so that a user message
