@@ -579,32 +579,6 @@ def _apply_operations(
     return user_store, project_store, sorted(changed_scopes)
 
 
-def _render_agents_markdown(store: dict[str, Any]) -> str:
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for item in store.get("items", []):
-        if not isinstance(item, dict) or item.get("status") != "active":
-            continue
-        section = str(item.get("section") or "Imported Notes").strip()
-        if not section:
-            section = "Imported Notes"
-        grouped.setdefault(section, []).append(item)
-
-    if not grouped:
-        return ""
-
-    lines: list[str] = []
-    for section in sorted(grouped, key=str.casefold):
-        items = grouped[section]
-        items.sort(key=lambda x: str(x.get("id", "")))
-        if lines:
-            lines.append("")
-        lines.append(f"# {section}")
-        lines.append("")
-        for item in items:
-            lines.append(f"- {str(item.get('content', '')).strip()}")
-    return "\n".join(lines).strip()
-
-
 def _parse_agents_markdown_for_migration(content: str) -> list[tuple[str, str, str]]:
     items: list[tuple[str, str, str]] = []
     section = "Imported Notes"

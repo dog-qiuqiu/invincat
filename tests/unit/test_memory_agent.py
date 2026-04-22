@@ -17,7 +17,6 @@ from invincat_cli.memory_agent import (
     _new_store,
     _normalize_and_validate_operations,
     _read_memory_store,
-    _render_agents_markdown,
     _write_memory_store,
 )
 
@@ -180,17 +179,6 @@ def test_migration_from_agents_markdown(tmp_path: Path) -> None:
     migrated_again = middleware._migrate_from_agents_if_needed("project", "t1", "a1")
     assert migrated_again is not None
     assert len(migrated_again["items"]) == 2
-
-
-def test_markdown_render_stable() -> None:
-    store = _new_store("project")
-    store["items"].append(_item("mem_p_000002", section="Project Rules", content="B"))
-    store["items"].append(_item("mem_p_000001", section="Project Rules", content="A"))
-    store["items"].append(_item("mem_p_000003", section="Architecture", content="X"))
-    rendered = _render_agents_markdown(store)
-    assert rendered == (
-        "# Architecture\n\n- X\n\n# Project Rules\n\n- A\n- B"
-    )
 
 
 def test_conflicting_operations_on_same_id_rejected() -> None:
