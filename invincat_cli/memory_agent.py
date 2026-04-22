@@ -1,12 +1,10 @@
-"""Dedicated memory agent middleware.
+"""Dedicated memory agent middleware with structured memory stores.
 
 Runs an independent model call with a focused system prompt after every
-non-trivial conversation turn to extract and persist important information
-to memory files.  Uses its own system prompt, outputs structured JSON,
-and writes directly to disk — independent of the main agent's judgment.
+non-trivial conversation turn to extract durable memory operations.
 
-The extraction runs in ``aafter_agent`` so it does not block the user
-from receiving the main response.
+The extraction runs in ``aafter_agent`` so it does not block the user from
+receiving the main response.
 """
 
 from __future__ import annotations
@@ -14,14 +12,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import tempfile
 import time
+from copy import deepcopy
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, NotRequired
 
-from langgraph.config import get_config
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -30,15 +30,16 @@ from langchain.agents.middleware.types import (
     PrivateStateAttr,
 )
 from langchain_core.messages import HumanMessage, SystemMessage
+from langgraph.config import get_config
 
 logger = logging.getLogger(__name__)
 
-_MAX_PER_FILE_CHARS = 4000   # truncation limit per memory file sent to the agent
-_MAX_OUTPUT_TOKENS = 2000    # upper bound for memory agent JSON response
-_MAX_UPDATES = 4
-_MAX_UPDATE_CONTENT_CHARS = 32000
-_MAX_SECTION_LINES = 400
-_ROOT_SECTION = "__root__"
+MAX_OPERATIONS_PER_RUN = 8
+MAX_ITEM_CONTENT_CHARS = 500
+MAX_SECTION_NAME_CHARS = 80
+_MAX_OUTPUT_TOKENS = 2000
+_MAX_CONVERSATION_CHARS = 1500
+
 _MEMORY_SIGNAL_RE = re.compile(
     r"\b("
     r"always|never|prefer|preference|style|convention|rule|guideline|"
@@ -48,112 +49,62 @@ _MEMORY_SIGNAL_RE = re.compile(
     re.IGNORECASE,
 )
 
-# ---------------------------------------------------------------------------
-# Prompts
-# ---------------------------------------------------------------------------
+_TRIVIAL_RE = re.compile(
+    r"^\s*("
+    r"ok|okay|thanks|thank you|got it|sure|yes|no|confirmed|done|"
+    r"continue|go ahead|proceed|sounds good|great|perfect|nice|"
+    r"好的|谢谢|明白|知道了|好|嗯|是的|对|继续|好的好的|没问题|可以|"
+    r"收到|了解|行|嗯嗯|好的收到"
+    r")\s*[.!?。！？]?\s*$",
+    re.IGNORECASE,
+)
+
+_ITEM_ID_PATTERNS: dict[str, re.Pattern[str]] = {
+    "user": re.compile(r"^mem_u_(\d{6})$"),
+    "project": re.compile(r"^mem_p_(\d{6})$"),
+}
+_ITEM_ID_PREFIX: dict[str, str] = {"user": "mem_u_", "project": "mem_p_"}
+_ALLOWED_SCOPE: frozenset[str] = frozenset({"user", "project"})
+_ALLOWED_STATUS: frozenset[str] = frozenset({"active", "archived"})
+_ALLOWED_CONFIDENCE: frozenset[str] = frozenset({"low", "medium", "high"})
+_ALLOWED_OPS: frozenset[str] = frozenset({"create", "update", "archive", "noop"})
 
 _SYSTEM_PROMPT = """\
-You are a memory curator for an AI assistant. After each conversation turn you
-decide what information deserves to be persisted across sessions.
+You are a memory curator for an AI assistant.
 
-Output ONLY valid JSON — no prose, no markdown code fences:
+You receive:
+1) recent_conversation
+2) memory_snapshot (structured memory items with stable IDs)
+
+Return STRICT JSON only:
 {
-  "updates": [
-    {"file": "<absolute path>", "content": "<complete new file content>"}
+  "operations": [
+    {"op": "create", "scope": "user|project", "section": "...", "content": "...", "confidence": "low|medium|high"},
+    {"op": "update", "scope": "user|project", "id": "mem_u_000001", "content": "...", "confidence": "low|medium|high"},
+    {"op": "archive", "scope": "user|project", "id": "mem_p_000031", "reason": "..."},
+    {"op": "noop"}
   ]
 }
 
-Return {"updates": []} when nothing needs updating.
-
-## Mission
-
-Write only durable, reusable guidance for future turns. Memory should read like
-an operating manual, not a chat transcript.
-
-## File roles
-
-- **User-level** (`~/.invincat/.../AGENTS.md`): personal preferences that apply
-  across ALL projects — coding style, language, tone, tool preferences, general
-  rules ("always", "never", "prefer"), recurring workflow habits.
-
-- **Project-level** (`<project_root>/.invincat/AGENTS.md` or
-  `<project_root>/AGENTS.md`): facts specific to THIS project — tech stack,
-  architecture decisions and their rationale, naming conventions, file layout,
-  project-specific constraints or rules.
-
-When only one file is present, write everything there.
-When both are present, route each piece of information to the correct file.
-If a project file does not exist yet ("file does not exist yet"), create it only
-when there is genuine project-specific content to store.
-
-## Output contract (strict)
-
-- Return EXACTLY one JSON object with key `"updates"`.
-- Each update must include:
-  - `"file"`: absolute path, must match one of the provided files
-  - `"content"`: complete replacement content for that file
-- If nothing should change, return `{"updates": []}`.
-- Do not emit comments, explanations, or extra keys.
-
-## Editing policy
-
-- Preserve existing useful content; do not rewrite for style-only reasons.
-- Merge new facts incrementally; avoid broad reformatting.
-- Deduplicate semantically similar bullets.
-- If a new rule conflicts with old memory, keep only the latest explicit rule.
-- Keep content compact and scannable:
-  - short headings
-  - bullet points
-  - no long narrative paragraphs
-
-## What to capture
-
-- Explicit user preferences and rules ("always X", "never Y", "prefer Z")
-- Coding style: language choice, formatting, naming, comment style
-- Project decisions: chosen frameworks, patterns, constraints, rationale
-- Recurring workflow patterns unique to this user or project
-
-## What to skip hard
-
-- Transient one-off task details that will not recur
-- Information already present verbatim in current memory
-- Generic knowledge not specific to this user or project
-- Intermediate reasoning or tool outputs with no lasting relevance
-
-## Quality gate before writing
-
-Each kept bullet should be:
-- Actionable: changes future behavior
-- Stable: likely useful beyond this single task
-- Specific: concrete enough to apply consistently
-
-If fewer than one high-confidence item exists, output `{"updates": []}`.
+Rules:
+- Output only JSON, no prose, no markdown fences.
+- Prefer update/archive over duplicate create when an existing item already matches.
+- Do NOT output full AGENTS.md content.
+- Do NOT output file paths.
+- Do NOT invent IDs for create.
+- Keep memory durable, specific, and actionable.
+- Skip transient one-off details.
 """
 
 _USER_TEMPLATE = """\
 Recent conversation:
 {conversation}
 
-Current memory files:
-{memory}
+Memory snapshot:
+{snapshot}
 
-Decide whether memory should be updated.
-Apply the rules above and output JSON only.
+Return operations JSON only.
 """
-
-# ---------------------------------------------------------------------------
-# Trivial-turn detection
-# ---------------------------------------------------------------------------
-
-# Short acknowledgment messages that carry no memory-worthy information.
-_TRIVIAL_RE = re.compile(
-    r"^\s*("
-    r"ok|okay|thanks|thank you|got it|sure|yes|no|confirmed|done|"
-    r"continue|go ahead|proceed|sounds good|great|perfect|nice|"
-    r"好的|谢谢|明白|知道了|好|嗯|是的|对|继续|好的好的|没问题|可以"
-    r")\s*[.!?。！？]?\s*$",
-    re.IGNORECASE,
-)
 
 
 def _env_int(name: str, default: int, minimum: int = 0) -> int:
@@ -187,20 +138,16 @@ def _is_trivial_turn(messages: list[Any]) -> bool:
             p.get("text", "") if isinstance(p, dict) else str(p) for p in content
         )
     text = str(content).strip()
-    return len(text) < 10 or bool(_TRIVIAL_RE.match(text))
+    if not text:
+        return True
+    # Short user messages can still be memory-worthy (especially in Chinese).
+    if _MEMORY_SIGNAL_RE.search(text):
+        return False
+    return bool(_TRIVIAL_RE.match(text))
 
 
 def _is_task_complete(messages: list[Any]) -> bool:
-    """Return True when all tool calls have completed and AI has given final response.
-
-    A task is considered complete when:
-    - The last message is an AI message with no pending tool calls
-    - This means the agent has finished all tool invocations and provided a response
-
-    Returns False when:
-    - The last message is a ToolMessage (tool just finished, AI hasn't responded yet)
-    - The last message is an AI message with non-empty tool_calls (pending tools)
-    """
+    """Return True when all tool calls have completed and AI has given final response."""
     if not messages:
         return False
 
@@ -219,151 +166,468 @@ def _is_task_complete(messages: list[Any]) -> bool:
     return False
 
 
-def _normalize_line_for_dedupe(line: str) -> str:
-    stripped = line.strip()
-    # Treat markdown list marker variants as equivalent for dedupe.
-    if stripped.startswith(("- ", "* ")):
-        stripped = stripped[2:].strip()
-    return re.sub(r"\s+", " ", stripped).casefold()
+def _iso_now() -> str:
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _extract_rule_conflict_key(line: str) -> str | None:
-    """Extract a normalized rule topic key for conflict resolution.
+def _new_store(scope: str) -> dict[str, Any]:
+    return {"version": 1, "scope": scope, "items": []}
 
-    Returns a key when the line looks like an imperative preference/rule, so
-    newer contradictory rules can replace older ones.
-    """
-    text = line.strip()
-    if not text:
+
+def _normalize_scope(scope: Any) -> str | None:
+    if not isinstance(scope, str):
         return None
-
-    # Strip common markdown bullet prefixes.
-    if text.startswith(("- ", "* ")):
-        text = text[2:].strip()
-
-    # English rule markers (always/never/prefer/avoid/must/should).
-    eng = re.match(
-        r"^(always|never|prefer|avoid|must|should|do not|don't)\s+(.+)$",
-        text,
-        re.IGNORECASE,
-    )
-    if eng:
-        tail = eng.group(2)
-        tail = re.sub(r"^(to\s+)", "", tail, flags=re.IGNORECASE)
-        tail = re.sub(r"[.。!！?？]+$", "", tail).strip()
-        key = re.sub(r"\s+", " ", tail).casefold()
-        return f"rule:{key}" if key else None
-
-    # Chinese rule markers.
-    zh = re.match(r"^(总是|不要|避免|优先|尽量|必须|应该)\s*(.+)$", text)
-    if zh:
-        tail = re.sub(r"[。！!？?]+$", "", zh.group(2)).strip()
-        key = re.sub(r"\s+", " ", tail).casefold()
-        return f"rule:{key}" if key else None
-
+    normalized = scope.strip().lower()
+    if normalized in _ALLOWED_SCOPE:
+        return normalized
     return None
 
 
-def _parse_markdown_sections(content: str) -> tuple[list[str], dict[str, list[str]]]:
-    ordered: list[str] = []
-    sections: dict[str, list[str]] = {}
-    current = _ROOT_SECTION
-    ordered.append(current)
-    sections[current] = []
+def _normalize_status(status: Any) -> str:
+    if isinstance(status, str):
+        normalized = status.strip().lower()
+        if normalized in _ALLOWED_STATUS:
+            return normalized
+    return "active"
 
-    for raw_line in content.splitlines():
-        line = raw_line.rstrip()
-        if re.match(r"^#{1,6}\s+", line):
-            current = line.strip()
-            if current not in sections:
-                ordered.append(current)
-                sections[current] = []
+
+def _normalize_confidence(value: Any, default: str = "medium") -> str:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _ALLOWED_CONFIDENCE:
+            return normalized
+    return default
+
+
+def _normalize_text(value: Any, *, max_chars: int) -> str:
+    if not isinstance(value, str):
+        return ""
+    return re.sub(r"\s+", " ", value.strip())[:max_chars]
+
+
+def _normalize_hash(section: str, content: str) -> str:
+    return f"{section.strip().casefold()}::{content.strip().casefold()}"
+
+
+def _read_memory_store(path: Path, scope: str) -> dict[str, Any]:
+    """Read memory store from JSON file or return a new validated store."""
+    def _read_error_store(target_scope: str) -> dict[str, Any]:
+        store = _new_store(target_scope)
+        store["__read_error__"] = True
+        return store
+
+    if not path.exists():
+        return _new_store(scope)
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("Memory store unreadable at %s; marking as read-error", path)
+        return _read_error_store(scope)
+
+    if not isinstance(data, dict):
+        logger.warning("Memory store schema invalid at %s; marking as read-error", path)
+        return _read_error_store(scope)
+
+    normalized_scope = _normalize_scope(data.get("scope")) or scope
+    if isinstance(data.get("scope"), str) and _normalize_scope(data.get("scope")) is None:
+        logger.warning("Memory store scope invalid at %s; marking as read-error", path)
+        return _read_error_store(scope)
+    store = {
+        "version": 1,
+        "scope": normalized_scope,
+        "items": [],
+    }
+
+    items = data.get("items", [])
+    if not isinstance(items, list):
+        logger.warning("Memory store items invalid at %s; marking as read-error", path)
+        return _read_error_store(normalized_scope)
+
+    for raw in items:
+        if not isinstance(raw, dict):
             continue
-        sections[current].append(line)
-
-    return ordered, sections
-
-
-def _merge_section_lines(existing: list[str], proposed: list[str]) -> list[str]:
-    merged: list[str] = []
-    seen_exact: set[str] = set()
-    conflict_index: dict[str, int] = {}
-    for line in [*existing, *proposed]:
-        key = _normalize_line_for_dedupe(line)
-        if not key:
-            # collapse repeated blank lines
-            if merged and merged[-1] == "":
-                continue
-            if len(merged) >= _MAX_SECTION_LINES:
-                break
-            merged.append("")
+        item_scope = _normalize_scope(raw.get("scope")) or normalized_scope
+        if item_scope != normalized_scope:
             continue
-        if key in seen_exact:
+        item_id = raw.get("id")
+        if not isinstance(item_id, str):
             continue
-
-        # If this line is a rule on the same topic as an existing one, keep
-        # only the latest line (latest wins) to avoid stale contradictions.
-        conflict_key = _extract_rule_conflict_key(line)
-        if conflict_key is not None and conflict_key in conflict_index:
-            idx = conflict_index[conflict_key]
-            old_line = merged[idx]
-            old_key = _normalize_line_for_dedupe(old_line)
-            if old_key:
-                seen_exact.discard(old_key)
-            merged[idx] = line
-            seen_exact.add(key)
+        if not _ITEM_ID_PATTERNS[normalized_scope].match(item_id):
             continue
+        section = _normalize_text(raw.get("section", ""), max_chars=MAX_SECTION_NAME_CHARS)
+        content = _normalize_text(raw.get("content", ""), max_chars=MAX_ITEM_CONTENT_CHARS)
+        if not section or not content:
+            continue
+        status = _normalize_status(raw.get("status"))
+        created_at = raw.get("created_at") if isinstance(raw.get("created_at"), str) else _iso_now()
+        updated_at = raw.get("updated_at") if isinstance(raw.get("updated_at"), str) else created_at
+        archived_at = raw.get("archived_at") if isinstance(raw.get("archived_at"), str) else None
+        source_thread_id = (
+            raw.get("source_thread_id")
+            if isinstance(raw.get("source_thread_id"), str)
+            else "__default_thread__"
+        )
+        source_anchor = raw.get("source_anchor") if isinstance(raw.get("source_anchor"), str) else ""
+        confidence = _normalize_confidence(raw.get("confidence"), default="medium")
 
-        if len(merged) >= _MAX_SECTION_LINES:
-            break
-
-        merged.append(line)
-        seen_exact.add(key)
-        if conflict_key is not None:
-            conflict_index[conflict_key] = len(merged) - 1
-    return merged
-
-
-def _structured_merge_memory(existing: str, proposed: str) -> str:
-    existing = existing.strip()
-    proposed = proposed.strip()
-    if not existing:
-        return proposed
-    if not proposed:
-        return existing
-
-    existing_order, existing_sections = _parse_markdown_sections(existing)
-    proposed_order, proposed_sections = _parse_markdown_sections(proposed)
-
-    final_order = list(existing_order)
-    for heading in proposed_order:
-        if heading not in final_order:
-            final_order.append(heading)
-
-    final_sections: dict[str, list[str]] = {}
-    for heading in final_order:
-        final_sections[heading] = _merge_section_lines(
-            existing_sections.get(heading, []),
-            proposed_sections.get(heading, []),
+        store["items"].append(
+            {
+                "id": item_id,
+                "scope": normalized_scope,
+                "section": section,
+                "content": content,
+                "status": status,
+                "created_at": created_at,
+                "updated_at": updated_at,
+                "archived_at": archived_at if status == "archived" else None,
+                "source_thread_id": source_thread_id,
+                "source_anchor": source_anchor,
+                "confidence": confidence,
+                "norm_hash": _normalize_hash(section, content),
+            }
         )
 
-    lines: list[str] = []
-    for idx, heading in enumerate(final_order):
-        if heading != _ROOT_SECTION:
-            if lines and lines[-1] != "":
-                lines.append("")
-            lines.append(heading)
-        section_lines = final_sections[heading]
-        if section_lines:
-            if heading != _ROOT_SECTION and lines[-1] != "":
-                lines.append("")
-            lines.extend(section_lines)
-        # Keep sections visually separated.
-        if idx < len(final_order) - 1 and lines and lines[-1] != "":
-            lines.append("")
+    return store
 
-    merged = "\n".join(lines).strip()
-    return merged if merged else proposed
+
+def _write_memory_store(path: Path, store: dict[str, Any]) -> None:
+    # Internal guard flags are runtime-only and must not be persisted.
+    write_store = {k: v for k, v in store.items() if not str(k).startswith("__")}
+    payload = json.dumps(write_store, ensure_ascii=False, indent=2) + "\n"
+    _atomic_write_text(path, payload)
+
+
+def _next_memory_id(store: dict[str, Any], scope: str) -> str:
+    pattern = _ITEM_ID_PATTERNS[scope]
+    max_index = 0
+    for item in store.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        item_id = item.get("id")
+        if not isinstance(item_id, str):
+            continue
+        match = pattern.match(item_id)
+        if not match:
+            continue
+        max_index = max(max_index, int(match.group(1)))
+    return f"{_ITEM_ID_PREFIX[scope]}{max_index + 1:06d}"
+
+
+def _build_memory_snapshot(
+    user_store: dict[str, Any] | None,
+    project_store: dict[str, Any] | None,
+) -> dict[str, Any]:
+    def _items_for_snapshot(store: dict[str, Any] | None) -> list[dict[str, Any]]:
+        if store is None:
+            return []
+        items: list[dict[str, Any]] = []
+        for item in store.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            items.append(
+                {
+                    "id": item.get("id"),
+                    "section": item.get("section"),
+                    "content": item.get("content"),
+                    "status": item.get("status"),
+                }
+            )
+        items.sort(
+            key=lambda x: (
+                str(x.get("section", "")).casefold(),
+                str(x.get("id", "")),
+            )
+        )
+        return items
+
+    return {
+        "user": _items_for_snapshot(user_store),
+        "project": _items_for_snapshot(project_store),
+    }
+
+
+def _normalize_and_validate_operations(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    raw_ops = payload.get("operations", [])
+    if not isinstance(raw_ops, list):
+        return []
+    if len(raw_ops) > MAX_OPERATIONS_PER_RUN:
+        raw_ops = raw_ops[:MAX_OPERATIONS_PER_RUN]
+
+    normalized: list[dict[str, Any]] = []
+    for raw in raw_ops:
+        if not isinstance(raw, dict):
+            continue
+        op = raw.get("op")
+        if not isinstance(op, str):
+            continue
+        op = op.strip().lower()
+        if op not in _ALLOWED_OPS:
+            continue
+        if op == "noop":
+            normalized.append({"op": "noop"})
+            continue
+
+        scope = _normalize_scope(raw.get("scope"))
+        if scope is None:
+            continue
+
+        if op == "create":
+            if raw.get("id") not in (None, ""):
+                continue
+            section = _normalize_text(raw.get("section"), max_chars=MAX_SECTION_NAME_CHARS)
+            content = _normalize_text(raw.get("content"), max_chars=MAX_ITEM_CONTENT_CHARS)
+            if not section or not content:
+                continue
+            confidence = _normalize_confidence(raw.get("confidence"), default="high")
+            normalized.append(
+                {
+                    "op": "create",
+                    "scope": scope,
+                    "section": section,
+                    "content": content,
+                    "confidence": confidence,
+                }
+            )
+            continue
+
+        if op == "update":
+            item_id = raw.get("id")
+            if not isinstance(item_id, str) or not item_id.strip():
+                continue
+            content = _normalize_text(raw.get("content"), max_chars=MAX_ITEM_CONTENT_CHARS)
+            if not content:
+                continue
+            confidence = _normalize_confidence(raw.get("confidence"), default="high")
+            normalized.append(
+                {
+                    "op": "update",
+                    "scope": scope,
+                    "id": item_id.strip(),
+                    "content": content,
+                    "confidence": confidence,
+                }
+            )
+            continue
+
+        if op == "archive":
+            item_id = raw.get("id")
+            if not isinstance(item_id, str) or not item_id.strip():
+                continue
+            reason = _normalize_text(raw.get("reason"), max_chars=120)
+            normalized.append(
+                {
+                    "op": "archive",
+                    "scope": scope,
+                    "id": item_id.strip(),
+                    "reason": reason or None,
+                }
+            )
+
+    return normalized
+
+
+def _find_item(store: dict[str, Any] | None, item_id: str) -> dict[str, Any] | None:
+    if store is None:
+        return None
+    for item in store.get("items", []):
+        if isinstance(item, dict) and item.get("id") == item_id:
+            return item
+    return None
+
+
+def _active_items(store: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if store is None:
+        return []
+    return [
+        item
+        for item in store.get("items", [])
+        if isinstance(item, dict) and item.get("status") == "active"
+    ]
+
+
+def _apply_operations(
+    user_store: dict[str, Any] | None,
+    project_store: dict[str, Any] | None,
+    operations: list[dict[str, Any]],
+    *,
+    thread_id: str,
+    source_anchor: str,
+    now_iso: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, list[str]]:
+    user_store = deepcopy(user_store) if user_store is not None else None
+    project_store = deepcopy(project_store) if project_store is not None else None
+    changed_scopes: set[str] = set()
+
+    # Conflict guard: same id touched more than once in one batch.
+    id_touch_count: dict[str, int] = {}
+    for op in operations:
+        item_id = op.get("id")
+        if isinstance(item_id, str) and item_id:
+            id_touch_count[item_id] = id_touch_count.get(item_id, 0) + 1
+    conflicted_ids = {item_id for item_id, count in id_touch_count.items() if count > 1}
+
+    # Archive ratio guard (per-scope).
+    archive_target_count: dict[str, int] = {"user": 0, "project": 0}
+    for op in operations:
+        if op.get("op") != "archive":
+            continue
+        scope = op.get("scope")
+        item_id = op.get("id")
+        if not isinstance(scope, str) or not isinstance(item_id, str):
+            continue
+        if item_id in conflicted_ids:
+            continue
+        store = user_store if scope == "user" else project_store
+        item = _find_item(store, item_id)
+        if item is not None and item.get("status") == "active":
+            archive_target_count[scope] += 1
+
+    archive_blocked_scope: set[str] = set()
+    for scope in ("user", "project"):
+        store = user_store if scope == "user" else project_store
+        active_total = len(_active_items(store))
+        if active_total <= 0:
+            continue
+        allowed = max(1, math.floor(active_total * 0.2))
+        if archive_target_count[scope] > allowed:
+            archive_blocked_scope.add(scope)
+
+    def _get_or_create_store(scope: str) -> dict[str, Any]:
+        nonlocal user_store, project_store
+        if scope == "user":
+            if user_store is None:
+                user_store = _new_store("user")
+            return user_store
+        if project_store is None:
+            project_store = _new_store("project")
+        return project_store
+
+    for op in operations:
+        op_name = op.get("op")
+        if op_name == "noop":
+            continue
+        scope = op.get("scope")
+        if not isinstance(scope, str) or scope not in _ALLOWED_SCOPE:
+            continue
+        if op_name == "archive" and scope in archive_blocked_scope:
+            continue
+
+        store = _get_or_create_store(scope)
+        if op_name == "create":
+            section = str(op["section"])
+            content = str(op["content"])
+            duplicate = any(
+                item.get("status") == "active" and item.get("content", "").strip() == content
+                for item in store.get("items", [])
+                if isinstance(item, dict)
+            )
+            if duplicate:
+                continue
+            item_id = _next_memory_id(store, scope)
+            store["items"].append(
+                {
+                    "id": item_id,
+                    "scope": scope,
+                    "section": section,
+                    "content": content,
+                    "status": "active",
+                    "created_at": now_iso,
+                    "updated_at": now_iso,
+                    "archived_at": None,
+                    "source_thread_id": thread_id,
+                    "source_anchor": source_anchor,
+                    "confidence": _normalize_confidence(op.get("confidence"), default="high"),
+                    "norm_hash": _normalize_hash(section, content),
+                }
+            )
+            changed_scopes.add(scope)
+            continue
+
+        item_id = op.get("id")
+        if not isinstance(item_id, str) or item_id in conflicted_ids:
+            continue
+        item = _find_item(store, item_id)
+        if item is None:
+            continue
+        if op_name == "update":
+            content = str(op["content"]).strip()
+            if not content:
+                continue
+            item["content"] = content
+            item["updated_at"] = now_iso
+            item["source_thread_id"] = thread_id
+            item["source_anchor"] = source_anchor
+            item["confidence"] = _normalize_confidence(op.get("confidence"), default="high")
+            item["norm_hash"] = _normalize_hash(str(item.get("section", "")), content)
+            if item.get("status") == "archived":
+                item["status"] = "active"
+                item["archived_at"] = None
+            changed_scopes.add(scope)
+        elif op_name == "archive":
+            if item.get("status") == "archived":
+                continue
+            item["status"] = "archived"
+            item["updated_at"] = now_iso
+            item["archived_at"] = now_iso
+            item["source_thread_id"] = thread_id
+            item["source_anchor"] = source_anchor
+            changed_scopes.add(scope)
+
+    return user_store, project_store, sorted(changed_scopes)
+
+
+def _render_agents_markdown(store: dict[str, Any]) -> str:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in store.get("items", []):
+        if not isinstance(item, dict) or item.get("status") != "active":
+            continue
+        section = str(item.get("section") or "Imported Notes").strip()
+        if not section:
+            section = "Imported Notes"
+        grouped.setdefault(section, []).append(item)
+
+    if not grouped:
+        return ""
+
+    lines: list[str] = []
+    for section in sorted(grouped, key=str.casefold):
+        items = grouped[section]
+        items.sort(key=lambda x: str(x.get("id", "")))
+        if lines:
+            lines.append("")
+        lines.append(f"# {section}")
+        lines.append("")
+        for item in items:
+            lines.append(f"- {str(item.get('content', '')).strip()}")
+    return "\n".join(lines).strip()
+
+
+def _parse_agents_markdown_for_migration(content: str) -> list[tuple[str, str, str]]:
+    items: list[tuple[str, str, str]] = []
+    section = "Imported Notes"
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        heading = re.match(r"^#{1,6}\s+(.+)$", line)
+        if heading:
+            section = _normalize_text(heading.group(1), max_chars=MAX_SECTION_NAME_CHARS)
+            if not section:
+                section = "Imported Notes"
+            continue
+        bullet = re.match(r"^[-*+]\s+(.+)$", line)
+        if bullet:
+            body = _normalize_text(bullet.group(1), max_chars=MAX_ITEM_CONTENT_CHARS)
+            if body:
+                items.append((section, body, "low"))
+            continue
+        body = _normalize_text(line, max_chars=MAX_ITEM_CONTENT_CHARS)
+        if body:
+            items.append(("Imported Notes", body, "low"))
+    return items
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -380,42 +644,31 @@ def _atomic_write_text(path: Path, content: str) -> None:
         tmp.flush()
         os.fsync(tmp.fileno())
         tmp_name = tmp.name
-
     os.replace(tmp_name, path)
 
 
-# ---------------------------------------------------------------------------
-# Private state schema
-# ---------------------------------------------------------------------------
+def _backup_corrupt_store(path: Path) -> Path | None:
+    """Best-effort backup for unreadable store files before auto-recovery."""
+    if not path.exists():
+        return None
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = path.with_name(f"{path.name}.corrupt.{stamp}.bak")
+    try:
+        _atomic_write_text(backup_path, path.read_text(encoding="utf-8"))
+        return backup_path
+    except OSError:
+        logger.warning("Memory agent: failed to back up unreadable store %s", path, exc_info=True)
+        return None
 
 
 class MemoryAgentState(AgentState):
-    """Private state fields for MemoryAgentMiddleware.
-
-    Declared with ``PrivateStateAttr`` so LangGraph resets them automatically
-    at the start of every agent turn, preventing stale values from leaking
-    between turns.
-    """
+    """Private state fields for MemoryAgentMiddleware."""
 
     _auto_memory_updated_paths: Annotated[NotRequired[list[str]], PrivateStateAttr]
 
 
-# ---------------------------------------------------------------------------
-# Middleware
-# ---------------------------------------------------------------------------
-
-
 class MemoryAgentMiddleware(AgentMiddleware):
-    """Dedicated memory agent that runs after every non-trivial conversation turn.
-
-    Captures ``request.model`` on every ``wrap_model_call`` so that runtime
-    model switches (``/model``) are picked up immediately.  In ``aafter_agent``
-    an independent extraction call is made; results are written directly to the
-    configured memory files.
-
-    Security: only paths present in ``memory_paths`` (resolved to absolute) are
-    ever written; any other path returned by the model is rejected with a warning.
-    """
+    """Dedicated memory agent that runs after every non-trivial conversation turn."""
 
     state_schema = MemoryAgentState
 
@@ -423,22 +676,12 @@ class MemoryAgentMiddleware(AgentMiddleware):
         self,
         *,
         memory_paths: list[str],
+        memory_store_paths: dict[str, str] | None = None,
         context_messages: int | None = None,
         min_turn_interval: int | None = None,
         min_seconds_between_runs: float | None = None,
         file_cooldown_seconds: float | None = None,
     ) -> None:
-        """
-        Args:
-            memory_paths: Absolute paths to AGENTS.md files to maintain.
-            context_messages: Number of recent messages fed to the memory
-                agent from the incremental delta since last extraction.
-                `0` means no cap (consume full delta).
-            min_turn_interval: Minimum turns between extraction runs.
-            min_seconds_between_runs: Minimum wall-clock seconds between runs.
-            file_cooldown_seconds: Skip extraction when memory file was
-                updated too recently.
-        """
         if context_messages is None:
             context_messages = _env_int(
                 "INVINCAT_MEMORY_CONTEXT_MESSAGES",
@@ -448,55 +691,88 @@ class MemoryAgentMiddleware(AgentMiddleware):
         if min_turn_interval is None:
             min_turn_interval = _env_int(
                 "INVINCAT_MEMORY_MIN_TURN_INTERVAL",
-                default=5,
+                default=1,
                 minimum=1,
             )
         if min_seconds_between_runs is None:
             min_seconds_between_runs = _env_float(
                 "INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS",
-                default=15.0,
+                default=0.0,
                 minimum=0.0,
             )
         if file_cooldown_seconds is None:
             file_cooldown_seconds = _env_float(
                 "INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS",
-                default=8.0,
+                default=0.0,
                 minimum=0.0,
             )
 
-        self._memory_paths = memory_paths
+        self._memory_paths = [str(Path(p).expanduser().resolve()) for p in memory_paths]
+        self._memory_paths_by_scope = self._classify_memory_paths(self._memory_paths)
+
+        resolved_store_paths = (
+            {
+                scope: str(Path(p).expanduser().resolve())
+                for scope, p in memory_store_paths.items()
+                if scope in _ALLOWED_SCOPE and isinstance(p, str) and p.strip()
+            }
+            if memory_store_paths
+            else self._derive_default_store_paths(self._memory_paths_by_scope)
+        )
+        self._memory_store_paths: dict[str, str] = resolved_store_paths
         self._context_messages = max(0, context_messages)
         self._min_turn_interval = max(1, min_turn_interval)
         self._min_seconds_between_runs = max(0.0, min_seconds_between_runs)
         self._file_cooldown_seconds = max(0.0, file_cooldown_seconds)
-        # Pre-resolve allowed paths once so the whitelist check is O(1).
-        self._allowed_paths: frozenset[str] = frozenset(
-            str(Path(p).expanduser().resolve()) for p in memory_paths
-        )
+
+        allowed = set(self._memory_paths)
+        allowed.update(self._memory_store_paths.values())
+        self._allowed_paths: frozenset[str] = frozenset(allowed)
+
         self._captured_model: Any = None
         self._turn_index = 0
         self._last_run_turn = 0
         self._last_run_at = 0.0
-        # Per-thread incremental cursor: memory agent consumes only messages
-        # appended since the previous extraction run for that thread.
         self._cursor_by_thread: dict[str, int] = {}
         self._anchor_by_thread: dict[str, str] = {}
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
+    @staticmethod
+    def _classify_memory_paths(memory_paths: list[str]) -> dict[str, str]:
+        result: dict[str, str] = {}
+        home_root = Path.home().resolve()
+        project_candidates: list[Path] = []
+        for raw in memory_paths:
+            p = Path(raw).expanduser().resolve()
+            if "user" not in result and str(p).startswith(str(home_root / ".invincat")):
+                result["user"] = str(p)
+            else:
+                project_candidates.append(p)
 
-    def _read_memory_files(self) -> str:
-        parts: list[str] = []
-        for path in self._memory_paths:
-            try:
-                content = Path(path).expanduser().read_text(encoding="utf-8").strip()
-                if len(content) > _MAX_PER_FILE_CHARS:
-                    content = content[:_MAX_PER_FILE_CHARS] + f"\n[...{len(content) - _MAX_PER_FILE_CHARS} chars truncated]"
-                parts.append(f"[{path}]\n{content}" if content else f"[{path}]\n(empty)")
-            except OSError:
-                parts.append(f"[{path}]\n(file does not exist yet)")
-        return "\n\n".join(parts) if parts else "(no memory files configured)"
+        if project_candidates:
+            preferred = None
+            for p in project_candidates:
+                if str(p).endswith("/.invincat/AGENTS.md"):
+                    preferred = p
+                    break
+            if preferred is None:
+                preferred = project_candidates[0]
+            result["project"] = str(preferred)
+        return result
+
+    @staticmethod
+    def _derive_default_store_paths(memory_paths_by_scope: dict[str, str]) -> dict[str, str]:
+        store_paths: dict[str, str] = {}
+        for scope in ("user", "project"):
+            agents_path = memory_paths_by_scope.get(scope)
+            if not agents_path:
+                continue
+            p = Path(agents_path)
+            filename = "memory_user.json" if scope == "user" else "memory_project.json"
+            store_paths[scope] = str((p.parent / filename).resolve())
+        return store_paths
+
+    def _is_authorized_path(self, path: Path) -> bool:
+        return str(path.expanduser().resolve()) in self._allowed_paths
 
     def _memory_files_recently_updated(self) -> bool:
         if self._file_cooldown_seconds <= 0:
@@ -530,7 +806,6 @@ class MemoryAgentMiddleware(AgentMiddleware):
 
     @staticmethod
     def _message_anchor(message: Any) -> str:
-        """Build a compact stability anchor for cursor validation."""
         msg_type = getattr(message, "type", "")
         content = getattr(message, "content", "")
         if isinstance(content, list):
@@ -543,7 +818,6 @@ class MemoryAgentMiddleware(AgentMiddleware):
 
     @staticmethod
     def _resolve_thread_id() -> str:
-        """Resolve current thread id from RunnableConfig."""
         try:
             cfg = get_config()
             configurable = cfg.get("configurable", {})
@@ -555,18 +829,12 @@ class MemoryAgentMiddleware(AgentMiddleware):
         return "__default_thread__"
 
     def _slice_incremental_messages(self, thread_id: str, messages: list[Any]) -> list[Any]:
-        """Return only messages added since the last processed cursor for this thread.
-
-        Falls back to full history when cursor is invalidated by history rewrite
-        (e.g., compaction or checkpoint replay).
-        """
         if not messages:
             return []
 
         cursor = self._cursor_by_thread.get(thread_id, 0)
         if cursor <= 0:
             return list(messages)
-
         if cursor > len(messages):
             logger.debug(
                 "Memory agent: cursor reset for %s (cursor=%d > len=%d)",
@@ -585,11 +853,9 @@ class MemoryAgentMiddleware(AgentMiddleware):
                     thread_id,
                 )
                 return list(messages)
-
         return list(messages[cursor:])
 
     def _advance_cursor(self, thread_id: str, messages: list[Any]) -> None:
-        """Mark all current messages as processed for incremental extraction."""
         self._cursor_by_thread[thread_id] = len(messages)
         if messages:
             self._anchor_by_thread[thread_id] = self._message_anchor(messages[-1])
@@ -627,49 +893,6 @@ class MemoryAgentMiddleware(AgentMiddleware):
         )
         return False
 
-    def _normalize_and_validate_updates(self, data: Any) -> list[tuple[str, str]]:
-        if not isinstance(data, dict):
-            return []
-
-        updates_raw = data.get("updates", [])
-        if not isinstance(updates_raw, list):
-            logger.debug("Memory agent: updates field is not a list")
-            return []
-        if len(updates_raw) > _MAX_UPDATES:
-            logger.warning(
-                "Memory agent: too many updates (%d > %d), truncating",
-                len(updates_raw),
-                _MAX_UPDATES,
-            )
-            updates_raw = updates_raw[:_MAX_UPDATES]
-
-        normalized: list[tuple[str, str]] = []
-        for idx, update in enumerate(updates_raw):
-            if not isinstance(update, dict):
-                logger.debug("Memory agent: skipping non-object update at idx=%d", idx)
-                continue
-            file_path = update.get("file")
-            content = update.get("content")
-            if not isinstance(file_path, str) or not file_path.strip():
-                logger.debug("Memory agent: skipping update with invalid file at idx=%d", idx)
-                continue
-            if not isinstance(content, str):
-                logger.debug(
-                    "Memory agent: skipping update with non-string content at idx=%d",
-                    idx,
-                )
-                continue
-            if len(content) > _MAX_UPDATE_CONTENT_CHARS:
-                logger.warning(
-                    "Memory agent: skipping oversize content at idx=%d (%d chars)",
-                    idx,
-                    len(content),
-                )
-                continue
-            normalized.append((file_path, content.strip()))
-
-        return normalized
-
     @staticmethod
     def _format_messages(messages: list[Any]) -> str:
         lines: list[str] = []
@@ -687,91 +910,199 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 ]
                 content = " ".join(filter(None, text_parts))
             if content:
-                lines.append(f"{role}: {str(content)[:1500]}")
+                lines.append(f"{role}: {str(content)[:_MAX_CONVERSATION_CHARS]}")
         return "\n".join(lines)
 
-    # ------------------------------------------------------------------
-    # Core extraction
-    # ------------------------------------------------------------------
+    def _migrate_from_agents_if_needed(
+        self, scope: str, thread_id: str, source_anchor: str
+    ) -> dict[str, Any] | None:
+        store_path_raw = self._memory_store_paths.get(scope)
+        if not store_path_raw:
+            return None
+        store_path = Path(store_path_raw).expanduser().resolve()
+        if store_path.exists():
+            store = _read_memory_store(store_path, scope)
+            if not store.get("__read_error__"):
+                return store
+            logger.warning("Memory agent: attempting auto-recovery for unreadable %s store", scope)
+            backup = _backup_corrupt_store(store_path)
+            if backup is not None:
+                logger.warning(
+                    "Memory agent: backed up unreadable store to %s before recovery",
+                    backup,
+                )
+            # Continue with migration-style reconstruction below.
+
+        agents_path_raw = self._memory_paths_by_scope.get(scope)
+        if not agents_path_raw:
+            recovered = _new_store(scope)
+            if self._is_authorized_path(store_path):
+                _write_memory_store(store_path, recovered)
+            return recovered
+        agents_path = Path(agents_path_raw).expanduser().resolve()
+        if not agents_path.exists():
+            recovered = _new_store(scope)
+            if self._is_authorized_path(store_path):
+                _write_memory_store(store_path, recovered)
+            return recovered
+
+        content = ""
+        try:
+            content = agents_path.read_text(encoding="utf-8")
+        except OSError:
+            return _new_store(scope)
+
+        store = _new_store(scope)
+        now_iso = _iso_now()
+        for section, item_content, confidence in _parse_agents_markdown_for_migration(content):
+            item_id = _next_memory_id(store, scope)
+            store["items"].append(
+                {
+                    "id": item_id,
+                    "scope": scope,
+                    "section": section,
+                    "content": item_content,
+                    "status": "active",
+                    "created_at": now_iso,
+                    "updated_at": now_iso,
+                    "archived_at": None,
+                    "source_thread_id": thread_id,
+                    "source_anchor": source_anchor,
+                    "confidence": confidence,
+                    "norm_hash": _normalize_hash(section, item_content),
+                }
+            )
+
+        if self._is_authorized_path(store_path):
+            _write_memory_store(store_path, store)
+        rendered = _render_agents_markdown(store)
+        if self._is_authorized_path(agents_path):
+            _atomic_write_text(agents_path, (rendered + "\n") if rendered else "")
+
+        return store
 
     async def _extract_and_write(
-        self, model: Any, messages: list[Any]
-    ) -> list[str]:
-        """Run the memory agent and write updates.  Returns list of written paths."""
-        written: list[str] = []
+        self,
+        model: Any,
+        messages: list[Any],
+        *,
+        thread_id: str,
+        source_anchor: str,
+    ) -> list[str] | None:
+        written_agents_paths: list[str] = []
         try:
             conversation = self._format_messages(messages)
-            memory = await asyncio.to_thread(self._read_memory_files)
+            user_store = await asyncio.to_thread(
+                self._migrate_from_agents_if_needed, "user", thread_id, source_anchor
+            )
+            project_store = await asyncio.to_thread(
+                self._migrate_from_agents_if_needed, "project", thread_id, source_anchor
+            )
+            unreadable_scopes: list[str] = []
+            if isinstance(user_store, dict) and user_store.get("__read_error__"):
+                unreadable_scopes.append("user")
+            if isinstance(project_store, dict) and project_store.get("__read_error__"):
+                unreadable_scopes.append("project")
+            if unreadable_scopes:
+                logger.warning(
+                    "Memory agent: skip write because store is unreadable (scopes=%s)",
+                    ",".join(unreadable_scopes),
+                )
+                return []
+            user_before = deepcopy(user_store)
+            project_before = deepcopy(project_store)
+            snapshot = _build_memory_snapshot(user_store, project_store)
 
-            response = await model.bind(max_tokens=_MAX_OUTPUT_TOKENS).ainvoke([
-                SystemMessage(content=_SYSTEM_PROMPT),
-                HumanMessage(
-                    content=_USER_TEMPLATE.format(
-                        conversation=conversation, memory=memory
-                    )
-                ),
-            ], config={"metadata": {"lc_source": "memory_agent"}})
+            response = await model.bind(max_tokens=_MAX_OUTPUT_TOKENS).ainvoke(
+                [
+                    SystemMessage(content=_SYSTEM_PROMPT),
+                    HumanMessage(
+                        content=_USER_TEMPLATE.format(
+                            conversation=conversation,
+                            snapshot=json.dumps(snapshot, ensure_ascii=False, indent=2),
+                        )
+                    ),
+                ],
+                config={"metadata": {"lc_source": "memory_agent"}},
+            )
 
             raw: str = response.content
             if isinstance(raw, list):
                 raw = " ".join(
                     p.get("text", "") if isinstance(p, dict) else str(p) for p in raw
                 )
-
             start = raw.find("{")
             if start == -1:
                 logger.debug("Memory agent: no JSON found in response")
                 return []
-
             data, _ = json.JSONDecoder().raw_decode(raw, start)
-            updates = self._normalize_and_validate_updates(data)
-            if not updates:
+            operations = _normalize_and_validate_operations(data)
+            if not operations:
                 return []
 
-            for file_path, content in updates:
-                # Security: reject any path not in the pre-approved whitelist.
-                resolved = str(Path(file_path).expanduser().resolve())
-                if resolved not in self._allowed_paths:
+            now_iso = _iso_now()
+            new_user, new_project, changed_scopes = _apply_operations(
+                user_store,
+                project_store,
+                operations,
+                thread_id=thread_id,
+                source_anchor=source_anchor,
+                now_iso=now_iso,
+            )
+            if not changed_scopes:
+                return []
+
+            for scope in changed_scopes:
+                store = new_user if scope == "user" else new_project
+                before_store = user_before if scope == "user" else project_before
+                if store is None:
+                    continue
+
+                store_path_raw = self._memory_store_paths.get(scope)
+                agents_path_raw = self._memory_paths_by_scope.get(scope)
+                if not store_path_raw or not agents_path_raw:
+                    continue
+                store_path = Path(store_path_raw).expanduser().resolve()
+                agents_path = Path(agents_path_raw).expanduser().resolve()
+                if not self._is_authorized_path(store_path) or not self._is_authorized_path(agents_path):
+                    logger.warning("Memory agent: rejected unauthorized write for %s scope", scope)
+                    continue
+
+                rendered = _render_agents_markdown(store)
+                before_items = (
+                    before_store.get("items", [])
+                    if isinstance(before_store, dict)
+                    else []
+                )
+                if before_items and not rendered.strip():
                     logger.warning(
-                        "Memory agent: rejected write to unauthorized path %s",
-                        file_path,
+                        "Memory agent: refusing empty render overwrite for non-empty %s store",
+                        scope,
                     )
                     continue
 
-                p = Path(resolved)
-                current = ""
-                try:
-                    current = await asyncio.to_thread(p.read_text, "utf-8")
-                except OSError:
-                    current = ""
+                await asyncio.to_thread(_write_memory_store, store_path, store)
+                await asyncio.to_thread(
+                    _atomic_write_text,
+                    agents_path,
+                    (rendered + "\n") if rendered else "",
+                )
+                written_agents_paths.append(str(agents_path))
 
-                merged = _structured_merge_memory(current, content)
-                if merged.strip() == current.strip():
-                    logger.debug("Memory agent: merged content unchanged for %s", p)
-                    continue
-                await asyncio.to_thread(_atomic_write_text, p, merged + "\n")
-                written.append(str(p))  # store the expanded path for consistent display
-                logger.debug("Memory agent wrote: %s", p)
-
-            if written:
+            if written_agents_paths:
                 self._last_run_turn = self._turn_index
                 self._last_run_at = time.monotonic()
-            return written
+            return written_agents_paths
 
         except json.JSONDecodeError:
             logger.debug("Memory agent: model returned malformed JSON", exc_info=True)
-            return []  # JSONDecodeError occurs before any writes, written is always []
+            return []
         except Exception:
             logger.warning("Memory agent extraction failed unexpectedly", exc_info=True)
-            return written  # return any paths successfully written before the failure
-
-    # ------------------------------------------------------------------
-    # Middleware hooks
-    # ------------------------------------------------------------------
+            return None
 
     @staticmethod
     def _emit_memory_status(runtime: Any, status: str) -> None:
-        """Emit memory-agent lifecycle status to custom stream events."""
         try:
             writer = getattr(runtime, "stream_writer", None)
             if callable(writer):
@@ -782,7 +1113,6 @@ class MemoryAgentMiddleware(AgentMiddleware):
     def wrap_model_call(
         self, request: ModelRequest, handler: Any
     ) -> ModelResponse:
-        # Always update so /model switches are reflected immediately.
         self._captured_model = request.model
         return handler(request)
 
@@ -795,86 +1125,94 @@ class MemoryAgentMiddleware(AgentMiddleware):
     async def aafter_agent(
         self, state: Any, runtime: Any
     ) -> dict[str, Any] | None:
-        logger.debug("Memory agent: aafter_agent called")
-        model = self._captured_model
-        if model is None:
-            return None
-
-        # Only extract when the task is truly complete — not mid-turn while waiting
-        # for HITL approval.  LangGraph stores pending interrupts in state under
-        # "__interrupt__"; if that key is non-empty the user still needs to respond.
-        if state.get("__interrupt__"):
-            logger.debug("Memory agent: skipping extraction — pending interrupts")
-            return None
-
-        messages = state.get("messages", [])
-        if not messages:
-            return None
-
-        # Only extract when all tool calls have completed and AI has given final response.
-        # This ensures memory extraction happens at task boundaries, not mid-turn.
-        if not _is_task_complete(messages):
-            logger.debug("Memory agent: skipping extraction — task not complete (pending tool calls)")
-            return None
-
-        # Trivial check uses the FULL message list so that a user message
-        # followed by many tool calls is not mistakenly skipped because the
-        # human message fell outside the context window.
-        if _is_trivial_turn(messages):
-            logger.debug("Memory agent: skipping trivial turn")
-            return None
-
-        if not self._should_run_for_turn(messages):
-            return None
-
-        thread_id = self._resolve_thread_id()
-        incremental = self._slice_incremental_messages(thread_id, messages)
-        if not incremental:
-            return None
-
-        if self._context_messages <= 0:
-            recent = incremental
-        else:
-            recent = incremental[-self._context_messages :]
-
-        # If the last human message was pushed out of the window by many tool
-        # calls in the same turn, prepend it so the memory agent always sees
-        # what the user actually said.
-        if self._context_messages > 0:
-            human_indices = [
-                i for i, m in enumerate(messages) if getattr(m, "type", "") == "human"
-            ]
-            if human_indices:
-                last_human_idx = human_indices[-1]
-                window_start = len(messages) - self._context_messages
-                if last_human_idx < window_start:
-                    recent = [messages[last_human_idx]] + list(recent)
-
-        self._emit_memory_status(runtime, "running")
         try:
-            written = await self._safe_extract_and_write(model, recent)
-        finally:
-            self._emit_memory_status(runtime, "done")
-        self._advance_cursor(thread_id, messages)
-        if written:
-            return {
-                "memory_contents": None,               # triggers RefreshableMemoryMiddleware reload
-                "_auto_memory_updated_paths": written,  # triggers toast in app.py
-            }
-        return None
+            logger.debug("Memory agent: aafter_agent called")
+            model = self._captured_model
+            if model is None:
+                return None
+            if state.get("__interrupt__"):
+                logger.debug("Memory agent: skipping extraction — pending interrupts")
+                return None
 
-    async def _safe_extract_and_write(self, model: Any, messages: list[Any]) -> list[str]:
-        """Run extraction, absorbing CancelledError so it doesn't escape into agent.astream().
+            messages = state.get("messages", [])
+            if not messages:
+                return None
+            if not _is_task_complete(messages):
+                logger.debug("Memory agent: skipping extraction — task not complete")
+                return None
+            if _is_trivial_turn(messages):
+                logger.debug("Memory agent: skipping trivial turn")
+                return None
+            if not self._should_run_for_turn(messages):
+                return None
 
-        If the outer task is being cancelled (ESC), we re-request cancellation on the
-        current task so it fires at the next await *outside* the middleware, preserving
-        correct ESC behaviour while preventing a silent no-error interruption here.
-        """
-        try:
-            return await self._extract_and_write(model, messages)
+            thread_id = self._resolve_thread_id()
+            incremental = self._slice_incremental_messages(thread_id, messages)
+            if not incremental:
+                return None
+
+            if self._context_messages <= 0:
+                recent = incremental
+            else:
+                recent = incremental[-self._context_messages :]
+
+            if self._context_messages > 0:
+                human_indices = [
+                    i for i, m in enumerate(messages) if getattr(m, "type", "") == "human"
+                ]
+                if human_indices:
+                    last_human_idx = human_indices[-1]
+                    window_start = len(messages) - self._context_messages
+                    if last_human_idx < window_start:
+                        recent = [messages[last_human_idx]] + list(recent)
+
+            source_anchor = self._message_anchor(recent[-1]) if recent else ""
+            self._emit_memory_status(runtime, "running")
+            try:
+                written = await self._safe_extract_and_write(
+                    model,
+                    recent,
+                    thread_id=thread_id,
+                    source_anchor=source_anchor,
+                )
+            finally:
+                self._emit_memory_status(runtime, "done")
+            if written is None:
+                logger.debug("Memory agent: extraction failed, cursor is not advanced")
+                return None
+            self._advance_cursor(thread_id, messages)
+            if written:
+                return {
+                    "memory_contents": None,
+                    "_auto_memory_updated_paths": written,
+                }
+            return None
         except asyncio.CancelledError:
-            logger.debug("Memory agent: extraction cancelled — re-scheduling task cancellation")
+            raise
+        except Exception:
+            logger.exception("Memory agent: aafter_agent failed unexpectedly")
+            return None
+
+    async def _safe_extract_and_write(
+        self,
+        model: Any,
+        messages: list[Any],
+        *,
+        thread_id: str,
+        source_anchor: str,
+    ) -> list[str] | None:
+        try:
+            return await self._extract_and_write(
+                model,
+                messages,
+                thread_id=thread_id,
+                source_anchor=source_anchor,
+            )
+        except asyncio.CancelledError:
+            logger.debug(
+                "Memory agent: extraction cancelled — re-scheduling task cancellation"
+            )
             current = asyncio.current_task()
             if current is not None:
                 current.cancel()
-            return []
+            return None
