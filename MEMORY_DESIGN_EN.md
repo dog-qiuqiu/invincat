@@ -1,166 +1,140 @@
-# Memory Design Overview
+# Memory Design Overview (JSON-Only)
 
-This document explains how long-term memory (`AGENTS.md`) is designed and implemented in this project. It is intended to help maintainers quickly understand what the memory subsystem does, why it is designed this way, and where its current limits are.
+This document describes the current long-term memory implementation based on structured JSON stores.
 
-## 1. Goals
+## 1. Scope
 
-- Preserve reusable knowledge across sessions instead of refeeding full chat history each turn.
-- Keep memory updates low-friction so users get the main response first.
-- Balance automation with safeguards against bad writes, unauthorized writes, and uncontrolled growth.
-- Leave clear extension points for observability and future governance (cleanup, eviction, prioritization).
+- Long-term memory source of truth:
+  - User scope: `~/.invincat/{assistant_id}/memory_user.json`
+  - Project scope: `{project_root}/.invincat/memory_project.json`
+- Conversation history (checkpoints/offload) is not long-term policy memory.
+- `AGENTS.md` is deprecated in the runtime memory injection path.
 
-## 2. Scope Boundary
-
-Two concepts must be separated:
-
-- Long-term memory: `AGENTS.md` (preferences, conventions, stable rules, project decisions).
-- Conversation history: thread checkpoints and offloaded transcripts (replay-oriented, not policy memory).
-
-This document covers long-term memory only.
-
-## 3. Core Components
+## 2. Core Components
 
 | Component | Responsibility | Location |
 |---|---|---|
-| `RefreshableMemoryMiddleware` | Loads memory files into `memory_contents` before each turn and supports forced reload | `invincat_cli/auto_memory.py` |
-| `MemoryAgentMiddleware` | Runs a dedicated post-turn extraction model call and writes memory updates | `invincat_cli/memory_agent.py` |
-| Agent assembly | Builds memory source paths and mounts middleware chain | `invincat_cli/agent.py` |
-| UI feedback | Shows `Updating memory...` and memory-updated status to user | `invincat_cli/textual_adapter.py`, `invincat_cli/app.py` |
+| `RefreshableMemoryMiddleware` | Loads and renders JSON memory stores into `memory_contents`; injects `<agent_memory>` into system prompt | `invincat_cli/auto_memory.py` |
+| `MemoryAgentMiddleware` | Runs a post-turn extraction call and applies structured operations to memory stores | `invincat_cli/memory_agent.py` |
+| Agent assembly | Wires middleware and memory store paths | `invincat_cli/agent.py` |
+| UI feedback | Shows `Updating memory...` and post-update status | `invincat_cli/textual_adapter.py`, `invincat_cli/app.py` |
 
-## 4. Memory File Path Policy
+## 3. Data Model
 
-The writable whitelist is built from:
-
-- User-level: `~/.invincat/{assistant_id}/AGENTS.md`
-- Existing project-level files:
-  - `{project_root}/.invincat/AGENTS.md`
-  - `{project_root}/AGENTS.md`
-- Expected project path (allowed for creation if missing):
-  - `{project_root}/.invincat/AGENTS.md`
-
-Any write outside this whitelist is rejected.
-
-## 5. Lifecycle and Data Flow
-
-```mermaid
-flowchart TD
-    A[Turn completes] --> B{Task complete and non-trivial?}
-    B -- No --> Z[Skip memory]
-    B -- Yes --> C{Throttle checks pass?}
-    C -- No --> Z
-    C -- Yes --> D[Dedicated MemoryAgent model call]
-    D --> E[Strict JSON validation + path whitelist]
-    E --> F[Structured merge existing/proposed]
-    F --> G[Atomic write]
-    G --> H[Return memory_contents=None]
-    H --> I[RefreshableMemoryMiddleware reloads on next turn]
-```
-
-## 6. Triggering Logic
-
-Triggering is two-layered.
-
-Extraction input strategy (thread-local):
-
-- Default: incremental delta only (messages appended since last successful
-  extraction cursor in the same thread).
-- Safety fallback: if the cursor is invalidated by history rewrite
-  (e.g. compaction/checkpoint replay), the middleware performs one full-history
-  pass and re-establishes the cursor.
-
-Hard gates:
-
-- No pending interrupts.
-- Task is truly complete (not mid tool-call chain).
-- Last user input is not a trivial acknowledgment.
-
-Throttle + early-trigger layer:
-
-- Turn interval trigger: default once every `5` turns.
-- Keyword early trigger: preference/rule signals can trigger earlier.
-- Time cooldown: default minimum `15s` between runs.
-- File cooldown: default `8s` after recent memory file update.
-
-Environment knobs:
-
-| Variable | Default | Meaning |
-|---|---:|---|
-| `INVINCAT_MEMORY_CONTEXT_MESSAGES` | `0` | Max messages from incremental delta (`0` means uncapped delta) |
-| `INVINCAT_MEMORY_MIN_TURN_INTERVAL` | `5` | Minimum turn interval |
-| `INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS` | `15` | Minimum wall-clock interval |
-| `INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS` | `8` | Cooldown after recent file update |
-
-## 7. Model Output Contract and Validation
-
-Accepted output format:
+Each store is a JSON object:
 
 ```json
 {
-  "updates": [
-    { "file": "/abs/path/AGENTS.md", "content": "..." }
+  "version": 1,
+  "scope": "user|project",
+  "items": [
+    {
+      "id": "mem_u_000001",
+      "section": "User Preferences",
+      "content": "Prefer concise answers in Chinese.",
+      "status": "active|archived",
+      "created_at": "2026-04-22T10:00:00Z",
+      "updated_at": "2026-04-22T10:00:00Z",
+      "archived_at": null,
+      "source_thread_id": "__default_thread__",
+      "source_anchor": "human|18|...|False",
+      "confidence": "low|medium|high"
+    }
   ]
 }
 ```
 
-Runtime validation adds safeguards:
+ID policy:
+- User IDs: `mem_u_000001...`
+- Project IDs: `mem_p_000001...`
+- IDs are generated by runtime and never position-based.
 
-- `updates` must be an array.
-- Each entry must be an object with string `file` and string `content`.
-- Max update count is enforced (currently `4`).
-- Max content length per update is enforced (currently `32000` chars).
-- Invalid entries are dropped and logged; they never reach disk.
+## 4. Extraction Protocol
 
-## 8. Write Strategy (No Blind Overwrite)
+The memory extractor model returns strict JSON operations:
 
-### 8.1 Structured merge
+```json
+{
+  "operations": [
+    {"op": "create", "scope": "user", "section": "...", "content": "...", "confidence": "high"},
+    {"op": "update", "scope": "project", "id": "mem_p_000042", "content": "...", "confidence": "high"},
+    {"op": "archive", "scope": "project", "id": "mem_p_000031", "reason": "superseded"},
+    {"op": "noop"}
+  ]
+}
+```
 
-Writes are not blind replacements:
+Supported ops: `create`, `update`, `archive`, `noop`.
 
-- Read current file content.
-- Parse Markdown into section structure.
-- Merge section-by-section with dedupe.
-- Rebuild final content and write back.
+## 5. Runtime Flow
 
-### 8.2 Conflict handling (Latest Wins)
+```mermaid
+flowchart TD
+    A[Turn completed] --> B{Task complete and non-trivial?}
+    B -- No --> Z[Skip]
+    B -- Yes --> C{Throttle gates pass?}
+    C -- No --> Z
+    C -- Yes --> D[Build incremental conversation slice]
+    D --> E[Load user/project JSON stores]
+    E --> F[Model returns operations JSON]
+    F --> G[Validate + apply operations]
+    G --> H[Atomic write memory_*.json]
+    H --> I[Return memory_contents=None]
+    I --> J[RefreshableMemoryMiddleware reloads JSON memory next turn]
+```
 
-For rule-like lines (for example `always/never/prefer`, and Chinese equivalents):
+## 6. Triggering and Throttling
 
-- A normalized rule-topic key is extracted.
-- If a newer line targets the same rule topic, it replaces the older one.
-- Purpose: avoid persistent contradictory rules in memory.
+Hard gates:
+- No pending interrupts.
+- Task is complete (not in middle of tool-call chain).
+- Last user message is not trivial.
 
-### 8.3 Atomic persistence
+Incremental strategy:
+- Uses thread-local cursor and anchor to consume only `t+1` delta since the last successful extraction.
+- Falls back to full-history pass if cursor/anchor no longer matches rewritten history.
 
-Writes use temp file + `os.replace`:
+Default throttle values:
+- `INVINCAT_MEMORY_CONTEXT_MESSAGES=0`
+- `INVINCAT_MEMORY_MIN_TURN_INTERVAL=2`
+- `INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS=8`
+- `INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5`
 
-- Reduces risk of partial writes on interruption.
-- Avoids corruption from direct in-place overwrite.
+Signal-based early trigger:
+- Preference/rule keywords can bypass some interval throttles.
 
-## 9. User-visible Behavior
+## 7. Safety Guards
 
-Two user-facing phases:
+- Operation count and field length limits.
+- Scope and op schema validation.
+- Duplicate create suppression.
+- Conflict guard: same id touched multiple times in one batch is rejected.
+- Archive-ratio guard: blocks over-aggressive archive batches.
+- Empty-wipe guard: prevents turning non-empty active memory into fully inactive set in one write.
+- Path whitelist: writes allowed only for configured memory store paths.
+- Atomic write: temp file + `os.replace`.
+- Corrupt-store handling:
+  - mark read-error
+  - backup unreadable store to `.corrupt.<ts>.bak`
+  - recover with safe store shape
 
-- In progress: spinner shows `Updating memory...`
-- After completion: status bar shows `Memory updated: ...` or `Memory updated: n files`
+## 8. Memory Injection
 
-Also, internal memory-agent JSON is filtered and not rendered as assistant chat output.
+`RefreshableMemoryMiddleware`:
+- Reads `memory_*.json`.
+- Renders only `active` items grouped by section.
+- Injects memory in `<agent_memory>` block into the system message.
+- Enforces injection budgets:
+  - per-scope render cap
+  - total injected memory cap
 
-## 10. Current Limitations
+## 9. User-Visible Behavior
 
-- Conflict replacement is heuristic pattern matching, not full semantic contradiction resolution.
-- No built-in layered eviction policy yet (for example recency/frequency-based pruning).
-- Dedicated regression coverage for memory behavior is still limited.
+- During extraction: spinner shows `Updating memory...`
+- After successful writes: status bar shows updated path count/path summary
+- Internal memory-agent model output is not rendered in assistant chat
 
-## 11. Maintenance Guidance
+## 10. Known Boundary
 
-- Before increasing trigger intervals, verify memory recall quality does not degrade.
-- Before decreasing intervals, evaluate token and write-frequency cost.
-- In high-concurrency environments, add version checks / optimistic locking to reduce lost updates.
-- If memory grows too large, prioritize eviction/prioritization policy before further prompt tuning.
-
-## 12. Quick Troubleshooting
-
-- No memory update observed: check throttle gates first.
-- Update status shown but no content changed: likely dedupe/merge deemed no material delta.
-- Writes silently missing: verify target path is in whitelist.
-- Unexpected growth: check whether entries bypass conflict-key detection or are non-rule accumulations.
+- Automatic migration from legacy `AGENTS.md` is currently not in the JSON-only runtime path by default.
+- If your deployment has old `AGENTS.md` only, run a migration step before enforcing JSON-only rollout.

@@ -173,8 +173,10 @@ AI 可以在会话之间记住你的偏好、项目约定和重要信息。
 
 | 类型 | 路径 | 适用范围 |
 |------|------|---------|
-| 全局记忆 | `~/.invincat/{assistant_id}/AGENTS.md`（默认：`~/.invincat/agent/AGENTS.md`） | 所有项目通用（编码风格、个人偏好）|
-| 项目记忆 | `{项目根目录}/.invincat/AGENTS.md` | 仅当前 Git 仓库（架构约定、技术栈）|
+| 全局记忆存储 | `~/.invincat/{assistant_id}/memory_user.json`（默认：`~/.invincat/agent/memory_user.json`） | 所有项目通用（编码风格、个人偏好）|
+| 项目记忆存储 | `{项目根目录}/.invincat/memory_project.json` | 仅当前 Git 仓库（架构约定、技术栈）|
+
+`AGENTS.md` 已从运行时记忆注入链路中弃用，当前以 `memory_*.json` 为唯一真源。
 
 ### 手动更新记忆
 
@@ -198,9 +200,9 @@ AI 可以在会话之间记住你的偏好、项目约定和重要信息。
 
 ```bash
 INVINCAT_MEMORY_CONTEXT_MESSAGES=0
-INVINCAT_MEMORY_MIN_TURN_INTERVAL=5
-INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS=15
-INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=8
+INVINCAT_MEMORY_MIN_TURN_INTERVAL=2
+INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS=8
+INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5
 ```
 
 `INVINCAT_MEMORY_CONTEXT_MESSAGES=0` 表示对“自上次记忆提取后的增量消息”

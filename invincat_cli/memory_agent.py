@@ -667,19 +667,19 @@ class MemoryAgentMiddleware(AgentMiddleware):
         if min_turn_interval is None:
             min_turn_interval = _env_int(
                 "INVINCAT_MEMORY_MIN_TURN_INTERVAL",
-                default=1,
+                default=2,
                 minimum=1,
             )
         if min_seconds_between_runs is None:
             min_seconds_between_runs = _env_float(
                 "INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS",
-                default=0.0,
+                default=8.0,
                 minimum=0.0,
             )
         if file_cooldown_seconds is None:
             file_cooldown_seconds = _env_float(
                 "INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS",
-                default=0.0,
+                default=5.0,
                 minimum=0.0,
             )
 

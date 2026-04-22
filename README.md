@@ -174,8 +174,10 @@ AI can remember your preferences, project conventions, and important information
 
 | Type | Path | Scope |
 |------|------|-------|
-| Global Memory | `~/.invincat/{assistant_id}/AGENTS.md` (default: `~/.invincat/agent/AGENTS.md`) | Universal for all projects (coding style, personal preferences) |
-| Project Memory | `{project root}/.invincat/AGENTS.md` | Only for current Git repository (architecture conventions, tech stack) |
+| Global Memory Store | `~/.invincat/{assistant_id}/memory_user.json` (default: `~/.invincat/agent/memory_user.json`) | Universal for all projects (coding style, personal preferences) |
+| Project Memory Store | `{project root}/.invincat/memory_project.json` | Only for current Git repository (architecture conventions, tech stack) |
+
+`AGENTS.md` is deprecated for runtime memory injection. The runtime memory pipeline now uses `memory_*.json` as the single source of truth.
 
 ### Manual Memory Update
 
@@ -201,9 +203,9 @@ Tune behavior via environment variables:
 
 ```bash
 INVINCAT_MEMORY_CONTEXT_MESSAGES=0
-INVINCAT_MEMORY_MIN_TURN_INTERVAL=5
-INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS=15
-INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=8
+INVINCAT_MEMORY_MIN_TURN_INTERVAL=2
+INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS=8
+INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5
 ```
 
 `INVINCAT_MEMORY_CONTEXT_MESSAGES=0` means no cap on the incremental delta
