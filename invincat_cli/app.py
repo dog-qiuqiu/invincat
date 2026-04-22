@@ -1525,6 +1525,7 @@ class DeepAgentsApp(App):
         from invincat_cli.widgets.model_selector import (
             ModelSelectorScreen,  # noqa: F401
         )
+        from invincat_cli.widgets.memory_viewer import MemoryViewerScreen  # noqa: F401
         from invincat_cli.widgets.thread_selector import (  # noqa: F401
             DeleteThreadConfirmScreen,
             ThreadSelectorScreen,
@@ -2961,6 +2962,7 @@ class DeepAgentsApp(App):
 
             help_body = (
                 f"{t('help.title')}: /quit, /clear, /offload, /editor, /mcp, "
+                "/memory, "
                 "/model [--model-params JSON] [--default], /reload, "
                 "/skill:<name>, /remember, /skill-creator, /theme, /tokens, "
                 "/threads, /trace, /language, "
@@ -3112,6 +3114,8 @@ class DeepAgentsApp(App):
             await self._handle_skill_command(rewritten)
         elif cmd == "/mcp":
             await self._show_mcp_viewer()
+        elif cmd == "/memory":
+            await self._show_memory_viewer()
         elif cmd == "/theme":
             await self._show_theme_selector()
         elif cmd == "/language":
@@ -5272,6 +5276,36 @@ class DeepAgentsApp(App):
         from invincat_cli.widgets.mcp_viewer import MCPViewerScreen
 
         screen = MCPViewerScreen(server_info=self._mcp_server_info or [])
+
+        def handle_result(result: None) -> None:  # noqa: ARG001
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+        self.push_screen(screen, handle_result)
+
+    def _resolve_memory_store_paths(self) -> dict[str, str]:
+        """Resolve user/project memory store paths for the current session."""
+        from invincat_cli.config import settings
+
+        assistant_id = self._assistant_id or "agent"
+        user_store = (
+            settings.get_user_agent_md_path(assistant_id).parent / "memory_user.json"
+        )
+
+        store_paths: dict[str, str] = {"user": str(user_store.expanduser().resolve())}
+        project_expected = settings.get_project_agent_md_expected_path()
+        if project_expected is not None:
+            project_store = project_expected.parent / "memory_project.json"
+            store_paths["project"] = str(project_store.expanduser().resolve())
+        return store_paths
+
+    async def _show_memory_viewer(self) -> None:
+        """Show memory manager modal with live store state."""
+        from invincat_cli.widgets.memory_viewer import MemoryViewerScreen
+
+        screen = MemoryViewerScreen(
+            memory_store_paths=self._resolve_memory_store_paths(),
+        )
 
         def handle_result(result: None) -> None:  # noqa: ARG001
             if self._chat_input:

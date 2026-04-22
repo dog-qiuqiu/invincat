@@ -217,6 +217,18 @@ to recent N messages.
 - [Memory Design (Chinese)](./MEMORY_DESIGN.md)
 - [Memory Design (English)](./MEMORY_DESIGN_EN.md)
 
+### Memory Manager UI
+
+```
+/memory
+```
+
+Open the full-screen memory manager for live inspection of memory stores:
+
+- separate pages for `user` and `project` scope (`1` / `2`, or `Tab` to switch)
+- highlights key fields (`status`, `id`, `section`, `content`) for each item
+- supports `r` (refresh), `a` (show/hide archived), `Esc` (close)
+
 ---
 
 ## Skill System
@@ -295,6 +307,7 @@ Type `/` in the input box and press `Tab` to view and autocomplete all commands.
 |---------|-------------|
 | `/offload` / `/compact` | Manually compress context, free tokens |
 | `/remember` | Manually trigger memory update |
+| `/memory` | Open full-screen memory manager (live user/project view) |
 
 ### Tools & Extensions
 

@@ -213,6 +213,18 @@ INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5
 - [Memory Design（中文）](./MEMORY_DESIGN.md)
 - [Memory Design（English）](./MEMORY_DESIGN_EN.md)
 
+### 记忆管理界面
+
+```
+/memory
+```
+
+打开全屏记忆管理界面，实时查看 memory store：
+
+- `user` / `project` 双页面展示（`1` / `2`，或 `Tab` 切换）
+- 每条记忆突出显示关键字段（`status`、`id`、`section`、`content`）
+- 支持 `r` 刷新、`a` 显示/隐藏 archived、`Esc` 关闭
+
 ---
 
 ## 技能系统
@@ -291,6 +303,7 @@ INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5
 |------|------|
 | `/offload` / `/compact` | 手动压缩上下文，释放 token |
 | `/remember` | 手动触发记忆更新 |
+| `/memory` | 打开全屏记忆管理界面（实时查看 user/project） |
 
 ### 工具与扩展
 

@@ -16,6 +16,7 @@
 |---|---|---|
 | `RefreshableMemoryMiddleware` | 读取并渲染 JSON memory store，写入 `memory_contents`，并注入系统提示 | `invincat_cli/auto_memory.py` |
 | `MemoryAgentMiddleware` | 在回合结束后独立提取记忆操作并写入 store | `invincat_cli/memory_agent.py` |
+| `MemoryViewerScreen` | 全屏记忆管理界面，实时查看 user/project store 与条目状态 | `invincat_cli/widgets/memory_viewer.py` |
 | Agent 装配 | 组装 middleware 与 store 路径 | `invincat_cli/agent.py` |
 | UI 状态反馈 | 展示 `Updating memory...` 和更新结果 | `invincat_cli/textual_adapter.py`、`invincat_cli/app.py` |
 
@@ -131,6 +132,10 @@ flowchart TD
 - 提取中：spinner 显示 `Updating memory...`
 - 写入成功后：状态栏显示更新路径/数量
 - memory agent 内部模型输出不会渲染到对话正文
+- `/memory` 可打开全屏记忆管理界面：
+  - user/project 分页查看（`1`/`2`，`Tab` 切换）
+  - 条目按字段展示并强调 `status/id/section/content`
+  - 支持 `r` 刷新、`a` 显示/隐藏 archived、`Esc` 关闭
 
 ## 10. 当前边界
 

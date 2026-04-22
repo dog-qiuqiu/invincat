@@ -84,6 +84,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="servers",
     ),
     SlashCommand(
+        name="/memory",
+        description_key="memory",
+        bypass_tier=BypassTier.IMMEDIATE_UI,
+        hidden_keywords="store status active archived",
+    ),
+    SlashCommand(
         name="/model",
         description_key="model",
         bypass_tier=BypassTier.IMMEDIATE_UI,
