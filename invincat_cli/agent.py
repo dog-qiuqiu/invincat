@@ -1048,42 +1048,40 @@ def create_cli_agent(
 
     # Add memory middleware
     if enable_memory:
-        memory_sources = [str(settings.get_user_agent_md_path(assistant_id))]
-        project_agent_md_paths = (
-            project_context.project_agent_md_paths()
-            if project_context is not None
-            else settings.get_project_agent_md_path()
-        )
-        memory_sources.extend(str(p) for p in project_agent_md_paths)
-
-        from invincat_cli.auto_memory import RefreshableMemoryMiddleware
-
-        agent_middleware.append(
-            RefreshableMemoryMiddleware(
-                backend=FilesystemBackend(),
-                sources=memory_sources,
-            )
-        )
-
-        # Auto-memory watches all loaded sources plus the expected project path
-        # so the model can also create a new project-level AGENTS.md if absent.
-        auto_memory_paths = list(memory_sources)
         project_expected_path = (
             project_context.project_root / ".invincat" / "AGENTS.md"
             if project_context is not None and project_context.project_root
             else settings.get_project_agent_md_expected_path()
         )
-        if project_expected_path:
-            expected_str = str(project_expected_path)
-            if expected_str not in auto_memory_paths:
-                auto_memory_paths.append(expected_str)
+
+        from invincat_cli.auto_memory import RefreshableMemoryMiddleware
+
+        user_store_path = str(
+            settings.get_user_agent_md_path(assistant_id).parent / "memory_user.json"
+        )
+        project_store_path = (
+            str(project_expected_path.parent / "memory_project.json")
+            if project_expected_path
+            else None
+        )
+        memory_store_paths = {"user": user_store_path}
+        if project_store_path:
+            memory_store_paths["project"] = project_store_path
+
+        agent_middleware.append(
+            RefreshableMemoryMiddleware(
+                backend=FilesystemBackend(),
+                memory_store_paths=memory_store_paths,
+            )
+        )
 
         # Add memory agent middleware (dedicated per-turn memory extraction)
         from invincat_cli.memory_agent import MemoryAgentMiddleware
 
         agent_middleware.append(
             MemoryAgentMiddleware(
-                memory_paths=auto_memory_paths,
+                memory_paths=[],
+                memory_store_paths=memory_store_paths,
             )
         )
 

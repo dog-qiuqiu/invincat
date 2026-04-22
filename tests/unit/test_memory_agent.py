@@ -12,6 +12,7 @@ from invincat_cli.memory_agent import (
     MemoryAgentMiddleware,
     _apply_operations,
     _atomic_write_text,
+    _backup_corrupt_store,
     _is_trivial_turn,
     _new_store,
     _normalize_and_validate_operations,
@@ -386,6 +387,14 @@ def test_invalid_schema_store_sets_read_error(tmp_path: Path) -> None:
     assert store.get("__read_error__") is True
 
 
+def test_invalid_utf8_store_sets_read_error(tmp_path: Path) -> None:
+    store_path = tmp_path / "memory_project.json"
+    store_path.write_bytes(b"\xff\xfe\x00")
+    store = _read_memory_store(store_path, "project")
+    assert store["scope"] == "project"
+    assert store.get("__read_error__") is True
+
+
 def test_schema_invalid_store_is_auto_recovered_before_extract(tmp_path: Path) -> None:
     agents = tmp_path / "AGENTS.md"
     store = tmp_path / "memory_project.json"
@@ -442,3 +451,31 @@ def test_migrate_recovers_unreadable_store_with_backup(tmp_path: Path) -> None:
 def test_short_ack_is_trivial() -> None:
     msgs = [_Msg("human", "收到"), _Msg("ai", "ok", tool_calls=[])]
     assert _is_trivial_turn(msgs) is True
+
+
+def test_recover_corrupt_store_when_agents_read_fails(tmp_path: Path) -> None:
+    agents = tmp_path / "AGENTS.md"
+    agents.mkdir()
+    store = tmp_path / "memory_project.json"
+    store.write_text("{bad-json", encoding="utf-8")
+
+    middleware = MemoryAgentMiddleware(
+        memory_paths=[str(agents)],
+        memory_store_paths={"project": str(store)},
+    )
+    recovered = middleware._migrate_from_agents_if_needed("project", "t1", "a1")
+    assert recovered is not None
+    assert recovered.get("__read_error__") is None
+    assert recovered["items"] == []
+
+    reloaded = _read_memory_store(store, "project")
+    assert reloaded.get("__read_error__") is None
+    assert reloaded["items"] == []
+
+
+def test_backup_corrupt_store_handles_invalid_utf8(tmp_path: Path) -> None:
+    store = tmp_path / "memory_project.json"
+    store.write_bytes(b"\xff\xfe\x00")
+    backup = _backup_corrupt_store(store)
+    assert backup is not None
+    assert backup.exists()

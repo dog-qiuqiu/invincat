@@ -89,7 +89,7 @@ Return STRICT JSON only:
 Rules:
 - Output only JSON, no prose, no markdown fences.
 - Prefer update/archive over duplicate create when an existing item already matches.
-- Do NOT output full AGENTS.md content.
+- Do NOT output full markdown memory files.
 - Do NOT output file paths.
 - Do NOT invent IDs for create.
 - Keep memory durable, specific, and actionable.
@@ -221,7 +221,7 @@ def _read_memory_store(path: Path, scope: str) -> dict[str, Any]:
 
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         logger.warning("Memory store unreadable at %s; marking as read-error", path)
         return _read_error_store(scope)
 
@@ -654,9 +654,11 @@ def _backup_corrupt_store(path: Path) -> Path | None:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = path.with_name(f"{path.name}.corrupt.{stamp}.bak")
     try:
-        _atomic_write_text(backup_path, path.read_text(encoding="utf-8"))
+        raw = path.read_bytes()
+        # Preserve recoverability even when the original store has invalid UTF-8.
+        _atomic_write_text(backup_path, raw.decode("utf-8", errors="replace"))
         return backup_path
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         logger.warning("Memory agent: failed to back up unreadable store %s", path, exc_info=True)
         return None
 
@@ -778,7 +780,7 @@ class MemoryAgentMiddleware(AgentMiddleware):
         if self._file_cooldown_seconds <= 0:
             return False
         now = time.time()
-        for path in self._memory_paths:
+        for path in self._memory_store_paths.values():
             p = Path(path).expanduser()
             try:
                 if p.exists():
@@ -950,7 +952,10 @@ class MemoryAgentMiddleware(AgentMiddleware):
         try:
             content = agents_path.read_text(encoding="utf-8")
         except OSError:
-            return _new_store(scope)
+            recovered = _new_store(scope)
+            if self._is_authorized_path(store_path):
+                _write_memory_store(store_path, recovered)
+            return recovered
 
         store = _new_store(scope)
         now_iso = _iso_now()
@@ -975,9 +980,6 @@ class MemoryAgentMiddleware(AgentMiddleware):
 
         if self._is_authorized_path(store_path):
             _write_memory_store(store_path, store)
-        rendered = _render_agents_markdown(store)
-        if self._is_authorized_path(agents_path):
-            _atomic_write_text(agents_path, (rendered + "\n") if rendered else "")
 
         return store
 
@@ -989,7 +991,7 @@ class MemoryAgentMiddleware(AgentMiddleware):
         thread_id: str,
         source_anchor: str,
     ) -> list[str] | None:
-        written_agents_paths: list[str] = []
+        written_store_paths: list[str] = []
         try:
             conversation = self._format_messages(messages)
             user_store = await asyncio.to_thread(
@@ -1059,40 +1061,32 @@ class MemoryAgentMiddleware(AgentMiddleware):
                     continue
 
                 store_path_raw = self._memory_store_paths.get(scope)
-                agents_path_raw = self._memory_paths_by_scope.get(scope)
-                if not store_path_raw or not agents_path_raw:
+                if not store_path_raw:
                     continue
                 store_path = Path(store_path_raw).expanduser().resolve()
-                agents_path = Path(agents_path_raw).expanduser().resolve()
-                if not self._is_authorized_path(store_path) or not self._is_authorized_path(agents_path):
+                if not self._is_authorized_path(store_path):
                     logger.warning("Memory agent: rejected unauthorized write for %s scope", scope)
                     continue
 
-                rendered = _render_agents_markdown(store)
                 before_items = (
                     before_store.get("items", [])
                     if isinstance(before_store, dict)
                     else []
                 )
-                if before_items and not rendered.strip():
+                if before_items and not _active_items(store):
                     logger.warning(
-                        "Memory agent: refusing empty render overwrite for non-empty %s store",
+                        "Memory agent: refusing full-active wipe for non-empty %s store",
                         scope,
                     )
                     continue
 
                 await asyncio.to_thread(_write_memory_store, store_path, store)
-                await asyncio.to_thread(
-                    _atomic_write_text,
-                    agents_path,
-                    (rendered + "\n") if rendered else "",
-                )
-                written_agents_paths.append(str(agents_path))
+                written_store_paths.append(str(store_path))
 
-            if written_agents_paths:
+            if written_store_paths:
                 self._last_run_turn = self._turn_index
                 self._last_run_at = time.monotonic()
-            return written_agents_paths
+            return written_store_paths
 
         except json.JSONDecodeError:
             logger.debug("Memory agent: model returned malformed JSON", exc_info=True)
