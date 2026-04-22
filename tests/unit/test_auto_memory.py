@@ -89,6 +89,43 @@ def test_invalid_store_is_ignored(tmp_path: Path) -> None:
     assert update["memory_contents"] == {}
 
 
+def test_malformed_items_are_filtered_from_injection(tmp_path: Path) -> None:
+    project_store = tmp_path / "memory_project.json"
+    _make_store(
+        project_store,
+        scope="project",
+        items=[
+            {
+                "id": "mem_p_000001",
+                "section": "Project Rules",
+                "content": "valid item",
+                "status": "active",
+            },
+            {
+                "id": "mem_p_000002",
+                "section": "Project Rules",
+                "content": "",
+                "status": "active",
+            },
+            {
+                "id": "mem_p_000003",
+                "section": "Project Rules",
+                "content": "bad status",
+                "status": "unknown",
+            },
+        ],
+    )
+    mw = RefreshableMemoryMiddleware(
+        backend=object(),
+        memory_store_paths={"project": str(project_store)},
+    )
+    update = mw.before_agent({"memory_contents": None}, runtime=object())
+    assert isinstance(update, dict)
+    rendered = "\n".join(update["memory_contents"].values())
+    assert "valid item" in rendered
+    assert "bad status" not in rendered
+
+
 def test_wrap_model_call_injects_agent_memory(tmp_path: Path) -> None:
     project_store = tmp_path / "memory_project.json"
     _make_store(

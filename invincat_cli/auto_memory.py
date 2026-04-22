@@ -24,6 +24,7 @@ _MEMORY_INJECTION_TEMPLATE = """<agent_memory>
 """
 _MAX_SCOPE_RENDER_CHARS = 4000
 _MAX_TOTAL_INJECTION_CHARS = 8000
+_ALLOWED_ITEM_STATUS = {"active", "archived"}
 
 
 def _normalize_text(value: Any, *, max_chars: int) -> str:
@@ -32,15 +33,33 @@ def _normalize_text(value: Any, *, max_chars: int) -> str:
     return " ".join(value.strip().split())[:max_chars]
 
 
+def _is_valid_store_item(raw: Any) -> bool:
+    if not isinstance(raw, dict):
+        return False
+    item_id = raw.get("id")
+    section = raw.get("section")
+    content = raw.get("content")
+    status = raw.get("status")
+    if not isinstance(item_id, str) or not item_id.strip():
+        return False
+    if not isinstance(section, str) or not section.strip():
+        return False
+    if not isinstance(content, str) or not content.strip():
+        return False
+    if not isinstance(status, str) or status.strip().lower() not in _ALLOWED_ITEM_STATUS:
+        return False
+    return True
+
+
 def _render_store_content(store: dict[str, Any], *, max_chars: int = _MAX_SCOPE_RENDER_CHARS) -> str:
     grouped: dict[str, list[tuple[str, str]]] = {}
     items = store.get("items", [])
     if not isinstance(items, list):
         return ""
     for raw in items:
-        if not isinstance(raw, dict):
+        if not _is_valid_store_item(raw):
             continue
-        if str(raw.get("status", "active")).strip().lower() != "active":
+        if str(raw.get("status", "")).strip().lower() != "active":
             continue
         item_id = str(raw.get("id", "")).strip()
         section = _normalize_text(raw.get("section") or "Imported Notes", max_chars=80)

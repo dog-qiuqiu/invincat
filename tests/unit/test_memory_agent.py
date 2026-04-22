@@ -158,27 +158,16 @@ def test_duplicate_create_deduped_to_noop() -> None:
     assert len(new_user["items"]) == 1
 
 
-def test_migration_from_agents_markdown(tmp_path: Path) -> None:
-    agents = tmp_path / "AGENTS.md"
+def test_load_or_recover_store_initializes_empty_when_missing(tmp_path: Path) -> None:
     store = tmp_path / "memory_project.json"
-    agents.write_text(
-        "# Project Rules\n\n- Use uv.\n\norphan line\n",
-        encoding="utf-8",
-    )
     middleware = MemoryAgentMiddleware(
-        memory_paths=[str(agents)],
+        memory_paths=[],
         memory_store_paths={"project": str(store)},
     )
-
-    migrated = middleware._migrate_from_agents_if_needed("project", "t1", "a1")
-    assert migrated is not None
-    assert len(migrated["items"]) == 2
-    assert migrated["items"][0]["id"] == "mem_p_000001"
+    loaded = middleware._load_or_recover_store("project", "t1", "a1")
+    assert loaded is not None
+    assert loaded["items"] == []
     assert store.exists()
-
-    migrated_again = middleware._migrate_from_agents_if_needed("project", "t1", "a1")
-    assert migrated_again is not None
-    assert len(migrated_again["items"]) == 2
 
 
 def test_conflicting_operations_on_same_id_rejected() -> None:
@@ -232,7 +221,7 @@ def test_atomic_write_and_whitelist_authorization(tmp_path: Path) -> None:
     _atomic_write_text(store, "{}")
     assert store.read_text(encoding="utf-8") == "{}"
     assert middleware._is_authorized_path(store)
-    assert middleware._is_authorized_path(agents)
+    assert not middleware._is_authorized_path(agents)
     assert not middleware._is_authorized_path(outsider)
 
 
@@ -333,13 +322,11 @@ def test_aafter_agent_does_not_advance_cursor_on_extract_failure(monkeypatch: An
 
 
 def test_unreadable_store_is_auto_recovered_before_extract(tmp_path: Path) -> None:
-    agents = tmp_path / "AGENTS.md"
     store = tmp_path / "memory_project.json"
-    agents.write_text("# Project Rules\n\n- Keep this.\n", encoding="utf-8")
     store.write_text("{not-json", encoding="utf-8")
 
     middleware = MemoryAgentMiddleware(
-        memory_paths=[str(agents)],
+        memory_paths=[],
         memory_store_paths={"project": str(store)},
     )
 
@@ -384,13 +371,11 @@ def test_invalid_utf8_store_sets_read_error(tmp_path: Path) -> None:
 
 
 def test_schema_invalid_store_is_auto_recovered_before_extract(tmp_path: Path) -> None:
-    agents = tmp_path / "AGENTS.md"
     store = tmp_path / "memory_project.json"
-    agents.write_text("# Project Rules\n\n- Keep this.\n", encoding="utf-8")
     store.write_text('{"scope":"project","items":"bad"}', encoding="utf-8")
 
     middleware = MemoryAgentMiddleware(
-        memory_paths=[str(agents)],
+        memory_paths=[],
         memory_store_paths={"project": str(store)},
     )
     before = store.read_text(encoding="utf-8")
@@ -412,26 +397,23 @@ def test_schema_invalid_store_is_auto_recovered_before_extract(tmp_path: Path) -
     assert backups
 
 
-def test_migrate_recovers_unreadable_store_with_backup(tmp_path: Path) -> None:
-    agents = tmp_path / "AGENTS.md"
+def test_load_or_recover_store_recovers_unreadable_store_with_backup(tmp_path: Path) -> None:
     store = tmp_path / "memory_project.json"
-    agents.write_text("# Project Rules\n\n- Use uv.\n", encoding="utf-8")
     store.write_text("{bad-json", encoding="utf-8")
 
     middleware = MemoryAgentMiddleware(
-        memory_paths=[str(agents)],
+        memory_paths=[],
         memory_store_paths={"project": str(store)},
     )
 
-    recovered = middleware._migrate_from_agents_if_needed("project", "t1", "a1")
+    recovered = middleware._load_or_recover_store("project", "t1", "a1")
     assert recovered is not None
     assert recovered.get("__read_error__") is None
-    assert len(recovered["items"]) == 1
-    assert recovered["items"][0]["content"] == "Use uv."
+    assert recovered["items"] == []
     # Store was rewritten to a healthy JSON payload.
     reloaded = _read_memory_store(store, "project")
     assert reloaded.get("__read_error__") is None
-    assert len(reloaded["items"]) == 1
+    assert reloaded["items"] == []
     backups = list(tmp_path.glob("memory_project.json.corrupt.*.bak"))
     assert backups
 
@@ -441,17 +423,15 @@ def test_short_ack_is_trivial() -> None:
     assert _is_trivial_turn(msgs) is True
 
 
-def test_recover_corrupt_store_when_agents_read_fails(tmp_path: Path) -> None:
-    agents = tmp_path / "AGENTS.md"
-    agents.mkdir()
+def test_recover_corrupt_store_without_legacy_fallback(tmp_path: Path) -> None:
     store = tmp_path / "memory_project.json"
     store.write_text("{bad-json", encoding="utf-8")
 
     middleware = MemoryAgentMiddleware(
-        memory_paths=[str(agents)],
+        memory_paths=[],
         memory_store_paths={"project": str(store)},
     )
-    recovered = middleware._migrate_from_agents_if_needed("project", "t1", "a1")
+    recovered = middleware._load_or_recover_store("project", "t1", "a1")
     assert recovered is not None
     assert recovered.get("__read_error__") is None
     assert recovered["items"] == []

@@ -579,31 +579,6 @@ def _apply_operations(
     return user_store, project_store, sorted(changed_scopes)
 
 
-def _parse_agents_markdown_for_migration(content: str) -> list[tuple[str, str, str]]:
-    items: list[tuple[str, str, str]] = []
-    section = "Imported Notes"
-    for raw_line in content.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        heading = re.match(r"^#{1,6}\s+(.+)$", line)
-        if heading:
-            section = _normalize_text(heading.group(1), max_chars=MAX_SECTION_NAME_CHARS)
-            if not section:
-                section = "Imported Notes"
-            continue
-        bullet = re.match(r"^[-*+]\s+(.+)$", line)
-        if bullet:
-            body = _normalize_text(bullet.group(1), max_chars=MAX_ITEM_CONTENT_CHARS)
-            if body:
-                items.append((section, body, "low"))
-            continue
-        body = _normalize_text(line, max_chars=MAX_ITEM_CONTENT_CHARS)
-        if body:
-            items.append(("Imported Notes", body, "low"))
-    return items
-
-
 def _atomic_write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
@@ -683,9 +658,6 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 minimum=0.0,
             )
 
-        self._memory_paths = [str(Path(p).expanduser().resolve()) for p in memory_paths]
-        self._memory_paths_by_scope = self._classify_memory_paths(self._memory_paths)
-
         resolved_store_paths = (
             {
                 scope: str(Path(p).expanduser().resolve())
@@ -693,7 +665,7 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 if scope in _ALLOWED_SCOPE and isinstance(p, str) and p.strip()
             }
             if memory_store_paths
-            else self._derive_default_store_paths(self._memory_paths_by_scope)
+            else {}
         )
         self._memory_store_paths: dict[str, str] = resolved_store_paths
         self._context_messages = max(0, context_messages)
@@ -701,9 +673,7 @@ class MemoryAgentMiddleware(AgentMiddleware):
         self._min_seconds_between_runs = max(0.0, min_seconds_between_runs)
         self._file_cooldown_seconds = max(0.0, file_cooldown_seconds)
 
-        allowed = set(self._memory_paths)
-        allowed.update(self._memory_store_paths.values())
-        self._allowed_paths: frozenset[str] = frozenset(allowed)
+        self._allowed_paths: frozenset[str] = frozenset(self._memory_store_paths.values())
 
         self._captured_model: Any = None
         self._turn_index = 0
@@ -711,41 +681,6 @@ class MemoryAgentMiddleware(AgentMiddleware):
         self._last_run_at = 0.0
         self._cursor_by_thread: dict[str, int] = {}
         self._anchor_by_thread: dict[str, str] = {}
-
-    @staticmethod
-    def _classify_memory_paths(memory_paths: list[str]) -> dict[str, str]:
-        result: dict[str, str] = {}
-        home_root = Path.home().resolve()
-        project_candidates: list[Path] = []
-        for raw in memory_paths:
-            p = Path(raw).expanduser().resolve()
-            if "user" not in result and str(p).startswith(str(home_root / ".invincat")):
-                result["user"] = str(p)
-            else:
-                project_candidates.append(p)
-
-        if project_candidates:
-            preferred = None
-            for p in project_candidates:
-                if str(p).endswith("/.invincat/AGENTS.md"):
-                    preferred = p
-                    break
-            if preferred is None:
-                preferred = project_candidates[0]
-            result["project"] = str(preferred)
-        return result
-
-    @staticmethod
-    def _derive_default_store_paths(memory_paths_by_scope: dict[str, str]) -> dict[str, str]:
-        store_paths: dict[str, str] = {}
-        for scope in ("user", "project"):
-            agents_path = memory_paths_by_scope.get(scope)
-            if not agents_path:
-                continue
-            p = Path(agents_path)
-            filename = "memory_user.json" if scope == "user" else "memory_project.json"
-            store_paths[scope] = str((p.parent / filename).resolve())
-        return store_paths
 
     def _is_authorized_path(self, path: Path) -> bool:
         return str(path.expanduser().resolve()) in self._allowed_paths
@@ -889,9 +824,10 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 lines.append(f"{role}: {str(content)[:_MAX_CONVERSATION_CHARS]}")
         return "\n".join(lines)
 
-    def _migrate_from_agents_if_needed(
+    def _load_or_recover_store(
         self, scope: str, thread_id: str, source_anchor: str
     ) -> dict[str, Any] | None:
+        del thread_id, source_anchor
         store_path_raw = self._memory_store_paths.get(scope)
         if not store_path_raw:
             return None
@@ -907,54 +843,9 @@ class MemoryAgentMiddleware(AgentMiddleware):
                     "Memory agent: backed up unreadable store to %s before recovery",
                     backup,
                 )
-            # Continue with migration-style reconstruction below.
-
-        agents_path_raw = self._memory_paths_by_scope.get(scope)
-        if not agents_path_raw:
-            recovered = _new_store(scope)
-            if self._is_authorized_path(store_path):
-                _write_memory_store(store_path, recovered)
-            return recovered
-        agents_path = Path(agents_path_raw).expanduser().resolve()
-        if not agents_path.exists():
-            recovered = _new_store(scope)
-            if self._is_authorized_path(store_path):
-                _write_memory_store(store_path, recovered)
-            return recovered
-
-        content = ""
-        try:
-            content = agents_path.read_text(encoding="utf-8")
-        except OSError:
-            recovered = _new_store(scope)
-            if self._is_authorized_path(store_path):
-                _write_memory_store(store_path, recovered)
-            return recovered
-
         store = _new_store(scope)
-        now_iso = _iso_now()
-        for section, item_content, confidence in _parse_agents_markdown_for_migration(content):
-            item_id = _next_memory_id(store, scope)
-            store["items"].append(
-                {
-                    "id": item_id,
-                    "scope": scope,
-                    "section": section,
-                    "content": item_content,
-                    "status": "active",
-                    "created_at": now_iso,
-                    "updated_at": now_iso,
-                    "archived_at": None,
-                    "source_thread_id": thread_id,
-                    "source_anchor": source_anchor,
-                    "confidence": confidence,
-                    "norm_hash": _normalize_hash(section, item_content),
-                }
-            )
-
         if self._is_authorized_path(store_path):
             _write_memory_store(store_path, store)
-
         return store
 
     async def _extract_and_write(
@@ -969,10 +860,10 @@ class MemoryAgentMiddleware(AgentMiddleware):
         try:
             conversation = self._format_messages(messages)
             user_store = await asyncio.to_thread(
-                self._migrate_from_agents_if_needed, "user", thread_id, source_anchor
+                self._load_or_recover_store, "user", thread_id, source_anchor
             )
             project_store = await asyncio.to_thread(
-                self._migrate_from_agents_if_needed, "project", thread_id, source_anchor
+                self._load_or_recover_store, "project", thread_id, source_anchor
             )
             unreadable_scopes: list[str] = []
             if isinstance(user_store, dict) and user_store.get("__read_error__"):
