@@ -110,7 +110,8 @@ Then describe your task in chat. The planner agent will:
 - write a todo list (`write_todos`)
 - ask for explicit approval (`approve_plan`)
 
-After approval, the main agent executes the approved checklist step by step.
+After approval, planner mode exits and keeps the approved checklist visible.
+Execution is manual: tell the main agent to execute when you're ready.
 
 Exit planner mode anytime:
 
@@ -316,7 +317,7 @@ Type `/` in the input box and press `Tab` to view and autocomplete all commands.
 |---------|-------------|
 | `/clear` | Clear current conversation, start new session |
 | `/threads` | Browse and restore historical sessions |
-| `/plan` | Enter planner mode (plan first, execute after approval) |
+| `/plan` | Enter planner mode (plan and approve checklist only) |
 | `/exit-plan` | Exit planner mode, cancel running planner turn and queued handoff |
 | `/quit` / `/q` | Exit program |
 

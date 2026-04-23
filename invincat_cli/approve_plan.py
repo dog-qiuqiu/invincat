@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import SystemMessage, ToolMessage
-from langchain_core.tools import tool
+from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.types import Command, interrupt
 from typing_extensions import TypedDict
 
@@ -99,13 +99,15 @@ def _parse_approval_response(
         result_text = "rejected"
 
     return Command(
-        update=[
-            ToolMessage(
-                result_text,
-                tool_call_id=tool_call_id,
-                name="approve_plan",
-            )
-        ]
+        update={
+            "messages": [
+                ToolMessage(
+                    result_text,
+                    tool_call_id=tool_call_id,
+                    name="approve_plan",
+                )
+            ]
+        }
     )
 
 
@@ -138,7 +140,7 @@ class ApprovePlanMiddleware(AgentMiddleware[Any, Any, Any]):
         @tool(description=self.tool_description)
         def _approve_plan(
             todos: list[TodoItem],
-            tool_call_id: Annotated[str, "InjectedToolCallId"],
+            tool_call_id: Annotated[str, InjectedToolCallId],
         ) -> Command[Any]:
             """Present a plan to the user for approval.
 

@@ -58,6 +58,7 @@ from invincat_cli.formatting import format_duration
 from invincat_cli.hooks import dispatch_hook
 from invincat_cli.input import MediaTracker, parse_file_mentions
 from invincat_cli.media_utils import create_multimodal_content
+from invincat_cli.plan_agent import PLANNER_ALLOWED_TOOLS
 from invincat_cli.tool_display import format_tool_message_content
 from invincat_cli.widgets.messages import (
     AppMessage,
@@ -69,6 +70,8 @@ from invincat_cli.widgets.messages import (
 
 logger = logging.getLogger(__name__)
 configure_debug_logging(logger)
+
+_PLANNER_ALLOWED_TOOL_SET: frozenset[str] = frozenset(PLANNER_ALLOWED_TOOLS)
 
 _hitl_adapter_cache: TypeAdapter | None = None
 """Lazy singleton for the HITL request validator."""
@@ -497,6 +500,7 @@ async def execute_task_textual(
     context: CLIContext | None = None,
     *,
     sandbox_type: str | None = None,
+    is_planner_turn: bool = False,
     message_kwargs: dict[str, Any] | None = None,
     turn_stats: SessionStats | None = None,
 ) -> SessionStats:
@@ -517,6 +521,8 @@ async def execute_task_textual(
             to the graph via `context=`.
         sandbox_type: Sandbox provider name for trace metadata, or `None`
             if no sandbox is active.
+        is_planner_turn: Whether this streamed turn is running on the planner
+            peer-agent in `/plan` mode.
         message_kwargs: Extra fields merged into the stream input message
             dict (e.g., `additional_kwargs` for persisting skill metadata
             in the checkpoint).
@@ -585,6 +591,7 @@ async def execute_task_textual(
         message_content = final_input
 
     thread_id = session_state.thread_id
+    planner_mode_enforced = bool(is_planner_turn and session_state.plan_mode)
     config = build_stream_config(thread_id, assistant_id, sandbox_type=sandbox_type)
 
     await dispatch_hook("session.start", {"thread_id": thread_id})
@@ -1332,11 +1339,16 @@ async def execute_task_textual(
                                     # Need at least a name before doing anything
                                     if buffer_name is None:
                                         continue
-        
+
                                     # Normalize display_key to str for consistent map keys
                                     raw_display_key = buffer_id if buffer_id is not None else raw_buffer_key
                                     display_key = _normalize_tool_id(raw_display_key) or str(raw_display_key)
-        
+
+                                    tool_blocked_in_plan_mode = (
+                                        planner_mode_enforced
+                                        and buffer_name not in _PLANNER_ALLOWED_TOOL_SET
+                                    )
+
                                     # --- EARLY MOUNT: show widget as soon as name is known,
                                     # before args have finished streaming.  This eliminates
                                     # the blank gap between the assistant text message and
@@ -1429,7 +1441,17 @@ async def execute_task_textual(
                                             )
                                             await adapter._mount_message(tool_msg)
                                             adapter._current_tool_messages[display_key] = tool_msg
-        
+
+                                    if tool_blocked_in_plan_mode:
+                                        tool_msg = adapter._current_tool_messages.get(display_key)
+                                        if tool_msg is not None:
+                                            tool_msg.set_error(
+                                                "Blocked by /plan policy: this tool is not allowed in planner mode."
+                                            )
+                                        buffer["args_finalized"] = True
+                                        tool_call_buffers.pop(raw_buffer_key, None)
+                                        continue
+
                                     # --- ARGS UPDATE: once args are fully parseable, update
                                     # the already-visible widget and register the file op.
                                     if not buffer.get("args_finalized"):

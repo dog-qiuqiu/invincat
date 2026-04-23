@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from invincat_cli.app import DeepAgentsApp, DeferredAction
+from invincat_cli.widgets.messages import UserMessage
 
 
 class _DummyMessages:
@@ -16,6 +17,7 @@ class _DummyMessages:
 def test_plan_mode_rejects_non_plan_interrupt_tools() -> None:
     app = DeepAgentsApp(agent=None, assistant_id="agent", backend=None)
     app._session_state = SimpleNamespace(plan_mode=True, auto_approve=False)
+    app._active_turn_is_planner = True
     app.query_one = lambda *_args, **_kwargs: _DummyMessages()  # type: ignore[method-assign]
     app._mount_before_queued = lambda *_args, **_kwargs: asyncio.sleep(0)  # type: ignore[method-assign]
 
@@ -33,6 +35,7 @@ def test_plan_mode_rejects_non_plan_interrupt_tools() -> None:
 def test_plan_mode_reject_notice_lists_only_disallowed_tools() -> None:
     app = DeepAgentsApp(agent=None, assistant_id="agent", backend=None)
     app._session_state = SimpleNamespace(plan_mode=True, auto_approve=False)
+    app._active_turn_is_planner = True
     app.query_one = lambda *_args, **_kwargs: _DummyMessages()  # type: ignore[method-assign]
     captured_widgets: list[object] = []
 
@@ -89,11 +92,34 @@ def test_after_planner_turn_ignores_stale_todos_without_write_todos() -> None:
     asyncio.run(_run())
 
 
-def test_after_planner_turn_skips_manual_approval_when_approve_plan_was_used() -> None:
+def test_plan_mode_does_not_reject_non_plan_interrupt_tools_for_main_turn() -> None:
+    app = DeepAgentsApp(agent=None, assistant_id="agent", backend=None)
+    app._session_state = SimpleNamespace(plan_mode=True, auto_approve=False)
+    app._active_turn_is_planner = False
+    app._is_user_typing = lambda: False  # type: ignore[method-assign]
+
+    async def _fake_mount(menu, result_future):  # noqa: ANN001
+        result_future.set_result({"type": "approve"})
+
+    app._mount_approval_widget = _fake_mount  # type: ignore[method-assign]
+
+    async def _run() -> None:
+        fut = await app._request_approval(
+            [{"name": "write_file", "args": {"file_path": "index.html"}}],
+            assistant_id="agent",
+        )
+        result = await fut
+        assert result["type"] == "approve"
+
+    asyncio.run(_run())
+
+
+def test_after_planner_turn_finalizes_when_approve_plan_approved() -> None:
     app = DeepAgentsApp(agent=None, assistant_id="agent", backend=None)
     app._planner_agent = object()
     app._planner_thread_id = "planner-thread"
     approvals: list[list[dict[str, str]]] = []
+    finalized: list[list[dict[str, str]]] = []
 
     async def _fake_get_state(_agent, _thread_id):  # noqa: ANN001
         return {
@@ -109,12 +135,21 @@ def test_after_planner_turn_skips_manual_approval_when_approve_plan_was_used() -
         approvals.append(todos)
         return True
 
+    async def _fake_finalize(
+        todos: list[dict[str, str]],
+        *,
+        planner_state_values=None,  # noqa: ANN001
+    ) -> None:
+        finalized.append(todos)
+
     app._get_thread_state_values_for_agent = _fake_get_state  # type: ignore[method-assign]
     app._process_planner_todos_approval = _fake_process_todos  # type: ignore[method-assign]
+    app._finalize_planner_approval = _fake_finalize  # type: ignore[method-assign]
 
     async def _run() -> None:
         await app._after_planner_turn()
         assert approvals == []
+        assert finalized == [[{"content": "final todo", "status": "in_progress"}]]
 
     asyncio.run(_run())
 
@@ -188,11 +223,13 @@ def test_run_planner_resets_todos_fingerprint_each_turn() -> None:
     app._planner_thread_id = "planner-thread"
     app._planner_last_todos_fingerprint = "stale-fingerprint"
     fingerprint_at_send: list[str | None] = []
+    sent_messages: list[str] = []
 
     async def _fake_ensure_planner():
         return object()
 
     async def _fake_send_to_agent(_message, **_kwargs):  # noqa: ANN001
+        sent_messages.append(_message)
         fingerprint_at_send.append(app._planner_last_todos_fingerprint)
 
     app._ensure_planner_agent = _fake_ensure_planner  # type: ignore[method-assign]
@@ -201,6 +238,12 @@ def test_run_planner_resets_todos_fingerprint_each_turn() -> None:
     async def _run() -> None:
         await app._run_planner("生成执行计划")
         assert fingerprint_at_send == [None]
+        assert sent_messages
+        assert "[planner_runtime_context]" in sent_messages[0]
+        assert "cwd:" in sent_messages[0]
+        assert str(app._cwd) in sent_messages[0]
+        assert "[user_task]" in sent_messages[0]
+        assert "生成执行计划" in sent_messages[0]
 
     asyncio.run(_run())
 
@@ -249,7 +292,34 @@ def test_switch_model_invalidates_planner_cache(monkeypatch) -> None:
     assert app._planner_agent is None
 
 
-def test_request_approve_plan_in_plan_mode_queues_handoff() -> None:
+def test_ensure_planner_agent_uses_planner_approve_prompt_and_disables_shell(
+    monkeypatch,
+) -> None:
+    from invincat_cli.plan_agent import PLANNER_APPROVE_PLAN_SYSTEM_PROMPT
+
+    app = DeepAgentsApp(agent=SimpleNamespace(checkpointer=None), assistant_id="agent", backend=None)
+    captured: dict[str, object] = {}
+    planner_runtime = object()
+
+    def _fake_create_cli_agent(*_args, **kwargs):  # noqa: ANN002, ANN003
+        captured.update(kwargs)
+        return planner_runtime, None
+
+    monkeypatch.setattr("invincat_cli.agent.create_cli_agent", _fake_create_cli_agent)
+
+    async def _run() -> None:
+        planner = await app._ensure_planner_agent()
+        assert planner is planner_runtime
+
+    asyncio.run(_run())
+    assert captured.get("enable_shell") is False
+    assert captured.get("approve_plan_system_prompt") == PLANNER_APPROVE_PLAN_SYSTEM_PROMPT
+    planner_system_prompt = str(captured.get("system_prompt", ""))
+    assert "root_context_dir" in planner_system_prompt
+    assert str(app._cwd) in planner_system_prompt
+
+
+def test_request_approve_plan_in_plan_mode_does_not_queue_handoff() -> None:
     app = DeepAgentsApp(agent=None, assistant_id="agent", backend=None)
     app._session_state = SimpleNamespace(plan_mode=True)
     queued: list[object] = []
@@ -276,8 +346,140 @@ def test_request_approve_plan_in_plan_mode_queues_handoff() -> None:
         assert result == {"type": "approved"}
 
     asyncio.run(_run())
-    assert queued, "expected plan approval to queue handoff"
+    assert queued == []
     assert captured_kwargs.get("allow_auto_approve") is False
+
+
+def test_finalize_planner_approval_queues_plan_handoff_to_main_agent() -> None:
+    app = DeepAgentsApp(agent=None, assistant_id="agent", backend=None)
+    app._session_state = SimpleNamespace(plan_mode=True, thread_id="planner-thread")
+    app._main_thread_before_plan = "main-thread"
+    app._planner_thread_id = "planner-thread"
+    app._planner_last_todos_fingerprint = "fp1"
+    app._planner_prompted_todos_fingerprint = "fp2"
+    app._mount_message = lambda *_args, **_kwargs: asyncio.sleep(0)  # type: ignore[method-assign]
+
+    captured_user_messages: list[str] = []
+    captured_send_prompts: list[str] = []
+
+    async def _fake_mount_message(widget):  # noqa: ANN001
+        captured_user_messages.append(str(getattr(widget, "_content", "")))
+
+    async def _fake_send_to_agent(prompt: str, **_kwargs):  # noqa: ANN001
+        captured_send_prompts.append(prompt)
+
+    app._mount_message = _fake_mount_message  # type: ignore[method-assign]
+    app._send_to_agent = _fake_send_to_agent  # type: ignore[method-assign]
+
+    todos = [
+        {"content": "Implement API endpoint", "status": "in_progress"},
+        {"content": "Add tests", "status": "pending"},
+    ]
+
+    async def _run() -> None:
+        await app._finalize_planner_approval(todos)
+        assert app._session_state.plan_mode is False
+        assert app._session_state.thread_id == "main-thread"
+        assert app._planner_thread_id is None
+        assert app._main_thread_before_plan is None
+        assert app._planner_last_todos_fingerprint is None
+        assert app._planner_prompted_todos_fingerprint is None
+        assert app._pending_plan_handoff_prompt is not None
+        await app._maybe_drain_deferred()
+        assert app._session_state.plan_mode is False
+        assert len(captured_send_prompts) == 1
+        assert (
+            "Execute the following approved plan now." in captured_send_prompts[0]
+            or "请立即执行以下已批准计划。" in captured_send_prompts[0]
+        )
+        assert "1. Implement API endpoint" in captured_send_prompts[0]
+        assert "2. Add tests" in captured_send_prompts[0]
+        assert captured_user_messages
+
+    asyncio.run(_run())
+
+
+def test_finalize_planner_approval_includes_planner_context_in_handoff_prompt() -> None:
+    app = DeepAgentsApp(agent=None, assistant_id="agent", backend=None)
+    app._session_state = SimpleNamespace(plan_mode=True, thread_id="planner-thread")
+    app._main_thread_before_plan = "main-thread"
+    app._planner_agent = object()
+    app._planner_thread_id = "planner-thread"
+
+    async def _fake_get_state(_agent, _thread_id):  # noqa: ANN001
+        return {
+            "messages": [
+                HumanMessage(content="请按性能优先，不要引入新依赖"),
+                AIMessage(content="我会先做最小变更并补测试。"),
+            ],
+        }
+
+    captured_send_prompts: list[str] = []
+    captured_mounted_widgets: list[object] = []
+
+    async def _fake_send_to_agent(prompt: str, **_kwargs):  # noqa: ANN001
+        captured_send_prompts.append(prompt)
+
+    async def _fake_mount_message(widget):  # noqa: ANN001
+        captured_mounted_widgets.append(widget)
+
+    app._get_thread_state_values_for_agent = _fake_get_state  # type: ignore[method-assign]
+    app._mount_message = _fake_mount_message  # type: ignore[method-assign]
+    app._send_to_agent = _fake_send_to_agent  # type: ignore[method-assign]
+
+    todos = [{"content": "实现接口", "status": "in_progress"}]
+
+    async def _run() -> None:
+        await app._finalize_planner_approval(todos)
+        await app._maybe_drain_deferred()
+
+    asyncio.run(_run())
+    assert len(captured_send_prompts) == 1
+    handoff_prompt = captured_send_prompts[0]
+    assert "请立即执行以下已批准计划" in handoff_prompt
+    assert "规划阶段关键上下文" in handoff_prompt
+    assert "请按性能优先，不要引入新依赖" in handoff_prompt
+    assert "我会先做最小变更并补测试" in handoff_prompt
+    assert all(not isinstance(w, UserMessage) for w in captured_mounted_widgets)
+
+
+def test_maybe_drain_deferred_keeps_pending_handoff_when_execution_fails() -> None:
+    app = DeepAgentsApp(agent=None, assistant_id="agent", backend=None)
+    app._pending_plan_handoff_prompt = "Execute approved plan"
+
+    async def _fake_execute_plan_handoff(_prompt: str) -> None:
+        raise RuntimeError("boom")
+
+    app._execute_plan_handoff = _fake_execute_plan_handoff  # type: ignore[method-assign]
+
+    async def _run() -> None:
+        try:
+            await app._maybe_drain_deferred()
+        except RuntimeError:
+            pass
+
+    asyncio.run(_run())
+    assert app._pending_plan_handoff_prompt == "Execute approved plan"
+
+
+def test_discard_queue_clears_deferred_actions() -> None:
+    app = DeepAgentsApp(agent=None, assistant_id="agent", backend=None)
+
+    async def _noop() -> None:
+        return None
+
+    app._pending_messages.append(SimpleNamespace(text="queued", mode="normal"))
+    app._queued_widgets.append(SimpleNamespace(remove=lambda: None))
+    app._deferred_actions = [
+        DeferredAction(kind="chat_output", execute=_noop),
+        DeferredAction(kind="plan_handoff", execute=_noop),
+    ]
+
+    app._discard_queue()
+
+    assert len(app._pending_messages) == 0
+    assert len(app._queued_widgets) == 0
+    assert app._deferred_actions == []
 
 
 def test_handle_plan_task_does_not_reset_when_already_in_plan_mode() -> None:
@@ -306,8 +508,9 @@ def test_handle_plan_task_with_task_keeps_existing_planner_thread() -> None:
     app._planner_thread_id = "planner-thread-existing"
     called: list[str] = []
 
-    async def _fake_run_planner(task: str) -> None:
+    async def _fake_run_planner(task: str) -> bool:
         called.append(task)
+        return True
 
     app._run_planner = _fake_run_planner  # type: ignore[method-assign]
 
@@ -317,6 +520,36 @@ def test_handle_plan_task_with_task_keeps_existing_planner_thread() -> None:
     asyncio.run(_run())
     assert app._planner_thread_id == "planner-thread-existing"
     assert called == ["继续细化"]
+
+
+def test_handle_plan_task_rolls_back_when_planner_fails_to_start() -> None:
+    app = DeepAgentsApp(agent=None, assistant_id="agent", backend=None)
+    app._session_state = SimpleNamespace(plan_mode=False, thread_id="main-thread")
+
+    class _Status:
+        def __init__(self) -> None:
+            self.flags: list[bool] = []
+
+        def set_plan_mode(self, *, enabled: bool) -> None:
+            self.flags.append(enabled)
+
+    status = _Status()
+    app._status_bar = status  # type: ignore[assignment]
+
+    async def _fake_run_planner(_task: str) -> bool:
+        return False
+
+    app._run_planner = _fake_run_planner  # type: ignore[method-assign]
+
+    async def _run() -> None:
+        await app._handle_plan_task("生成计划")
+
+    asyncio.run(_run())
+    assert app._session_state.plan_mode is False
+    assert app._session_state.thread_id == "main-thread"
+    assert app._planner_thread_id is None
+    assert app._main_thread_before_plan is None
+    assert status.flags == [True, False]
 
 
 def test_exit_plan_mode_restores_main_thread() -> None:

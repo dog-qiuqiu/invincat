@@ -851,6 +851,7 @@ def create_cli_agent(
     project_context: ProjectContext | None = None,
     async_subagents: list[AsyncSubAgent] | None = None,
     extra_middleware: Sequence[AgentMiddleware] | None = None,
+    approve_plan_system_prompt: str | None = None,
 ) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -904,6 +905,8 @@ def create_cli_agent(
             (only in local mode). When enabled, the `execute` tool is available.
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
+        approve_plan_system_prompt: Optional override for the `approve_plan`
+            middleware system prompt (useful for planner-specific behavior).
         mcp_server_info: MCP server metadata to surface in the system prompt.
         cwd: Override the working directory for the agent's filesystem backend
             and system prompt.
@@ -1047,7 +1050,12 @@ def create_cli_agent(
     # Add approve_plan middleware for plan confirmation
     from invincat_cli.approve_plan import ApprovePlanMiddleware
 
-    agent_middleware.append(ApprovePlanMiddleware())
+    if approve_plan_system_prompt is not None:
+        agent_middleware.append(
+            ApprovePlanMiddleware(system_prompt=approve_plan_system_prompt)
+        )
+    else:
+        agent_middleware.append(ApprovePlanMiddleware())
 
     # Add memory middleware
     if enable_memory:

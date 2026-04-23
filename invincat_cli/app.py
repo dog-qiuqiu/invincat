@@ -814,6 +814,8 @@ class DeepAgentsApp(App):
 
         self._deferred_actions: list[DeferredAction] = []
         """Deferred actions executed after the current busy state resolves."""
+        self._pending_plan_handoff_prompt: str | None = None
+        """Approved plan handoff prompt waiting to run on the main agent."""
 
         self._message_store = MessageStore()
         """Message virtualization store."""
@@ -1483,6 +1485,7 @@ class DeepAgentsApp(App):
                 w.remove()
             self._queued_widgets.clear()
         self._deferred_actions.clear()
+        self._pending_plan_handoff_prompt = None
 
     @staticmethod
     def _prewarm_deferred_imports() -> None:
@@ -2051,6 +2054,7 @@ class DeepAgentsApp(App):
             not bypass_plan_guard
             and self._session_state
             and self._session_state.plan_mode
+            and self._active_turn_is_planner
             and action_requests
         ):
             tool_names = {
@@ -2313,16 +2317,29 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage(t("plan.entered")))
             return
 
+        entered_plan_mode = False
         if self._session_state and not self._session_state.plan_mode:
             self._planner_thread_id = _new_thread_id()
             self._planner_last_todos_fingerprint = None
             self._planner_prompted_todos_fingerprint = None
             self._main_thread_before_plan = self._session_state.thread_id
             self._session_state.plan_mode = True
+            entered_plan_mode = True
             if self._status_bar:
                 self._status_bar.set_plan_mode(enabled=True)
 
-        await self._run_planner(task)
+        planner_started = await self._run_planner(task)
+        if entered_plan_mode and not planner_started:
+            if self._session_state:
+                self._session_state.plan_mode = False
+                if self._main_thread_before_plan:
+                    self._session_state.thread_id = self._main_thread_before_plan
+            if self._status_bar:
+                self._status_bar.set_plan_mode(enabled=False)
+            self._planner_thread_id = None
+            self._main_thread_before_plan = None
+            self._planner_last_todos_fingerprint = None
+            self._planner_prompted_todos_fingerprint = None
 
     async def _exit_plan_mode(self) -> None:
         """Exit plan mode, cancel planner work, and restore main thread."""
@@ -2344,6 +2361,7 @@ class DeepAgentsApp(App):
             for action in self._deferred_actions
             if action.kind != "plan_handoff"
         ]
+        self._pending_plan_handoff_prompt = None
 
         self._session_state.plan_mode = False
         if self._main_thread_before_plan:
@@ -2356,7 +2374,7 @@ class DeepAgentsApp(App):
         self._planner_prompted_todos_fingerprint = None
         await self._mount_message(AppMessage(t("plan.exited")))
 
-    async def _run_planner(self, task: str) -> None:
+    async def _run_planner(self, task: str) -> bool:
         """Send a user message to the planner agent session.
 
         Args:
@@ -2364,12 +2382,12 @@ class DeepAgentsApp(App):
         """
         if not self._agent or not self._session_state:
             await self._mount_message(AppMessage("Agent not configured."))
-            return
+            return False
 
         planner = await self._ensure_planner_agent()
         if planner is None:
             await self._mount_message(AppMessage("Planner agent is unavailable."))
-            return
+            return False
 
         if not self._planner_thread_id:
             self._planner_thread_id = _new_thread_id()
@@ -2379,12 +2397,21 @@ class DeepAgentsApp(App):
         self._planner_last_todos_fingerprint = None
         self._planner_prompted_todos_fingerprint = None
 
+        planner_turn_input = (
+            "[planner_runtime_context]\n"
+            f"cwd: `{self._cwd}`\n"
+            "response_language: same as user task\n\n"
+            "[user_task]\n"
+            f"{task.strip()}"
+        )
+
         await self._send_to_agent(
-            task,
+            planner_turn_input,
             agent_override=planner,
             thread_id_override=self._planner_thread_id,
             post_turn_hook=self._after_planner_turn,
         )
+        return True
 
     async def _ensure_planner_agent(self) -> Pregel | None:
         """Lazily create and cache a planner peer-agent.
@@ -2402,6 +2429,7 @@ class DeepAgentsApp(App):
 
             from invincat_cli.agent import create_cli_agent
             from invincat_cli.plan_agent import (
+                PLANNER_APPROVE_PLAN_SYSTEM_PROMPT,
                 PLANNER_ALLOWED_TOOLS,
                 PLANNER_SYSTEM_PROMPT,
                 PlannerToolAllowListMiddleware,
@@ -2412,6 +2440,12 @@ class DeepAgentsApp(App):
             model = self._model if self._model is not None else (self._model_override or "claude-sonnet-4-6")
             planner_assistant_id = f"{self._assistant_id or 'agent'}-planner"
             project_context = ProjectContext.from_user_cwd(Path(self._cwd))
+            planner_runtime_context = (
+                "## Planner Runtime Context\n\n"
+                f"- root_context_dir: `{self._cwd}`\n"
+                "- response_language: same as user task\n"
+            )
+            planner_system_prompt = f"{PLANNER_SYSTEM_PROMPT}\n\n{planner_runtime_context}"
             planner_checkpointer = getattr(self._agent, "checkpointer", None)
             if planner_checkpointer is None:
                 # approve_plan relies on Command(resume=...), which requires
@@ -2421,16 +2455,17 @@ class DeepAgentsApp(App):
             planner_agent, _planner_backend = create_cli_agent(
                 model=model,
                 assistant_id=planner_assistant_id,
-                system_prompt=PLANNER_SYSTEM_PROMPT,
+                system_prompt=planner_system_prompt,
                 auto_approve=self._auto_approve,
                 enable_memory=False,
                 enable_skills=False,
                 enable_ask_user=True,
-                enable_shell=True,
+                enable_shell=False,
                 cwd=self._cwd,
                 project_context=project_context,
                 mcp_server_info=self._mcp_server_info,
                 checkpointer=planner_checkpointer,
+                approve_plan_system_prompt=PLANNER_APPROVE_PLAN_SYSTEM_PROMPT,
                 extra_middleware=[
                     PlannerVisibleToolsMiddleware(set(PLANNER_ALLOWED_TOOLS)),
                     PlannerToolAllowListMiddleware(set(PLANNER_ALLOWED_TOOLS))
@@ -2468,6 +2503,100 @@ class DeepAgentsApp(App):
         return ""
 
     @staticmethod
+    def _extract_latest_human_text(messages: list[Any]) -> str:
+        """Extract latest human text from checkpoint messages."""
+        from langchain_core.messages import HumanMessage
+
+        for msg in reversed(messages):
+            if not isinstance(msg, HumanMessage):
+                continue
+            content = msg.content
+            if isinstance(content, str):
+                text = content.strip()
+                if text:
+                    return text
+            elif isinstance(content, list):
+                parts: list[str] = []
+                for block in content:
+                    if isinstance(block, dict) and "text" in block:
+                        parts.append(str(block.get("text", "")))
+                    elif isinstance(block, str):
+                        parts.append(block)
+                text = "\n".join(parts).strip()
+                if text:
+                    return text
+        return ""
+
+    @staticmethod
+    def _looks_cjk_text(text: str) -> bool:
+        """Heuristic: detect whether text primarily uses CJK characters."""
+        return any("\u4e00" <= ch <= "\u9fff" for ch in text)
+
+    def _prefer_zh_for_text(self, text: str) -> bool:
+        """Decide whether runtime prompts should use Chinese."""
+        if self._looks_cjk_text(text):
+            return True
+        try:
+            from invincat_cli.i18n import Language, get_i18n
+
+            return get_i18n().language == Language.ZH
+        except Exception:
+            return False
+
+    def _build_plan_handoff_prompt(
+        self,
+        todos: list[dict[str, str]],
+        *,
+        planner_state_values: dict[str, Any] | None = None,
+    ) -> str:
+        """Build main-agent handoff prompt from approved todo items."""
+        plan_text = "\n".join(f"{i + 1}. {todo['content']}" for i, todo in enumerate(todos))
+        latest_user_text = ""
+        latest_planner_text = ""
+
+        if planner_state_values:
+            messages = self._normalize_state_messages(planner_state_values.get("messages", []))
+            latest_user_text = self._extract_latest_human_text(messages)
+            latest_planner_text = self._extract_latest_ai_text(messages)
+
+        prefer_zh = self._prefer_zh_for_text(latest_user_text)
+
+        context_lines: list[str] = []
+        latest_user_text = latest_user_text.strip()
+        latest_planner_text = latest_planner_text.strip()
+        if latest_user_text:
+            context_lines.append(latest_user_text)
+        if latest_planner_text and latest_planner_text != latest_user_text:
+            context_lines.append(latest_planner_text)
+
+        context_note = ""
+        if context_lines:
+            rendered_context = "\n".join(
+                f"{i + 1}. {line}" for i, line in enumerate(context_lines)
+            )
+            if prefer_zh:
+                context_note = f"\n\n规划阶段关键上下文：\n{rendered_context}"
+            else:
+                context_note = f"\n\nKey context from planning phase:\n{rendered_context}"
+
+        if prefer_zh:
+            return (
+                "请立即执行以下已批准计划。"
+                "按顺序完成任务，并持续汇报进度与结果。\n\n"
+                "已批准计划：\n"
+                f"{plan_text}"
+                f"{context_note}"
+            )
+
+        return (
+            "Execute the following approved plan now. "
+            "Implement the tasks in order and report progress/results.\n\n"
+            "Approved plan:\n"
+            f"{plan_text}"
+            f"{context_note}"
+        )
+
+    @staticmethod
     def _planner_turn_has_write_todos(messages: list[Any]) -> bool:
         """Return whether the latest planner turn invoked `write_todos`."""
         from langchain_core.messages import HumanMessage, ToolMessage
@@ -2490,6 +2619,38 @@ class DeepAgentsApp(App):
             if isinstance(msg, ToolMessage) and getattr(msg, "name", "") == "approve_plan":
                 return True
         return False
+
+    @staticmethod
+    def _planner_turn_approve_plan_decision(messages: list[Any]) -> str | None:
+        """Return latest-turn approve_plan decision: approved/rejected/None."""
+        from langchain_core.messages import HumanMessage, ToolMessage
+
+        for msg in reversed(messages):
+            if isinstance(msg, HumanMessage):
+                break
+            if not isinstance(msg, ToolMessage):
+                continue
+            if getattr(msg, "name", "") != "approve_plan":
+                continue
+
+            content = msg.content
+            if isinstance(content, str):
+                normalized = content.strip().lower()
+            elif isinstance(content, list):
+                parts: list[str] = []
+                for block in content:
+                    if isinstance(block, dict) and "text" in block:
+                        parts.append(str(block.get("text", "")))
+                    elif isinstance(block, str):
+                        parts.append(block)
+                normalized = "\n".join(parts).strip().lower()
+            else:
+                normalized = str(content).strip().lower()
+
+            if normalized == "approved":
+                return "approved"
+            return "rejected"
+        return None
 
     @staticmethod
     def _extract_todos_from_state(state_values: dict[str, Any]) -> list[dict[str, str]]:
@@ -2532,7 +2693,7 @@ class DeepAgentsApp(App):
         return {}
 
     async def _after_planner_turn(self) -> None:
-        """Check planner turn result and hand off approved todos to main agent."""
+        """Check planner turn result and drive plan approval flow."""
         from invincat_cli.plan_agent import extract_todos_from_message
 
         if not self._planner_agent or not self._planner_thread_id:
@@ -2545,10 +2706,26 @@ class DeepAgentsApp(App):
             return
 
         messages = self._normalize_state_messages(state_values.get("messages", []))
-        if self._planner_turn_has_approve_plan(messages):
-            # Planner already used the immediate approve_plan interrupt; the
-            # approval callback will queue handoff (or keep planner mode for
-            # refinement), so skip legacy post-turn approval.
+        approve_plan_decision = self._planner_turn_approve_plan_decision(messages)
+        if approve_plan_decision is not None:
+            if approve_plan_decision != "approved":
+                return
+
+            todos = self._extract_todos_from_state(state_values)
+            if not todos:
+                latest_text = self._extract_latest_ai_text(messages)
+                todos = extract_todos_from_message(latest_text) or []
+            if not todos:
+                await self._mount_message(
+                    AppMessage(
+                        "Planner approval succeeded but no valid todo list was found; please regenerate the plan."
+                    )
+                )
+                return
+            await self._finalize_planner_approval(
+                todos,
+                planner_state_values=state_values,
+            )
             return
         wrote_todos_this_turn = self._planner_turn_has_write_todos(messages)
         if not wrote_todos_this_turn:
@@ -2574,7 +2751,7 @@ class DeepAgentsApp(App):
         self,
         todos: list[dict[str, str]],
     ) -> bool:
-        """Approve planner todos and hand off to main agent when approved."""
+        """Approve planner todos and finalize plan mode when approved."""
         from invincat_cli.i18n import t
 
         todos_fingerprint = json.dumps(todos, ensure_ascii=False, sort_keys=True)
@@ -2588,7 +2765,7 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage(t("plan.refine_prompt")))
             return False
 
-        self._queue_planner_handoff(todos)
+        await self._finalize_planner_approval(todos)
         return True
 
     async def _maybe_approve_current_planner_todos(self) -> bool:
@@ -2617,34 +2794,73 @@ class DeepAgentsApp(App):
         self._planner_last_todos_fingerprint = None
         self._planner_prompted_todos_fingerprint = None
 
-    def _queue_planner_handoff(self, todos: list[dict[str, str]]) -> None:
-        """Queue handoff from planner thread back to the main agent."""
+    async def _finalize_planner_approval(
+        self,
+        todos: list[dict[str, str]],
+        *,
+        planner_state_values: dict[str, Any] | None = None,
+    ) -> None:
+        """Finalize plan mode after approval and handoff execution to main agent."""
+        from invincat_cli.i18n import t
+
         plan_text = "\n".join(f"{i + 1}. {todo['content']}" for i, todo in enumerate(todos))
-        execution_message = (
-            "The planner-approved todo list is below. Execute it step by step:\n\n"
-            f"{plan_text}"
+        effective_state = planner_state_values
+        if effective_state is None and self._planner_agent and self._planner_thread_id:
+            try:
+                effective_state = await self._get_thread_state_values_for_agent(
+                    self._planner_agent,
+                    self._planner_thread_id,
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to fetch planner state for handoff prompt; "
+                    "falling back to todos-only handoff",
+                    exc_info=True,
+                )
+                effective_state = None
+        handoff_prompt = self._build_plan_handoff_prompt(
+            todos,
+            planner_state_values=effective_state,
         )
-
-        async def _handoff() -> None:
-            if self._session_state:
-                self._session_state.plan_mode = False
-            if self._status_bar:
-                self._status_bar.set_plan_mode(enabled=False)
-            if self._session_state and self._main_thread_before_plan:
+        if self._session_state:
+            self._session_state.plan_mode = False
+            if self._main_thread_before_plan:
                 self._session_state.thread_id = self._main_thread_before_plan
-            self._planner_last_todos_fingerprint = None
-            self._planner_prompted_todos_fingerprint = None
-            await self._mount_message(
-                AppMessage("Plan approved. Switching to main agent for execution.")
-            )
-            await self._send_to_agent(execution_message)
-
-        self._defer_action(
-            DeferredAction(
-                kind="plan_handoff",
-                execute=_handoff,
+        if self._status_bar:
+            self._status_bar.set_plan_mode(enabled=False)
+        self._planner_thread_id = None
+        self._main_thread_before_plan = None
+        self._planner_last_todos_fingerprint = None
+        self._planner_prompted_todos_fingerprint = None
+        self._pending_plan_handoff_prompt = handoff_prompt
+        await self._mount_message(
+            AppMessage(
+                f"{t('plan.approved_no_execute')}\n\n{plan_text}"
             )
         )
+
+    async def _execute_plan_handoff(self, prompt: str) -> None:
+        """Execute approved plan handoff explicitly on the main agent.
+
+        This bypasses `_handle_user_message()` routing so handoff execution
+        cannot be redirected back into planner mode by stale session flags.
+        """
+        if not self._session_state:
+            return
+
+        self._session_state.plan_mode = False
+        if self._status_bar:
+            self._status_bar.set_plan_mode(enabled=False)
+
+        from invincat_cli.i18n import t
+
+        await self._mount_message(AppMessage(t("plan.handoff_started")))
+        await self._mount_message(
+            AppMessage(
+                f"{t('plan.handoff_prompt_preview')}\n\n{prompt}"
+            )
+        )
+        await self._send_to_agent(prompt)
 
     async def _remove_ask_user_widget(  # noqa: PLR6301  # Shared helper used by ask_user event handlers
         self,
@@ -2800,10 +3016,6 @@ class DeepAgentsApp(App):
                 decision = str(raw.get("type", "")).strip().lower()
                 if decision == "approve":
                     mapped = {"type": "approved"}
-                    if self._session_state and self._session_state.plan_mode:
-                        self._queue_planner_handoff(
-                            normalized_todos
-                        )
                 else:
                     mapped = {"type": "rejected"}
                 if not mapped_future.done():
@@ -4201,6 +4413,7 @@ class DeepAgentsApp(App):
                 backend=self._backend,
                 image_tracker=self._image_tracker,
                 sandbox_type=self._sandbox_type,
+                is_planner_turn=self._active_turn_is_planner,
                 message_kwargs=message_kwargs,
                 context=CLIContext(
                     model=self._model_override,
@@ -4317,6 +4530,12 @@ class DeepAgentsApp(App):
                         "You may need to retry the operation."
                     )
                 )
+
+        # Deferred actions may start a new run (for example approved plan
+        # handoff to the main agent). Avoid post-cleanup side effects from the
+        # old run once a new run is already active.
+        if self._agent_running or self._shell_running:
+            return
 
         # Auto-offload when context window is near full (no-op when below threshold)
         try:
@@ -5068,6 +5287,13 @@ class DeepAgentsApp(App):
         """Drain deferred actions unless a server connection is still in progress."""
         if not self._connecting:
             await self._drain_deferred_actions()
+            if (
+                self._pending_plan_handoff_prompt
+                and not (self._agent_running or self._shell_running or self._connecting)
+            ):
+                prompt = self._pending_plan_handoff_prompt
+                await self._execute_plan_handoff(prompt)
+                self._pending_plan_handoff_prompt = None
 
     async def _drain_deferred_actions(self) -> None:
         """Execute deferred actions queued while busy (e.g. model/thread switch)."""
@@ -5097,6 +5323,7 @@ class DeepAgentsApp(App):
             worker: The worker to cancel.
         """
         self._discard_queue()
+        self._pending_plan_handoff_prompt = None
         # Immediately clear running flags to prevent race condition.
         # worker.cancel() is async and only sets a cancellation flag,
         # so _agent_running may still be True when the user sends a new

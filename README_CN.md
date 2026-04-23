@@ -108,7 +108,8 @@ OpenAI 兼容接口（DeepSeek、智谱、本地 Ollama 等）设置 `base_url` 
 - 产出 todo 清单（`write_todos`）
 - 发起显式审批（`approve_plan`）
 
-审批通过后，再由主 agent 按清单逐步执行。
+审批通过后会退出计划模式并保留已确认清单。
+执行是手动触发：你确认后再让主 agent 开始执行。
 
 可随时退出计划模式：
 
@@ -312,7 +313,7 @@ INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5
 |------|------|
 | `/clear` | 清除当前对话，开始新会话 |
 | `/threads` | 浏览并恢复历史会话 |
-| `/plan` | 进入计划模式（先规划，审批后执行） |
+| `/plan` | 进入计划模式（仅规划并审批清单） |
 | `/exit-plan` | 退出计划模式，并取消运行中的 planner 与已排队 handoff |
 | `/quit` / `/q` | 退出程序 |
 
