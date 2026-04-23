@@ -93,6 +93,8 @@ class ApprovalMenu(Container):
         self,
         action_requests: list[dict[str, Any]] | dict[str, Any],
         _assistant_id: str | None = None,
+        *,
+        allow_auto_approve: bool = True,
         id: str | None = None,  # noqa: A002  # Textual widget constructor uses `id` parameter
         **kwargs: Any,
     ) -> None:
@@ -104,6 +106,7 @@ class ApprovalMenu(Container):
                 contain 'name' (tool name) and 'args' (tool arguments).
             _assistant_id: Optional assistant ID (currently unused, reserved for
                 future use).
+            allow_auto_approve: Whether to expose the "Auto-approve all" option.
             id: Optional widget ID. Defaults to 'approval-menu'.
             **kwargs: Additional keyword arguments passed to the Container base class.
         """
@@ -119,6 +122,8 @@ class ApprovalMenu(Container):
         self._selected = 0
         self._future: asyncio.Future[dict[str, str]] | None = None
         self._option_widgets: list[Static] = []
+        self._allow_auto_approve = allow_auto_approve
+        self._option_count = 3 if allow_auto_approve else 2
         self._tool_info_container: Vertical | None = None
         # Minimal display if ALL tools are bash/shell
         self._is_minimal = all(name in self._MINIMAL_TOOLS for name in self._tool_names)
@@ -259,8 +264,8 @@ class ApprovalMenu(Container):
 
         # Options container at bottom
         with Container(classes="approval-options-container"):
-            # Options - create 3 Static widgets
-            for i in range(3):  # noqa: B007  # Loop variable unused - iterating for count only
+            # Options - create static widgets based on allowed decisions
+            for i in range(self._option_count):  # noqa: B007  # Loop variable unused - iterating for count only
                 widget = Static("", classes="approval-option")
                 self._option_widgets.append(widget)
                 yield widget
@@ -328,17 +333,27 @@ class ApprovalMenu(Container):
     def _update_options(self) -> None:
         """Update option widgets based on selection."""
         count = len(self._action_requests)
-        if count == 1:
+        if self._allow_auto_approve and count == 1:
             options = [
                 f"1. {t('approval.approve')} (y)",
                 f"2. {t('approval.auto_approve')} (a)",
                 f"3. {t('approval.reject')} (n)",
             ]
-        else:
+        elif self._allow_auto_approve:
             options = [
                 f"1. {t('approval.approve')} {count} (y)",
                 f"2. {t('approval.auto_approve')} (a)",
                 f"3. {t('approval.reject')} {count} (n)",
+            ]
+        elif count == 1:
+            options = [
+                f"1. {t('approval.approve')} (y)",
+                f"2. {t('approval.reject')} (n)",
+            ]
+        else:
+            options = [
+                f"1. {t('approval.approve')} {count} (y)",
+                f"2. {t('approval.reject')} {count} (n)",
             ]
 
         for i, (text, widget) in enumerate(
@@ -354,12 +369,12 @@ class ApprovalMenu(Container):
 
     def action_move_up(self) -> None:
         """Move selection up."""
-        self._selected = (self._selected - 1) % 3
+        self._selected = (self._selected - 1) % self._option_count
         self._update_options()
 
     def action_move_down(self) -> None:
         """Move selection down."""
-        self._selected = (self._selected + 1) % 3
+        self._selected = (self._selected + 1) % self._option_count
         self._update_options()
 
     def action_select(self) -> None:
@@ -374,15 +389,17 @@ class ApprovalMenu(Container):
 
     def action_select_auto(self) -> None:
         """Select auto-approve option."""
+        if not self._allow_auto_approve:
+            return
         self._selected = 1
         self._update_options()
         self._handle_selection(1)
 
     def action_select_reject(self) -> None:
         """Select reject option."""
-        self._selected = 2
+        self._selected = 2 if self._allow_auto_approve else 1
         self._update_options()
-        self._handle_selection(2)
+        self._handle_selection(self._selected)
 
     def action_toggle_expand(self) -> None:
         """Toggle shell command expansion."""
@@ -395,11 +412,17 @@ class ApprovalMenu(Container):
 
     def _handle_selection(self, option: int) -> None:
         """Handle the selected option."""
-        decision_map = {
-            0: "approve",
-            1: "auto_approve_all",
-            2: "reject",
-        }
+        if self._allow_auto_approve:
+            decision_map = {
+                0: "approve",
+                1: "auto_approve_all",
+                2: "reject",
+            }
+        else:
+            decision_map = {
+                0: "approve",
+                1: "reject",
+            }
         decision = {"type": decision_map[option]}
 
         # Resolve the future

@@ -1564,6 +1564,7 @@ async def execute_task_textual(
             # Handle HITL after stream completes
             if interrupt_occurred:
                 any_rejected = False
+                suppress_resumed_output = False
                 resume_payload: dict[str, Any] = {}
 
                 # Inject error resumes for ask_user interrupts that failed validation.
@@ -1754,6 +1755,9 @@ async def execute_task_textual(
                             "error": "approve_plan not supported by this UI",
                         }
 
+                if any_rejected:
+                    pending_interrupts = {}
+
                 for interrupt_id, hitl_request in list(pending_interrupts.items()):
                     action_requests = hitl_request["action_requests"]
 
@@ -1841,6 +1845,7 @@ async def execute_task_textual(
                                     tool_msg.set_rejected()
                                 adapter._current_tool_messages.clear()
                                 any_rejected = True
+                                suppress_resumed_output = True
                             else:
                                 logger.warning(
                                     "Unexpected HITL decision type: %s",
@@ -1856,6 +1861,7 @@ async def execute_task_textual(
                                     tool_msg.set_rejected()
                                 adapter._current_tool_messages.clear()
                                 any_rejected = True
+                                suppress_resumed_output = True
                         else:
                             logger.warning(
                                 "HITL decision was not a dict: %s",
@@ -1870,13 +1876,12 @@ async def execute_task_textual(
                                 tool_msg.set_rejected()
                             adapter._current_tool_messages.clear()
                             any_rejected = True
+                            suppress_resumed_output = True
 
                         resume_payload[interrupt_id] = {"decisions": decisions}
 
                         if any_rejected:
                             break
-
-                suppress_resumed_output = any_rejected
 
             if interrupt_occurred and resume_payload:
                 if suppress_resumed_output and not pending_ask_user:

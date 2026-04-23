@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from invincat_cli.plan_agent import (
-    PLAN_APPROVED_MARKER,
     PLANNER_ALLOWED_TOOLS,
-    PLANNER_DESCRIPTION,
     PLANNER_SUBAGENT_NAME,
     PLANNER_SYSTEM_PROMPT,
-    build_plan_directive,
-    build_planner_subagent,
+    PlannerToolAllowListMiddleware,
+    PlannerVisibleToolsMiddleware,
+    build_planner_input,
 )
 
 
@@ -17,14 +16,18 @@ class TestPlannerConstants:
     def test_subagent_name_is_planner(self) -> None:
         assert PLANNER_SUBAGENT_NAME == "planner"
 
-    def test_handoff_marker_is_distinct(self) -> None:
-        # The main agent keys off this marker to decide whether to execute
-        # the plan, so it must be unmistakable.
-        assert PLAN_APPROVED_MARKER == "<<PLAN_APPROVED>>"
-        assert PLAN_APPROVED_MARKER not in PLANNER_DESCRIPTION
-
-    def test_allowed_tools_cover_write_todos_and_ask_user(self) -> None:
-        assert set(PLANNER_ALLOWED_TOOLS) == {"write_todos", "ask_user"}
+    def test_allowed_tools_cover_read_and_planning(self) -> None:
+        assert set(PLANNER_ALLOWED_TOOLS) == {
+            "read_file",
+            "ls",
+            "glob",
+            "grep",
+            "web_search",
+            "fetch_url",
+            "write_todos",
+            "ask_user",
+            "approve_plan",
+        }
 
 
 class TestPlannerSystemPrompt:
@@ -44,14 +47,12 @@ class TestPlannerSystemPrompt:
 
     def test_prompt_describes_confirmation_loop(self) -> None:
         assert "ask_user" in PLANNER_SYSTEM_PROMPT
-        # The three canonical choices should appear verbatim so the model
-        # produces a stable multiple-choice question.
-        assert "Approve and execute" in PLANNER_SYSTEM_PROMPT
-        assert "Refine" in PLANNER_SYSTEM_PROMPT
-        assert "Cancel" in PLANNER_SYSTEM_PROMPT
+        assert "Discuss/refine the plan with the user if needed" in PLANNER_SYSTEM_PROMPT
+        assert "approve_plan" in PLANNER_SYSTEM_PROMPT
 
-    def test_prompt_mentions_handoff_marker(self) -> None:
-        assert PLAN_APPROVED_MARKER in PLANNER_SYSTEM_PROMPT
+    def test_prompt_mentions_interrupt_flow(self) -> None:
+        assert "write_todos" in PLANNER_SYSTEM_PROMPT
+        assert "interrupt immediately" in PLANNER_SYSTEM_PROMPT
 
     def test_prompt_declares_task_boundary(self) -> None:
         # The opening section must make the planner's narrow contract
@@ -65,62 +66,68 @@ class TestPlannerSystemPrompt:
         assert "write_todos" in PLANNER_SYSTEM_PROMPT
 
 
-class TestBuildPlannerSubagent:
-    def test_shape_matches_subagent_typeddict(self) -> None:
-        spec = build_planner_subagent()
-        assert spec["name"] == PLANNER_SUBAGENT_NAME
-        assert spec["description"] == PLANNER_DESCRIPTION
-        assert spec["system_prompt"] == PLANNER_SYSTEM_PROMPT
+class TestBuildPlannerInput:
+    def test_no_refinement_returns_trimmed_task(self) -> None:
+        assert build_planner_input("  refactor auth  ") == "refactor auth"
 
-    def test_does_not_pin_tools_or_middleware(self) -> None:
-        # The planner inherits the main agent's tool catalogue and is steered
-        # by its system prompt. Pinning `tools=` or `middleware=` here would
-        # require reimplementing AskUserMiddleware tool injection for the
-        # subagent context (see plan_agent.py docstring).
-        spec = build_planner_subagent()
-        assert "tools" not in spec
-        assert "middleware" not in spec
-
-    def test_description_flags_it_as_read_only(self) -> None:
-        # The main agent should understand from the description alone that
-        # this subagent only plans — it never edits or executes.
-        lowered = PLANNER_DESCRIPTION.lower()
-        assert "plan" in lowered
-        assert "never" in lowered or "only" in lowered
+    def test_refinement_includes_original_task_and_feedback(self) -> None:
+        payload = build_planner_input(
+            "refactor auth",
+            ["split service layer", "keep public API unchanged"],
+        )
+        assert "Original task" in payload
+        assert "refactor auth" in payload
+        assert "- split service layer" in payload
+        assert "- keep public API unchanged" in payload
 
 
-class TestBuildPlanDirective:
-    def test_contains_task_text(self) -> None:
-        directive = build_plan_directive("add a dark mode toggle")
-        assert "add a dark mode toggle" in directive
+class TestPlannerToolAllowListMiddleware:
+    def test_rejects_write_file(self) -> None:
+        middleware = PlannerToolAllowListMiddleware(set(PLANNER_ALLOWED_TOOLS))
+        request = type(
+            "Req",
+            (),
+            {"tool_call": {"name": "write_file", "id": "tc1", "args": {}}},
+        )()
+        rejection = middleware._reject_if_disallowed(request)  # type: ignore[arg-type]
+        assert rejection is not None
+        assert "not allowed" in str(rejection.content)
 
-    def test_names_planner_subagent(self) -> None:
-        directive = build_plan_directive("anything")
-        assert PLANNER_SUBAGENT_NAME in directive
+    def test_allows_read_file(self) -> None:
+        middleware = PlannerToolAllowListMiddleware(set(PLANNER_ALLOWED_TOOLS))
+        request = type(
+            "Req",
+            (),
+            {"tool_call": {"name": "read_file", "id": "tc2", "args": {}}},
+        )()
+        rejection = middleware._reject_if_disallowed(request)  # type: ignore[arg-type]
+        assert rejection is None
 
-    def test_references_handoff_marker(self) -> None:
-        # The main agent keys off the marker to decide whether the plan was
-        # approved; the directive must document that contract.
-        directive = build_plan_directive("anything")
-        assert PLAN_APPROVED_MARKER in directive
 
-    def test_strips_surrounding_whitespace(self) -> None:
-        directive = build_plan_directive("   refactor auth module   ")
-        assert "refactor auth module" in directive
-        assert "   refactor auth module   " not in directive
+class TestPlannerVisibleToolsMiddleware:
+    def test_filters_out_write_tools_from_model_schema(self) -> None:
+        middleware = PlannerVisibleToolsMiddleware(set(PLANNER_ALLOWED_TOOLS))
 
-    def test_instructs_main_agent_to_execute_on_approval(self) -> None:
-        directive = build_plan_directive("ship it").lower()
-        assert "implement" in directive or "execute" in directive
+        class _Req:
+            def __init__(self) -> None:
+                self.tools = [
+                    {"name": "read_file"},
+                    {"name": "write_file"},
+                    {"name": "edit_file"},
+                    {"name": "write_todos"},
+                    {"name": "approve_plan"},
+                ]
 
-    def test_instructs_main_agent_to_rehydrate_todos(self) -> None:
-        # The planner's `todos` channel is filtered out by the subagent
-        # boundary (see deepagents _EXCLUDED_STATE_KEYS). The directive
-        # must tell the main agent to re-record the approved list via its
-        # own `write_todos` so the checkpoint / progress UI reflects it.
-        directive = build_plan_directive("ship it")
-        assert "write_todos" in directive
+            def override(self, **kwargs):  # noqa: ANN003
+                nxt = _Req()
+                nxt.tools = kwargs.get("tools", self.tools)
+                return nxt
 
-    def test_instructs_main_agent_to_stop_on_non_approval(self) -> None:
-        directive = build_plan_directive("ship it").lower()
-        assert "stop" in directive or "do not" in directive
+        captured: list[str] = []
+
+        def _handler(req):  # noqa: ANN001
+            captured.extend([tool.get("name", "") for tool in req.tools])
+            return req
+
+        middleware.wrap_model_call(_Req(), _handler)
+        assert captured == ["read_file", "write_todos", "approve_plan"]

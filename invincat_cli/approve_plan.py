@@ -99,9 +99,13 @@ def _parse_approval_response(
         result_text = "rejected"
 
     return Command(
-        update={
-            "messages": [ToolMessage(result_text, tool_call_id=tool_call_id)],
-        }
+        update=[
+            ToolMessage(
+                result_text,
+                tool_call_id=tool_call_id,
+                name="approve_plan",
+            )
+        ]
     )
 
 

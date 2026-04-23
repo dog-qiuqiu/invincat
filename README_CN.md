@@ -94,6 +94,32 @@ OpenAI 兼容接口（DeepSeek、智谱、本地 Ollama 等）设置 `base_url` 
 
 ---
 
+## 计划模式（Plan Mode）
+
+当你希望“先规划、后执行”时，使用计划模式：
+
+```bash
+/plan
+```
+
+进入后直接描述任务。planner agent 会：
+
+- 使用只读工具分析需求
+- 产出 todo 清单（`write_todos`）
+- 发起显式审批（`approve_plan`）
+
+审批通过后，再由主 agent 按清单逐步执行。
+
+可随时退出计划模式：
+
+```bash
+/exit-plan
+```
+
+`/exit-plan` 会同时取消进行中的 planner 回合，并清理已排队的计划 handoff，避免退出后仍继续执行旧计划。
+
+---
+
 ## 引用文件
 
 在消息中用 `@` 引用文件，AI 会读取并理解其内容：
@@ -286,6 +312,8 @@ INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5
 |------|------|
 | `/clear` | 清除当前对话，开始新会话 |
 | `/threads` | 浏览并恢复历史会话 |
+| `/plan` | 进入计划模式（先规划，审批后执行） |
+| `/exit-plan` | 退出计划模式，并取消运行中的 planner 与已排队 handoff |
 | `/quit` / `/q` | 退出程序 |
 
 ### 模型与界面

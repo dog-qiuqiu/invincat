@@ -96,6 +96,32 @@ Press `Tab` to autocomplete available commands. See [Slash Commands](#slash-comm
 
 ---
 
+## Plan Mode
+
+Use planner mode when you want to discuss and approve a plan before execution:
+
+```bash
+/plan
+```
+
+Then describe your task in chat. The planner agent will:
+
+- analyze requirements with read-only tools
+- write a todo list (`write_todos`)
+- ask for explicit approval (`approve_plan`)
+
+After approval, the main agent executes the approved checklist step by step.
+
+Exit planner mode anytime:
+
+```bash
+/exit-plan
+```
+
+`/exit-plan` also cancels an in-flight planner turn and drops queued planner handoff actions, so no stale plan execution will continue after exit.
+
+---
+
 ## File References
 
 Use `@` in your message to reference files, and AI will read and understand their content:
@@ -290,6 +316,8 @@ Type `/` in the input box and press `Tab` to view and autocomplete all commands.
 |---------|-------------|
 | `/clear` | Clear current conversation, start new session |
 | `/threads` | Browse and restore historical sessions |
+| `/plan` | Enter planner mode (plan first, execute after approval) |
+| `/exit-plan` | Exit planner mode, cancel running planner turn and queued handoff |
 | `/quit` / `/q` | Exit program |
 
 ### Model & Interface

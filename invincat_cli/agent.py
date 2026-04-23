@@ -850,6 +850,7 @@ def create_cli_agent(
     cwd: str | Path | None = None,
     project_context: ProjectContext | None = None,
     async_subagents: list[AsyncSubAgent] | None = None,
+    extra_middleware: Sequence[AgentMiddleware] | None = None,
 ) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -912,6 +913,8 @@ def create_cli_agent(
         async_subagents: Remote LangGraph deployments to expose as async subagent tools.
 
             Loaded from `[async_subagents]` in `config.toml` or passed directly.
+        extra_middleware: Optional middleware appended at the end of the CLI
+            middleware stack. Useful for mode-specific guardrails.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -1207,6 +1210,8 @@ def create_cli_agent(
     agent_middleware.append(
         create_summarization_tool_middleware(model, composite_backend)
     )
+    if extra_middleware:
+        agent_middleware.extend(extra_middleware)
 
     # Create the agent
     all_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = [
