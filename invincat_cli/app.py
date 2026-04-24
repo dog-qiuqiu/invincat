@@ -2559,7 +2559,7 @@ class DeepAgentsApp(App):
         *,
         planner_state_values: dict[str, Any] | None = None,
     ) -> str:
-        """Build main-agent handoff prompt from approved todo items."""
+        """Build structured main-agent handoff prompt from approved todo items."""
         plan_text = "\n".join(f"{i + 1}. {todo['content']}" for i, todo in enumerate(todos))
         latest_user_text = ""
 
@@ -2574,31 +2574,48 @@ class DeepAgentsApp(App):
         if latest_user_text:
             context_lines.append(latest_user_text)
 
-        context_note = ""
+        context_block = ""
         if context_lines:
             rendered_context = "\n".join(
                 f"{i + 1}. {line}" for i, line in enumerate(context_lines)
             )
             if prefer_zh:
-                context_note = f"\n\n规划阶段关键上下文：\n{rendered_context}"
+                context_block = f"\noriginal_user_request:\n规划阶段关键上下文：\n{rendered_context}\n"
             else:
-                context_note = f"\n\nKey context from planning phase:\n{rendered_context}"
+                context_block = (
+                    "\noriginal_user_request:\n"
+                    f"Key context from planning phase:\n{rendered_context}\n"
+                )
 
         if prefer_zh:
             return (
-                "请立即执行以下已批准计划。"
-                "按顺序完成任务，并持续汇报进度与结果。\n\n"
-                "已批准计划：\n"
+                "[approved_plan_handoff]\n"
+                "mode: execute_approved_plan\n"
+                "instructions:\n"
+                "- 请立即执行以下已批准计划。\n"
+                "- 这是用户已经批准的计划交接，不要重新规划同一批工作，不要重复请求审批。\n"
+                "- 按 approved_todos 顺序执行；只有实现证据表明必须调整时才改变顺序。\n"
+                "- 持续更新 todo 状态，并汇报进度、结果和验证情况。\n"
+                "- 如果发现超出已批准范围、破坏性、高风险或实质不同的工作，暂停并请求确认。\n"
+                f"{context_block}"
+                "approved_todos:\n"
                 f"{plan_text}"
-                f"{context_note}"
+                "\n[/approved_plan_handoff]"
             )
 
         return (
-            "Execute the following approved plan now. "
-            "Implement the tasks in order and report progress/results.\n\n"
-            "Approved plan:\n"
+            "[approved_plan_handoff]\n"
+            "mode: execute_approved_plan\n"
+            "instructions:\n"
+            "- Execute the following approved plan now.\n"
+            "- This is an already approved plan handoff. Do not re-plan the same work or ask for approval again.\n"
+            "- Execute approved_todos in order; only change order when implementation evidence requires it.\n"
+            "- Keep todo status updated and report progress, results, and verification.\n"
+            "- If you discover out-of-scope, destructive, high-risk, or materially different work, pause and ask for confirmation.\n"
+            f"{context_block}"
+            "approved_todos:\n"
             f"{plan_text}"
-            f"{context_note}"
+            "\n[/approved_plan_handoff]"
         )
 
     @staticmethod

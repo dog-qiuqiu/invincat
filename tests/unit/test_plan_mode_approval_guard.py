@@ -477,10 +477,17 @@ def test_finalize_planner_approval_queues_plan_handoff_to_main_agent() -> None:
         await app._maybe_drain_deferred()
         assert app._session_state.plan_mode is False
         assert len(captured_send_prompts) == 1
+        assert "[approved_plan_handoff]" in captured_send_prompts[0]
+        assert "mode: execute_approved_plan" in captured_send_prompts[0]
         assert (
-            "Execute the following approved plan now." in captured_send_prompts[0]
-            or "请立即执行以下已批准计划。" in captured_send_prompts[0]
+            "Do not re-plan the same work" in captured_send_prompts[0]
+            or "不要重新规划同一批工作" in captured_send_prompts[0]
         )
+        assert (
+            "ask for approval again" in captured_send_prompts[0]
+            or "不要重复请求审批" in captured_send_prompts[0]
+        )
+        assert "approved_todos:" in captured_send_prompts[0]
         assert "1. Implement API endpoint" in captured_send_prompts[0]
         assert "2. Add tests" in captured_send_prompts[0]
         assert captured_user_messages
@@ -526,7 +533,12 @@ def test_finalize_planner_approval_handoff_uses_user_context_only() -> None:
     asyncio.run(_run())
     assert len(captured_send_prompts) == 1
     handoff_prompt = captured_send_prompts[0]
+    assert "[approved_plan_handoff]" in handoff_prompt
+    assert "mode: execute_approved_plan" in handoff_prompt
     assert "请立即执行以下已批准计划" in handoff_prompt
+    assert "不要重新规划同一批工作" in handoff_prompt
+    assert "不要重复请求审批" in handoff_prompt
+    assert "approved_todos:" in handoff_prompt
     assert "规划阶段关键上下文" in handoff_prompt
     assert "请按性能优先，不要引入新依赖" in handoff_prompt
     assert "我会先做最小变更并补测试" not in handoff_prompt
