@@ -86,14 +86,38 @@ Return STRICT JSON only:
   ]
 }
 
-Rules:
+## Scope
+
+- user: applies to this person regardless of project (style, habits, tool preferences, communication)
+- project: specific to this codebase (dependencies, architecture, conventions, key file locations)
+
+When in doubt: if the fact would still be true in a different project, use user scope.
+
+## Section names
+
+Use ONLY these section names (pick the closest match):
+- Coding Style      (formatting rules, naming conventions, type hints, comments)
+- Tech Stack        (languages, frameworks, libraries, tools in active use)
+- Project Context   (architecture patterns, key files, module responsibilities)
+- Workflow          (git habits, testing approach, review process, deploy steps)
+- Communication     (response verbosity, language preference, explanation depth)
+- Constraints       (things never to do, hard limits, explicit prohibitions)
+
+## Confidence
+
+- high: user stated this explicitly ("always use X", "I want Y", "never do Z")
+- medium: strongly implied by repeated behavior or clear pattern (did X multiple times)
+- low: inferred from single occurrence, may be context-specific
+
+## Rules
+
 - Output only JSON, no prose, no markdown fences.
 - Prefer update/archive over duplicate create when an existing item already matches.
 - Do NOT output full markdown memory files.
 - Do NOT output file paths.
 - Do NOT invent IDs for create.
-- Keep memory durable, specific, and actionable.
-- Skip transient one-off details.
+- Keep content specific and actionable — skip vague or transient details.
+- One fact per item. Do not bundle multiple unrelated facts into one content string.
 """
 
 _USER_TEMPLATE = """\
