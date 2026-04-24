@@ -27,6 +27,29 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_SUMMARY_STRUCTURE_INSTRUCTION = """\
+When writing the summary, use the following sections \
+(omit any section that has no content):
+
+## Task Goal
+What the user was trying to accomplish in this conversation.
+
+## Completed Steps
+Concrete actions taken, in chronological order.
+
+## Modified Files
+Files that were created, edited, or deleted, with their paths.
+
+## Key Findings
+Important technical facts discovered: root causes, dependency relationships, \
+configuration values, errors diagnosed and resolved.
+
+## Open Issues
+Problems not yet resolved, questions still pending, or next steps required.
+
+Be concise. Use bullet points within each section. \
+Do not repeat information across sections."""
+
 _TOOL_OUTPUT_TRIM_CHARS = 800
 """Max characters of ToolMessage content kept when building the summarization input.
 
@@ -87,6 +110,18 @@ def _trim_tool_outputs(messages: list[Any]) -> list[Any]:
             len(messages),
         )
     return result
+
+
+def _with_structure_instruction(messages: list[Any]) -> list[Any]:
+    """Append a formatting instruction to guide the summarizing LLM.
+
+    The instruction is added as the final message so the LLM treats it as a
+    directive about how to structure its output rather than content to summarize.
+    The original message list is not mutated.
+    """
+    from langchain_core.messages import HumanMessage
+
+    return [*messages, HumanMessage(content=_SUMMARY_STRUCTURE_INSTRUCTION)]
 
 
 # ---------------------------------------------------------------------------
@@ -362,8 +397,12 @@ async def perform_offload(
     # summarizing LLM sees, reducing cost and latency without degrading quality.
     to_summarize_trimmed = _trim_tool_outputs(to_summarize)
 
-    # Generate summary first so no side effects occur if the LLM fails
-    summary = await middleware._acreate_summary(to_summarize_trimmed)
+    # Generate summary first so no side effects occur if the LLM fails.
+    # Append a structure instruction so the LLM produces a predictable,
+    # task-oriented format that makes context recovery easier after offload.
+    summary = await middleware._acreate_summary(
+        _with_structure_instruction(to_summarize_trimmed)
+    )
 
     backend_path = await offload_messages_to_backend(
         to_summarize,  # full content for persistent history
