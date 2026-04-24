@@ -111,7 +111,9 @@ Then describe your task in chat. The planner agent will:
 - ask for explicit approval (`approve_plan`)
 
 After approval, planner mode exits and keeps the approved checklist visible.
-Execution is manual: tell the main agent to execute when you're ready.
+The approved checklist is then handed to the main agent for execution.
+If you reject the plan, the planner stays in planning mode so you can refine
+requirements and regenerate the checklist.
 
 Exit planner mode anytime:
 
@@ -322,7 +324,7 @@ Type `/` in the input box and press `Tab` to view and autocomplete all commands.
 |---------|-------------|
 | `/clear` | Clear current conversation, start new session |
 | `/threads` | Browse and restore historical sessions |
-| `/plan` | Enter planner mode (plan and approve checklist only) |
+| `/plan` | Enter planner mode; approved checklist is handed to the main agent |
 | `/exit-plan` | Exit planner mode, cancel running planner turn and queued handoff |
 | `/quit` / `/q` | Exit program |
 

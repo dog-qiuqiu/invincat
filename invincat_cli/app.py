@@ -2301,57 +2301,43 @@ class DeepAgentsApp(App):
         if self._session_state:
             self._session_state.auto_approve = True
 
-    async def _handle_plan_task(self, task: str) -> None:
+    async def _handle_plan_task(self) -> None:
         """Handle /plan command.
 
-        If task is empty, enter plan mode and wait for user input.
-        If task is provided, run the planner agent directly.
-
-        Args:
-            task: The task description to plan, or empty to enter plan mode.
+        Enter plan mode and wait for the user's planning task as the next chat
+        message. `/plan <task>` is intentionally unsupported so mode entry and
+        the user's requirement stay as separate conversational events.
         """
         from invincat_cli.i18n import t
 
-        if not task:
-            if self._session_state and self._session_state.plan_mode:
-                await self._mount_message(AppMessage(t("plan.already_on")))
-                return
-            self._planner_thread_id = _new_thread_id()
-            self._planner_last_todos_fingerprint = None
-            self._planner_prompted_todos_fingerprint = None
-            if self._session_state:
-                self._main_thread_before_plan = self._session_state.thread_id
-            if self._session_state:
-                self._session_state.plan_mode = True
-            if self._status_bar:
-                self._status_bar.set_plan_mode(enabled=True)
-            await self._mount_message(UserMessage("/plan"))
-            await self._mount_message(AppMessage(t("plan.entered")))
+        if self._session_state and self._session_state.plan_mode:
+            await self._mount_message(AppMessage(t("plan.already_on")))
             return
-
-        entered_plan_mode = False
-        if self._session_state and not self._session_state.plan_mode:
-            self._planner_thread_id = _new_thread_id()
-            self._planner_last_todos_fingerprint = None
-            self._planner_prompted_todos_fingerprint = None
+        self._planner_thread_id = _new_thread_id()
+        self._planner_last_todos_fingerprint = None
+        self._planner_prompted_todos_fingerprint = None
+        if self._session_state:
             self._main_thread_before_plan = self._session_state.thread_id
+        if self._session_state:
             self._session_state.plan_mode = True
-            entered_plan_mode = True
-            if self._status_bar:
-                self._status_bar.set_plan_mode(enabled=True)
+        if self._status_bar:
+            self._status_bar.set_plan_mode(enabled=True)
+        await self._mount_message(UserMessage("/plan"))
+        await self._mount_message(AppMessage(t("plan.entered")))
 
-        planner_started = await self._run_planner(task)
-        if entered_plan_mode and not planner_started:
-            if self._session_state:
-                self._session_state.plan_mode = False
-                if self._main_thread_before_plan:
-                    self._session_state.thread_id = self._main_thread_before_plan
-            if self._status_bar:
-                self._status_bar.set_plan_mode(enabled=False)
-            self._planner_thread_id = None
-            self._main_thread_before_plan = None
-            self._planner_last_todos_fingerprint = None
-            self._planner_prompted_todos_fingerprint = None
+    def _reset_plan_mode_state(self) -> None:
+        """Restore main-thread state and clear planner-only bookkeeping."""
+        if self._session_state:
+            self._session_state.plan_mode = False
+            if self._main_thread_before_plan:
+                self._session_state.thread_id = self._main_thread_before_plan
+        if self._status_bar:
+            self._status_bar.set_plan_mode(enabled=False)
+        self._planner_thread_id = None
+        self._main_thread_before_plan = None
+        self._planner_last_todos_fingerprint = None
+        self._planner_prompted_todos_fingerprint = None
+        self._pending_plan_handoff_prompt = None
 
     async def _exit_plan_mode(self) -> None:
         """Exit plan mode, cancel planner work, and restore main thread."""
@@ -2362,6 +2348,14 @@ class DeepAgentsApp(App):
             return
 
         if self._agent_running and self._agent_worker and self._active_turn_is_planner:
+            if self._pending_approval_widget:
+                self._pending_approval_widget.action_select_reject()
+            if self._approval_placeholder is not None:
+                with suppress(Exception):
+                    if self._approval_placeholder.is_attached:
+                        await self._approval_placeholder.remove()
+                self._approval_placeholder = None
+            self._pending_approval_widget = None
             self._agent_worker.cancel()
             self._agent_running = False
             self._agent_worker = None
@@ -2375,15 +2369,7 @@ class DeepAgentsApp(App):
         ]
         self._pending_plan_handoff_prompt = None
 
-        self._session_state.plan_mode = False
-        if self._main_thread_before_plan:
-            self._session_state.thread_id = self._main_thread_before_plan
-        if self._status_bar:
-            self._status_bar.set_plan_mode(enabled=False)
-        self._planner_thread_id = None
-        self._main_thread_before_plan = None
-        self._planner_last_todos_fingerprint = None
-        self._planner_prompted_todos_fingerprint = None
+        self._reset_plan_mode_state()
         await self._mount_message(AppMessage(t("plan.exited")))
 
     async def _run_planner(self, task: str) -> bool:
@@ -2421,13 +2407,12 @@ class DeepAgentsApp(App):
             f"{task.strip()}"
         )
 
-        await self._send_to_agent(
+        return await self._send_to_agent(
             planner_turn_input,
             agent_override=planner,
             thread_id_override=self._planner_thread_id,
             post_turn_hook=self._after_planner_turn,
         )
-        return True
 
     async def _ensure_planner_agent(self) -> Pregel | None:
         """Lazily create and cache a planner peer-agent.
@@ -2451,10 +2436,18 @@ class DeepAgentsApp(App):
                 PlannerToolAllowListMiddleware,
                 PlannerVisibleToolsMiddleware,
             )
+            from invincat_cli.config import settings
             from invincat_cli.project_utils import ProjectContext
+            from invincat_cli.tools import fetch_url, web_search
 
             model = self._model if self._model is not None else (self._model_override or "claude-sonnet-4-6")
             planner_assistant_id = f"{self._assistant_id or 'agent'}-planner"
+            planner_tools: list[Any] = [fetch_url]
+            planner_allowed_tools = set(PLANNER_ALLOWED_TOOLS)
+            if settings.has_tavily:
+                planner_tools.append(web_search)
+            else:
+                planner_allowed_tools.discard("web_search")
             project_context = ProjectContext.from_user_cwd(Path(self._cwd))
             planner_runtime_context = (
                 "## Planner Runtime Context\n\n"
@@ -2477,14 +2470,15 @@ class DeepAgentsApp(App):
                 enable_skills=False,
                 enable_ask_user=True,
                 enable_shell=False,
+                tools=planner_tools,
                 cwd=self._cwd,
                 project_context=project_context,
                 mcp_server_info=self._mcp_server_info,
                 checkpointer=planner_checkpointer,
                 approve_plan_system_prompt=PLANNER_APPROVE_PLAN_SYSTEM_PROMPT,
                 extra_middleware=[
-                    PlannerVisibleToolsMiddleware(set(PLANNER_ALLOWED_TOOLS)),
-                    PlannerToolAllowListMiddleware(set(PLANNER_ALLOWED_TOOLS))
+                    PlannerVisibleToolsMiddleware(planner_allowed_tools),
+                    PlannerToolAllowListMiddleware(planner_allowed_tools)
                 ],
             )
             self._planner_agent = planner_agent
@@ -2664,6 +2658,39 @@ class DeepAgentsApp(App):
         return None
 
     @staticmethod
+    def _latest_ai_text_after_latest_tool(
+        messages: list[Any],
+        tool_name: str,
+    ) -> str:
+        """Return assistant text emitted after the latest named tool result."""
+        from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+        parts: list[str] = []
+        for msg in reversed(messages):
+            if isinstance(msg, HumanMessage):
+                break
+            if isinstance(msg, ToolMessage) and getattr(msg, "name", "") == tool_name:
+                break
+            if not isinstance(msg, AIMessage):
+                continue
+            content = msg.content
+            if isinstance(content, str):
+                text = content.strip()
+                if text:
+                    parts.append(text)
+            elif isinstance(content, list):
+                block_parts: list[str] = []
+                for block in content:
+                    if isinstance(block, dict) and "text" in block:
+                        block_parts.append(str(block.get("text", "")))
+                    elif isinstance(block, str):
+                        block_parts.append(block)
+                text = "\n".join(block_parts).strip()
+                if text:
+                    parts.append(text)
+        return "\n".join(reversed(parts)).strip()
+
+    @staticmethod
     def _extract_todos_from_state(state_values: dict[str, Any]) -> list[dict[str, str]]:
         """Read todo list from planner state values."""
         raw_todos = state_values.get("todos")
@@ -2720,6 +2747,8 @@ class DeepAgentsApp(App):
         approve_plan_decision = self._planner_turn_approve_plan_decision(messages)
         if approve_plan_decision is not None:
             if approve_plan_decision != "approved":
+                if not self._latest_ai_text_after_latest_tool(messages, "approve_plan"):
+                    await self._mount_message(AppMessage(t("plan.refine_prompt")))
                 return
 
             todos = self._extract_todos_from_state(state_values)
@@ -2833,16 +2862,7 @@ class DeepAgentsApp(App):
             todos,
             planner_state_values=effective_state,
         )
-        if self._session_state:
-            self._session_state.plan_mode = False
-            if self._main_thread_before_plan:
-                self._session_state.thread_id = self._main_thread_before_plan
-        if self._status_bar:
-            self._status_bar.set_plan_mode(enabled=False)
-        self._planner_thread_id = None
-        self._main_thread_before_plan = None
-        self._planner_last_todos_fingerprint = None
-        self._planner_prompted_todos_fingerprint = None
+        self._reset_plan_mode_state()
         self._pending_plan_handoff_prompt = handoff_prompt
         await self._mount_message(
             AppMessage(
@@ -2871,7 +2891,9 @@ class DeepAgentsApp(App):
                 f"{t('plan.handoff_prompt_preview')}\n\n{prompt}"
             )
         )
-        await self._send_to_agent(prompt)
+        started = await self._send_to_agent(prompt)
+        if not started:
+            self._pending_plan_handoff_prompt = prompt
 
     async def _remove_ask_user_widget(  # noqa: PLR6301  # Shared helper used by ask_user event handlers
         self,
@@ -3556,6 +3578,7 @@ class DeepAgentsApp(App):
             command: The slash command (including /)
         """
         from invincat_cli.config import newline_shortcut, settings
+        from invincat_cli.i18n import t
 
         cmd = command.lower().strip()
 
@@ -3564,7 +3587,6 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             from invincat_cli.command_registry import COMMANDS
-            from invincat_cli.i18n import t
 
             command_names = [entry.name for entry in COMMANDS]
             # Keep legacy commands visible until they're fully migrated to the
@@ -3650,12 +3672,9 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             await self._handle_offload()
         elif cmd == "/plan":
-            await self._handle_plan_task("")
+            await self._handle_plan_task()
         elif cmd == "/exit-plan":
             await self._exit_plan_mode()
-        elif cmd.startswith("/plan "):
-            task = command.strip()[len("/plan ") :].strip()
-            await self._handle_plan_task(task)
         elif cmd == "/threads":
             await self._show_thread_selector()
         elif cmd == "/trace":
@@ -4332,7 +4351,9 @@ class DeepAgentsApp(App):
         """
         if self._session_state and self._session_state.plan_mode:
             await self._mount_message(UserMessage(message))
-            await self._run_planner(message)
+            planner_started = await self._run_planner(message)
+            if not planner_started:
+                self._reset_plan_mode_state()
             return
 
         # Mount the user message
@@ -4347,7 +4368,7 @@ class DeepAgentsApp(App):
         agent_override: Pregel | None = None,
         thread_id_override: str | None = None,
         post_turn_hook: Callable[[], Awaitable[None]] | None = None,
-    ) -> None:
+    ) -> bool:
         """Send a message to the agent and start execution.
 
         This is the low-level send path. It does NOT mount any widget — the
@@ -4395,10 +4416,12 @@ class DeepAgentsApp(App):
                 ),
                 exclusive=False,
             )
+            return True
         else:
             await self._mount_message(
                 AppMessage(t("agent.not_configured_session"))
             )
+            return False
 
     async def _run_agent_task(
         self,
@@ -5343,8 +5366,12 @@ class DeepAgentsApp(App):
                 and not (self._agent_running or self._shell_running or self._connecting)
             ):
                 prompt = self._pending_plan_handoff_prompt
-                await self._execute_plan_handoff(prompt)
                 self._pending_plan_handoff_prompt = None
+                try:
+                    await self._execute_plan_handoff(prompt)
+                except Exception:
+                    self._pending_plan_handoff_prompt = prompt
+                    raise
 
     async def _drain_deferred_actions(self) -> None:
         """Execute deferred actions queued while busy (e.g. model/thread switch)."""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from invincat_cli.plan_agent import (
+    PLANNER_APPROVE_PLAN_SYSTEM_PROMPT,
     PLANNER_ALLOWED_TOOLS,
     PLANNER_SUBAGENT_NAME,
     PLANNER_SYSTEM_PROMPT,
@@ -49,6 +50,12 @@ class TestPlannerSystemPrompt:
         assert "ask_user" in PLANNER_SYSTEM_PROMPT
         assert "Discuss/refine the plan with the user if needed" in PLANNER_SYSTEM_PROMPT
         assert "approve_plan" in PLANNER_SYSTEM_PROMPT
+        assert "If approval is rejected" in PLANNER_SYSTEM_PROMPT
+        assert "rejected plan is not a completed turn" in PLANNER_SYSTEM_PROMPT
+
+    def test_approval_prompt_keeps_rejected_plans_in_planning_loop(self) -> None:
+        assert "stay in planning mode" in PLANNER_APPROVE_PLAN_SYSTEM_PROMPT
+        assert "call `approve_plan` again" in PLANNER_APPROVE_PLAN_SYSTEM_PROMPT
 
     def test_prompt_mentions_interrupt_flow(self) -> None:
         assert "write_todos" in PLANNER_SYSTEM_PROMPT
