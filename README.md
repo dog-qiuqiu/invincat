@@ -83,6 +83,36 @@ Search for the latest usage of LangGraph interrupt
 ```
 ---
 
+## Non-interactive Mode
+
+Run a single task non-interactively with the `-n` flag — useful for CI, automation scripts, and pipelines:
+
+```bash
+# Run a single task and exit
+invincat-cli -n "analyze src/ and generate a summary"
+
+# Quiet mode: only AI response text goes to stdout (for piping)
+invincat-cli -n "summarize this code" -q < code.py
+
+# Pipe content in from stdin
+cat error.log | invincat-cli -n "find the root cause of this error"
+
+# Fully buffered (non-streaming) output
+invincat-cli -n "generate test cases" --no-stream
+```
+
+Shell tools are disabled by default in non-interactive mode. Use `--shell-allow-list` to authorize them explicitly:
+
+```bash
+# Allow common read-only commands (safe defaults)
+invincat-cli -n "check project dependencies" -S recommended
+
+# Allow all shell commands and auto-approve (use with caution)
+invincat-cli -n "run the test suite" -S all -y
+```
+
+---
+
 ### Command Mode (`/` prefix)
 
 ```
@@ -93,6 +123,22 @@ Search for the latest usage of LangGraph interrupt
 ```
 
 Press `Tab` to autocomplete available commands. See [Slash Commands](#slash-commands) for the complete list.
+
+---
+
+## Task Planning
+
+```
+/plan <task description>
+```
+
+Generate a structured plan before executing. A dedicated planner sub-agent breaks the task into ordered steps and presents them for your review. The main agent only starts executing after you explicitly approve.
+
+```
+/plan add JWT authentication to user_service.py and update the related tests
+```
+
+The dialog offers three options: **Approve and execute** / **Refine** / **Cancel**.
 
 ---
 
@@ -217,6 +263,15 @@ to recent N messages.
 - [Memory Design (Chinese)](./MEMORY_DESIGN.md)
 - [Memory Design (English)](./MEMORY_DESIGN_EN.md)
 
+---
+
+## Architecture Documentation
+
+For a deep dive into Invincat's agent architecture — multi-agent collaboration, three-layer context management, short/long-term memory design, and more:
+
+- [Architecture Design (Chinese)](./ARCHITECTURE_CN.md)
+- [Architecture Design (English)](./ARCHITECTURE.md)
+
 ### Memory Manager UI
 
 ```
@@ -228,6 +283,27 @@ Open the full-screen memory manager for live inspection of memory stores:
 - separate pages for `user` and `project` scope (`1` / `2`, or `Tab` to switch)
 - highlights key fields (`status`, `id`, `section`, `content`) for each item
 - supports `r` (refresh), `a` (show/hide archived), `Esc` (close)
+
+---
+
+## Hook System
+
+Configure external hooks in `~/.invincat/hooks.json` to trigger custom scripts on agent events (notifications, logging, integration with external systems):
+
+```json
+{
+  "hooks": [
+    {
+      "command": ["bash", "~/.invincat/notify.sh"],
+      "events": ["session.start", "turn.end"]
+    }
+  ]
+}
+```
+
+- Each hook receives a JSON event payload via stdin (includes `event` key and contextual info)
+- An empty or missing `events` list subscribes to all events
+- Hooks run concurrently in a background thread pool, with a 5-second timeout; failures are logged only and never affect the main flow
 
 ---
 
@@ -309,6 +385,12 @@ Type `/` in the input box and press `Tab` to view and autocomplete all commands.
 | `/remember` | Manually trigger memory update |
 | `/memory` | Open full-screen memory manager (live user/project view) |
 
+### Planning
+
+| Command | Description |
+|---------|-------------|
+| `/plan <task>` | Generate a structured task plan; main agent executes only after approval |
+
 ### Tools & Extensions
 
 | Command | Description |
@@ -344,3 +426,9 @@ Just tell AI directly, for example "Remember: my project uses 4-space indentatio
 
 **Q: How to share skills across different projects?**
 Place skill files in the `~/.invincat/agent/skills/` directory for global availability; place in `.invincat/skills/` for current project only.
+
+**Q: Can I run shell commands in non-interactive mode?**
+Yes, but you must explicitly authorize them: `-S recommended` (safe read-only commands), `-S "git,pytest"` (specific commands), or `-S all` (all commands — use with caution).
+
+**Q: How do I integrate Invincat into a CI pipeline?**
+Use `-n "task" -q`: `-n` enters non-interactive mode, `-q` ensures only the AI response text goes to stdout (all status output goes to stderr), making it easy to capture and pipe the result.

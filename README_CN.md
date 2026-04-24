@@ -1,5 +1,7 @@
 # Invincat CLI
 
+[English](README.md)
+
 基于python实现的终端 AI 编程助手 — 在你的项目目录里直接与 AI 协作：读写文件、执行命令、浏览网页，跨会话保持记忆。
 
 ![](data/cli.png)
@@ -81,6 +83,36 @@ OpenAI 兼容接口（DeepSeek、智谱、本地 Ollama 等）设置 `base_url` 
 ```
 ---
 
+## 非交互模式
+
+通过 `-n` 参数以非交互方式运行单个任务，适合 CI、自动化脚本和管道场景：
+
+```bash
+# 运行单个任务后退出
+invincat-cli -n "分析 src/ 目录并生成摘要"
+
+# 静默模式：只输出 AI 响应文本（适合管道）
+invincat-cli -n "总结这段代码" -q < code.py
+
+# 通过管道传入内容
+cat error.log | invincat-cli -n "分析这个错误的根因"
+
+# 完整缓冲输出（非流式）
+invincat-cli -n "生成测试用例" --no-stream
+```
+
+非交互模式默认禁用 Shell 工具，需通过 `--shell-allow-list` 显式启用：
+
+```bash
+# 允许常用的只读命令（安全默认值）
+invincat-cli -n "检查项目依赖" -S recommended
+
+# 允许所有 shell 命令并自动批准（慎用）
+invincat-cli -n "运行测试套件" -S all -y
+```
+
+---
+
 ### 命令模式（`/` 前缀）
 
 ```
@@ -91,6 +123,22 @@ OpenAI 兼容接口（DeepSeek、智谱、本地 Ollama 等）设置 `base_url` 
 ```
 
 按 `Tab` 自动补全可用命令。完整命令列表见[斜杠命令](#斜杠命令)。
+
+---
+
+## 任务规划
+
+```
+/plan <任务描述>
+```
+
+在执行前生成结构化计划。规划子 Agent 会将任务拆解为有序步骤并展示给你确认，只有在你批准后主 Agent 才会开始执行。
+
+```
+/plan 为 user_service.py 添加 JWT 认证，更新相关测试
+```
+
+弹窗提供三个选项：**批准并执行** / **精化** / **取消**。
 
 ---
 
@@ -213,6 +261,15 @@ INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5
 - [Memory Design（中文）](./MEMORY_DESIGN.md)
 - [Memory Design（English）](./MEMORY_DESIGN_EN.md)
 
+---
+
+## 架构文档
+
+如需深入了解 Invincat 的 Agent 架构设计（多 Agent 协作、三层上下文管理、长短期记忆机制等），参见：
+
+- [架构设计（中文）](./ARCHITECTURE_CN.md)
+- [Architecture Design（English）](./ARCHITECTURE.md)
+
 ### 记忆管理界面
 
 ```
@@ -224,6 +281,27 @@ INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5
 - `user` / `project` 双页面展示（`1` / `2`，或 `Tab` 切换）
 - 每条记忆突出显示关键字段（`status`、`id`、`section`、`content`）
 - 支持 `r` 刷新、`a` 显示/隐藏 archived、`Esc` 关闭
+
+---
+
+## Hook 系统
+
+通过 `~/.invincat/hooks.json` 配置外部 Hook，在 Agent 事件发生时触发自定义脚本（通知、日志、与外部系统集成等）：
+
+```json
+{
+  "hooks": [
+    {
+      "command": ["bash", "~/.invincat/notify.sh"],
+      "events": ["session.start", "turn.end"]
+    }
+  ]
+}
+```
+
+- 每个 Hook 通过 stdin 接收 JSON 格式的事件 payload（包含 `event` 字段及上下文信息）
+- `events` 字段缺失或为空列表时，订阅全部事件
+- Hook 在后台并发执行，超时 5 秒，失败仅记录日志，不影响主流程
 
 ---
 
@@ -305,6 +383,12 @@ INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5
 | `/remember` | 手动触发记忆更新 |
 | `/memory` | 打开全屏记忆管理界面（实时查看 user/project） |
 
+### 规划
+
+| 命令 | 说明 |
+|------|------|
+| `/plan <任务>` | 生成结构化任务计划，用户确认后再执行 |
+
 ### 工具与扩展
 
 | 命令 | 说明 |
@@ -340,3 +424,9 @@ INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5
 
 **Q: 如何在不同项目间共享技能？**
 将技能文件放在 `~/.invincat/agent/skills/` 目录下即可全局生效；放在 `.invincat/skills/` 则仅当前项目可用。
+
+**Q: 非交互模式下能执行 shell 命令吗？**
+可以，但需要显式授权：`-S recommended`（安全只读命令）、`-S "git,pytest"`（指定命令列表）或 `-S all`（所有命令，慎用）。
+
+**Q: 如何集成到 CI 管道中？**
+使用 `-n "任务" -q` 组合：`-n` 进入非交互模式，`-q` 确保只有 AI 响应文本输出到 stdout，其余状态信息输出到 stderr，适合管道处理。
