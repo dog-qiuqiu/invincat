@@ -52,7 +52,8 @@ def _is_valid_store_item(raw: Any) -> bool:
 
 
 def _render_store_content(store: dict[str, Any], *, max_chars: int = _MAX_SCOPE_RENDER_CHARS) -> str:
-    grouped: dict[str, list[tuple[str, str]]] = {}
+    # tuple: (updated_at, item_id, content) — updated_at enables recency sort
+    grouped: dict[str, list[tuple[str, str, str]]] = {}
     items = store.get("items", [])
     if not isinstance(items, list):
         return ""
@@ -62,13 +63,14 @@ def _render_store_content(store: dict[str, Any], *, max_chars: int = _MAX_SCOPE_
         if str(raw.get("status", "")).strip().lower() != "active":
             continue
         item_id = str(raw.get("id", "")).strip()
+        updated_at = str(raw.get("updated_at") or "")
         section = _normalize_text(raw.get("section") or "Imported Notes", max_chars=80)
         content = _normalize_text(raw.get("content"), max_chars=500)
         if not section:
             section = "Imported Notes"
         if not content:
             continue
-        grouped.setdefault(section, []).append((item_id, content))
+        grouped.setdefault(section, []).append((updated_at, item_id, content))
 
     if not grouped:
         return ""
@@ -86,7 +88,9 @@ def _render_store_content(store: dict[str, Any], *, max_chars: int = _MAX_SCOPE_
         return True
 
     for section in sorted(grouped, key=str.casefold):
-        entries = sorted(grouped[section], key=lambda x: x[0])
+        # Sort by updated_at descending so most recently updated facts appear first.
+        # Items without updated_at sort after those with a timestamp (empty string < ISO date).
+        entries = sorted(grouped[section], key=lambda x: x[0], reverse=True)
         if lines:
             if not _try_append(""):
                 break
@@ -94,7 +98,7 @@ def _render_store_content(store: dict[str, Any], *, max_chars: int = _MAX_SCOPE_
             break
         if not _try_append(""):
             break
-        for _, content in entries:
+        for _, _, content in entries:
             if not _try_append(f"- {content}"):
                 break
         else:

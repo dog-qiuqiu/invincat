@@ -31,6 +31,9 @@ _hooks_config: list[dict[str, Any]] | None = None
 _background_tasks: set[asyncio.Task[None]] = set()
 """Strong references to fire-and-forget tasks to prevent GC."""
 
+_hook_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="hook")
+"""Persistent pool for concurrent hook dispatch — avoids per-call create/teardown overhead."""
+
 
 def _load_hooks() -> list[dict[str, Any]]:
     """Load and cache hook definitions from the config file.
@@ -147,12 +150,11 @@ def _dispatch_hook_sync(
         _run_single_hook(matching[0], event, payload_bytes)
         return
 
-    with ThreadPoolExecutor(max_workers=len(matching)) as pool:
-        futures = [
-            pool.submit(_run_single_hook, cmd, event, payload_bytes) for cmd in matching
-        ]
-        for future in futures:
-            future.result()
+    futures = [
+        _hook_executor.submit(_run_single_hook, cmd, event, payload_bytes) for cmd in matching
+    ]
+    for future in futures:
+        future.result()
 
 
 async def dispatch_hook(event: str, payload: dict[str, Any]) -> None:

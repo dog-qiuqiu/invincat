@@ -307,7 +307,9 @@ def _process_ai_message(
         if input_toks or output_toks:
             state.stats.record_request(active_model, input_toks, output_toks)
         elif total_toks:
-            state.stats.record_request(active_model, total_toks, 0)
+            # Only total_tokens available (no input/output breakdown) — count
+            # the request without attributing tokens to avoid misleading stats.
+            state.stats.record_request(active_model, 0, 0)
 
     if not hasattr(message_obj, "content_blocks"):
         logger.debug("AIMessage missing content_blocks attribute, skipping")
