@@ -486,5 +486,5 @@ thread_id = "__default_thread__"（默认）
 
 - [Memory Design（中文）](./MEMORY_DESIGN.md)
 - [Memory Design（English）](./MEMORY_DESIGN_EN.md)
-- [README（中文）](./README_CN.md)
-- [README（English）](./README.md)
+- [README（中文）](../README_CN.md)
+- [README（English）](../README.md)

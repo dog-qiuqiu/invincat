@@ -487,5 +487,5 @@ Configure external hooks in `~/.invincat/hooks.json` to trigger custom scripts o
 
 - [Memory Design (Chinese)](./MEMORY_DESIGN.md)
 - [Memory Design (English)](./MEMORY_DESIGN_EN.md)
-- [README (Chinese)](./README_CN.md)
-- [README (English)](./README.md)
+- [README (Chinese)](../README_CN.md)
+- [README (English)](../README.md)

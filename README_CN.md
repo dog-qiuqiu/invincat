@@ -258,8 +258,8 @@ INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5
 
 ### 记忆设计文档
 
-- [Memory Design（中文）](./MEMORY_DESIGN.md)
-- [Memory Design（English）](./MEMORY_DESIGN_EN.md)
+- [Memory Design（中文）](./doc/MEMORY_DESIGN.md)
+- [Memory Design（English）](./doc/MEMORY_DESIGN_EN.md)
 
 ---
 
@@ -267,8 +267,8 @@ INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5
 
 如需深入了解 Invincat 的 Agent 架构设计（多 Agent 协作、三层上下文管理、长短期记忆机制等），参见：
 
-- [架构设计（中文）](./ARCHITECTURE_CN.md)
-- [Architecture Design（English）](./ARCHITECTURE.md)
+- [架构设计（中文）](./doc/ARCHITECTURE_CN.md)
+- [Architecture Design（English）](./doc/ARCHITECTURE.md)
 
 ### 记忆管理界面
 

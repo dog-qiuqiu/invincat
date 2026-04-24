@@ -260,8 +260,8 @@ to recent N messages.
 
 ### Memory Design Docs
 
-- [Memory Design (Chinese)](./MEMORY_DESIGN.md)
-- [Memory Design (English)](./MEMORY_DESIGN_EN.md)
+- [Memory Design (Chinese)](./doc/MEMORY_DESIGN.md)
+- [Memory Design (English)](./doc/MEMORY_DESIGN_EN.md)
 
 ---
 
@@ -269,8 +269,8 @@ to recent N messages.
 
 For a deep dive into Invincat's agent architecture — multi-agent collaboration, three-layer context management, short/long-term memory design, and more:
 
-- [Architecture Design (Chinese)](./ARCHITECTURE_CN.md)
-- [Architecture Design (English)](./ARCHITECTURE.md)
+- [Architecture Design (Chinese)](./doc/ARCHITECTURE_CN.md)
+- [Architecture Design (English)](./doc/ARCHITECTURE.md)
 
 ### Memory Manager UI
 
