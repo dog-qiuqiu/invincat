@@ -106,14 +106,20 @@ Incremental strategy:
 - Uses thread-local cursor and anchor to consume only `t+1` delta since the last successful extraction.
 - Falls back to full-history pass if cursor/anchor no longer matches rewritten history.
 
-Default throttle values:
+Default throttle values (run every turn, throttles disabled):
 - `INVINCAT_MEMORY_CONTEXT_MESSAGES=0`
-- `INVINCAT_MEMORY_MIN_TURN_INTERVAL=2`
-- `INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS=8`
-- `INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5`
+- `INVINCAT_MEMORY_MIN_TURN_INTERVAL=1`
+- `INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS=0`
+- `INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=0`
+
+With the defaults, the memory agent runs after every non-trivial
+conversation turn so memory stays in sync with the latest signal.
+Raise any of these variables to re-enable throttling if extraction
+cost becomes a concern.
 
 Signal-based early trigger:
-- Preference/rule keywords can bypass some interval throttles.
+- Preference/rule keywords can bypass interval throttles when the
+  latter are re-enabled.
 
 ## 7. Safety Guards
 

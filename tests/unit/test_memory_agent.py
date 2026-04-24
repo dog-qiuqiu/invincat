@@ -8,6 +8,7 @@ from typing import Any
 
 
 from invincat_cli.memory_agent import (
+    _SYSTEM_PROMPT,
     DEFAULT_SCORE,
     DEFAULT_TIER,
     COLD_THRESHOLD,
@@ -21,6 +22,7 @@ from invincat_cli.memory_agent import (
     _atomic_write_text,
     _backup_corrupt_store,
     _is_trivial_turn,
+    _is_explicit_memory_request,
     _new_store,
     _normalize_score,
     _normalize_and_validate_operations,
@@ -602,6 +604,20 @@ def test_load_or_recover_store_recovers_unreadable_store_with_backup(tmp_path: P
 def test_short_ack_is_trivial() -> None:
     msgs = [_Msg("human", "收到"), _Msg("ai", "ok", tool_calls=[])]
     assert _is_trivial_turn(msgs) is True
+
+
+def test_explicit_memory_request_detection() -> None:
+    assert _is_explicit_memory_request("Please remember this preference.") is True
+    assert _is_explicit_memory_request("请记住这条规则") is True
+    assert _is_explicit_memory_request("thanks") is False
+
+
+def test_system_prompt_contains_conservative_policy_contract() -> None:
+    lowered = _SYSTEM_PROMPT.lower()
+    assert "conservative memory curator" in lowered
+    assert "if ambiguous, prefer project or noop" in lowered
+    assert "do not store" in lowered
+    assert "first non-whitespace character must be \"{\"" in lowered
 
 
 def test_recover_corrupt_store_without_legacy_fallback(tmp_path: Path) -> None:

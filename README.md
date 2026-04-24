@@ -230,14 +230,19 @@ Tune behavior via environment variables:
 
 ```bash
 INVINCAT_MEMORY_CONTEXT_MESSAGES=0
-INVINCAT_MEMORY_MIN_TURN_INTERVAL=2
-INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS=8
-INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5
+INVINCAT_MEMORY_MIN_TURN_INTERVAL=1
+INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS=0
+INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=0
 ```
 
 `INVINCAT_MEMORY_CONTEXT_MESSAGES=0` means no cap on the incremental delta
 since the last memory extraction. Set a positive integer to cap the delta
 to recent N messages.
+
+By default the memory agent runs after every non-trivial turn
+(`MIN_TURN_INTERVAL=1`, no wall-clock or file cooldown) so memory stays
+in sync with the latest signal. Raise the values to re-enable throttling
+if the extraction cost becomes a concern.
 
 ### Memory Design Docs
 

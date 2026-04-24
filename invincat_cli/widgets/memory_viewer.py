@@ -25,6 +25,13 @@ _MAX_CONTENT_PREVIEW_CHARS = 140
 _REFRESH_INTERVAL_SECONDS = 1.5
 _ALLOWED_STATUS = frozenset({"active", "archived"})
 _ALLOWED_TIER = frozenset({"hot", "warm", "cold"})
+_SORT_MODES: tuple[str, ...] = (
+    "score_desc",
+    "score_asc",
+    "last_scored_desc",
+    "last_scored_asc",
+)
+_TIER_RANK: dict[str, int] = {"hot": 0, "warm": 1, "cold": 2}
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,12 +222,34 @@ def load_memory_snapshot(memory_store_paths: dict[str, str]) -> dict[str, Memory
     return snapshots
 
 
+def _apply_sort(items: list[MemoryItemView], sort_mode: str) -> list[MemoryItemView]:
+    """Sort items keeping active before archived, then apply the chosen sort mode."""
+    active = [i for i in items if i.status == "active"]
+    archived = [i for i in items if i.status == "archived"]
+
+    if sort_mode == "score_asc":
+        key = lambda i: (i.score, _TIER_RANK.get(i.tier, 1), i.section.casefold(), i.item_id)
+        reverse = False
+    elif sort_mode == "last_scored_desc":
+        key = lambda i: (i.last_scored_at or "", i.section.casefold(), i.item_id)
+        reverse = True
+    elif sort_mode == "last_scored_asc":
+        key = lambda i: (i.last_scored_at or "", i.section.casefold(), i.item_id)
+        reverse = False
+    else:  # score_desc (default)
+        key = lambda i: (-i.score, _TIER_RANK.get(i.tier, 1), i.section.casefold(), i.item_id)
+        reverse = False
+
+    return sorted(active, key=key, reverse=reverse) + sorted(archived, key=key, reverse=reverse)
+
+
 class MemoryViewerScreen(ModalScreen[None]):
     """Modal memory viewer with periodic refresh."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("r", "refresh", "Refresh", show=False, priority=True),
         Binding("a", "toggle_archived", "Toggle archived", show=False, priority=True),
+        Binding("s", "cycle_sort", "Cycle sort", show=False, priority=True),
         Binding("1", "show_user_scope", "User scope", show=False, priority=True),
         Binding("2", "show_project_scope", "Project scope", show=False, priority=True),
         Binding("tab", "next_scope", "Next scope", show=False, priority=True),
@@ -274,6 +303,7 @@ class MemoryViewerScreen(ModalScreen[None]):
         self._memory_store_paths = dict(memory_store_paths)
         self._show_archived = True
         self._current_scope = "user"
+        self._sort_mode: str = _SORT_MODES[0]
         self._refresh_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
@@ -313,7 +343,10 @@ class MemoryViewerScreen(ModalScreen[None]):
         elif self._current_scope not in ordered_scopes:
             self._current_scope = ordered_scopes[0]
 
-        title.update(t("memory.viewer.title").format(scope=self._current_scope))
+        sort_label = t(f"memory.viewer.sort.{self._sort_mode}")
+        title.update(
+            t("memory.viewer.title").format(scope=self._current_scope, sort=sort_label)
+        )
 
         lines: list[str] = []
         view = snapshots.get(self._current_scope)
@@ -364,17 +397,7 @@ class MemoryViewerScreen(ModalScreen[None]):
                     f"{escape(t('memory.viewer.status.ok'))}"
                 )
                 rendered_items = 0
-                tier_rank = {"hot": 0, "warm": 1, "cold": 2}
-                sorted_items = sorted(
-                    view.items,
-                    key=lambda item: (
-                        0 if item.status == "active" else 1,
-                        tier_rank.get(item.tier, 1),
-                        -item.score,
-                        item.section.casefold(),
-                        item.item_id,
-                    ),
-                )
+                sorted_items = _apply_sort(view.items, self._sort_mode)
                 for item in sorted_items:
                     if item.status == "archived" and not self._show_archived:
                         continue
@@ -417,6 +440,11 @@ class MemoryViewerScreen(ModalScreen[None]):
 
     def action_toggle_archived(self) -> None:
         self._show_archived = not self._show_archived
+        self._render_snapshot()
+
+    def action_cycle_sort(self) -> None:
+        idx = _SORT_MODES.index(self._sort_mode) if self._sort_mode in _SORT_MODES else 0
+        self._sort_mode = _SORT_MODES[(idx + 1) % len(_SORT_MODES)]
         self._render_snapshot()
 
     def action_show_user_scope(self) -> None:

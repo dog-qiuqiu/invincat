@@ -1,7 +1,12 @@
 """Dedicated memory agent middleware with structured memory stores.
 
 Runs an independent model call with a focused system prompt after every
-non-trivial conversation turn to extract durable memory operations.
+non-trivial conversation turn to extract durable memory operations. By
+default the agent runs once per turn (no wall-clock or file cooldown)
+so memory stays in sync with the latest signal; the turn-interval,
+wall-clock, and file cooldown throttles can still be re-enabled via
+the INVINCAT_MEMORY_MIN_TURN_INTERVAL / INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS
+/ INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS environment variables.
 
 The extraction runs in ``aafter_agent`` so it does not block the user from
 receiving the main response.
@@ -59,6 +64,15 @@ _MEMORY_SIGNAL_RE = re.compile(
     re.IGNORECASE,
 )
 
+_EXPLICIT_MEMORY_REQUEST_RE = re.compile(
+    r"\b("
+    r"remember this|save this|save it|add to memory|store this|"
+    r"please remember|record this|memorize"
+    r")\b|"
+    r"(请记住|记一下|存一下|写入记忆|保存到记忆|记到记忆|记住这条)",
+    re.IGNORECASE,
+)
+
 _TRIVIAL_RE = re.compile(
     r"^\s*("
     r"ok|okay|thanks|thank you|got it|sure|yes|no|confirmed|done|"
@@ -83,45 +97,225 @@ _ALLOWED_OPS: frozenset[str] = frozenset(
 )
 
 _SYSTEM_PROMPT = """\
-You are a memory curator for an AI assistant.
+You are a conservative memory curator for an AI assistant.
 
-You receive:
-1) recent_conversation
-2) memory_snapshot (structured memory items with stable IDs)
+Your job: read a recent conversation and a memory snapshot, then emit a
+small set of operations that keep the memory store minimal, durable, and
+reusable across future turns. Prefer precision over recall. When
+uncertain, emit noop.
 
-Return STRICT JSON only:
-{
-  "operations": [
-    {"op": "create", "scope": "user|project", "section": "...", "content": "...", "confidence": "low|medium|high", "tier": "hot|warm|cold", "score": 0-100, "score_reason": "..."},
-    {"op": "update", "scope": "user|project", "id": "mem_u_000001", "content": "...", "confidence": "low|medium|high", "tier": "hot|warm|cold", "score": 0-100, "score_reason": "..."},
-    {"op": "rescore", "scope": "user|project", "id": "mem_u_000001", "score": 0-100, "score_reason": "..."},
-    {"op": "retier", "scope": "user|project", "id": "mem_u_000001", "tier": "hot|warm|cold", "score_reason": "..."},
-    {"op": "archive", "scope": "user|project", "id": "mem_p_000031", "reason": "..."},
+====================================================================
+INPUT
+====================================================================
+The user message contains two sections:
+1) recent_conversation — latest turns between user and assistant.
+2) memory_snapshot — JSON shaped as:
+   {
+     "user":    {"items": [...], "rescore_candidates": [...]},
+     "project": {"items": [...], "rescore_candidates": [...]}
+   }
+   Each item has: id, section, content, status, tier, score,
+   score_reason, last_scored_at.
+   rescore_candidates is the subset of IDs eligible for rescore/retier
+   this turn — do not target other IDs with those ops.
+
+====================================================================
+OUTPUT CONTRACT
+====================================================================
+Return STRICT JSON only. No prose, no markdown fences, no file paths,
+no full markdown memory files.
+The first non-whitespace character must be "{".
+Output exactly one JSON object with a top-level "operations" array:
+
+  {"operations": [<op>, <op>, ...]}
+
+Allowed op shapes (fields marked "optional" may be omitted):
+
+  create:
+    {"op": "create", "scope": "user"|"project",
+     "section": "<short category>", "content": "<durable fact>",
+     "confidence": "low"|"medium"|"high",
+     "tier": "hot"|"warm"|"cold", "score": <integer 0-100>,
+     "score_reason": "<specific evidence>"}
+    Omit the id field entirely — the store assigns it.
+
+  update:
+    {"op": "update", "scope": "...", "id": "mem_u_000001",
+     "content": "..." (optional),
+     "confidence": "..." (optional),
+     "tier": "..." (optional),
+     "score": <integer> (optional),
+     "score_reason": "..." (optional)}
+    At least one non-id field must be present.
+
+  rescore:
+    {"op": "rescore", "scope": "...", "id": "mem_u_000001",
+     "score": <integer 0-100>, "score_reason": "..."}
+    Only IDs in rescore_candidates are valid.
+
+  retier:
+    {"op": "retier", "scope": "...", "id": "mem_u_000001",
+     "tier": "hot"|"warm"|"cold", "score_reason": "..."}
+    Only IDs in rescore_candidates are valid.
+
+  archive:
+    {"op": "archive", "scope": "...", "id": "mem_p_000031",
+     "reason": "<why no longer valid>"}
+
+  noop:
     {"op": "noop"}
-  ]
-}
 
-Rules:
-- Output only JSON, no prose, no markdown fences.
-- Prefer update/archive over duplicate create when an existing item already matches.
-- For rescore/retier, only target IDs listed under rescore_candidates in memory_snapshot.
-- Keep rescoring local and sparse; do not touch unrelated IDs.
-- Do NOT output full markdown memory files.
-- Do NOT output file paths.
-- Do NOT invent IDs for create.
-- Score bands: hot >= 70, warm 30..69, cold < 30.
-- Keep memory durable, specific, and actionable.
-- Skip transient one-off details.
+====================================================================
+SCOPE ROUTING
+====================================================================
+- user: cross-project traits of the person — communication style,
+  coding habits, preferred tools and workflows.
+- project: repository-specific conventions, architecture, stack,
+  constraints, domain rules.
+- If ambiguous, prefer project or noop (never guess user scope).
+
+====================================================================
+WHAT TO STORE
+====================================================================
+Store facts that are:
+- durable (still true next week),
+- specific (actionable, not generic advice),
+- reusable (would meaningfully shape future responses).
+
+Do NOT store:
+- temporary runtime states, one-off errors, ephemeral paths/tokens/secrets
+- short-lived plans/todos, volatile metrics/status
+- information already derivable from code or git history
+- reasoning steps, intermediate conclusions, session narration
+
+====================================================================
+OPERATION DISCIPLINE
+====================================================================
+- Keep operations sparse and local to recent evidence.
+- At most one operation per item id per run.
+- When an existing item already matches, prefer update over create.
+  Never produce a near-duplicate.
+- update vs archive:
+    * update  — the fact is still true but phrasing/score/tier needs
+                refinement, or new evidence strengthens it
+    * archive — the fact is no longer valid, has been contradicted,
+                or its context no longer applies
+- rescore/retier require clear new evidence this turn and must target
+  only IDs listed in rescore_candidates.
+
+====================================================================
+FIELD GUIDANCE
+====================================================================
+Language rule: write section, content, and score_reason in the same
+language as the conversation. If the user writes in Chinese, all
+three fields must be in Chinese. If the user writes in English, use
+English. Never translate the user's language into another language.
+
+section (<= 80 chars) — a short reusable category in Title Case.
+  Good (English): "Code Style", "Testing Conventions", "Architecture",
+                  "Communication Preferences", "Deployment Workflow"
+  Good (Chinese): "代码风格", "测试规范", "架构约定", "沟通偏好", "部署流程"
+  Bad:  "general", "user info", "notes", "things user said"
+
+content (<= 500 chars) — one self-contained durable fact. Declarative,
+  no meta-language like "the user said" / "用户说".
+  Good (English user):   "Prefers concise bullet-style responses over prose."
+  Good (Chinese user):   "偏好简洁的要点式回复，而非大段散文。"
+  Good (project, English): "All API handlers live under src/api/ and return
+                            typed Response objects."
+  Good (project, Chinese): "所有 API 处理器放在 src/api/ 下，必须返回带类型的 Response 对象。"
+  Bad:  "User mentioned they like short answers." / "用户提到他喜欢简短回答。"
+
+confidence — belief that the fact is true AND stable.
+  high   — explicitly stated, or strongly repeated
+  medium — inferred from consistent behavior in the conversation
+  low    — single weak signal (usually prefer noop instead)
+
+score (0-100 integer) — durability and cross-turn usefulness.
+  Bands: hot >= 70, warm 30..69, cold < 30.
+  Anchors:
+    90 — explicit standing rule the user asked to remember
+    75 — strong repeated preference; clearly load-bearing
+    55 — observed habit; useful but not always relevant
+    35 — niche convention; applies in specific contexts only
+    20 — weak or fading signal; candidate for future archive
+  Keep score consistent with tier (the system coerces mismatches
+  into the declared tier's band, so inconsistency wastes evidence).
+
+score_reason (<= 160 chars) — one short sentence citing specific
+  evidence from the conversation, not a generic label. Write in the
+  same language as the conversation.
+  Good (English): "User explicitly asked to always prefer bullet lists over prose."
+  Good (Chinese): "用户明确要求每次回复都用要点列表而非大段文字。"
+  Bad:  "User preference." / "用户偏好。"
+
+====================================================================
+EXAMPLES
+====================================================================
+Example A — no durable signal (routine task request):
+  conversation: user asks "can you fix the typo in README.md?"
+  output: {"operations": [{"op": "noop"}]}
+
+Example B — explicit standing rule:
+  conversation: user says "from now on, always run `pytest -x` before
+                suggesting commits."
+  output: {"operations": [
+    {"op": "create", "scope": "project", "section": "Testing Workflow",
+     "content": "Always run `pytest -x` before suggesting any commit.",
+     "confidence": "high", "tier": "hot", "score": 85,
+     "score_reason": "User explicitly stated this as a standing rule."}
+  ]}
+
+Example C — existing item is contradicted:
+  snapshot has mem_p_000007 "Uses Poetry for dependency management".
+  conversation: user says "we migrated off Poetry, everything is on
+                uv now."
+  output: {"operations": [
+    {"op": "archive", "scope": "project", "id": "mem_p_000007",
+     "reason": "User stated the project migrated from Poetry to uv."},
+    {"op": "create", "scope": "project", "section": "Tooling",
+     "content": "Uses `uv` for dependency management.",
+     "confidence": "high", "tier": "hot", "score": 80,
+     "score_reason": "User confirmed migration from Poetry to uv."}
+  ]}
+
+Example D — refine an existing item:
+  snapshot has mem_u_000003 "Prefers terse responses" (score 60).
+  conversation: user says "yeah really, keep them to 2-3 bullets max."
+  output: {"operations": [
+    {"op": "update", "scope": "user", "id": "mem_u_000003",
+     "content": "Prefers terse responses, 2-3 bullets maximum.",
+     "confidence": "high", "tier": "hot", "score": 78,
+     "score_reason": "User reinforced and quantified the preference."}
+  ]}
+
+Example E — Chinese conversation (language must match):
+  conversation: 用户说"以后提交代码前必须先跑 `make lint`，不然不给合并。"
+  output: {"operations": [
+    {"op": "create", "scope": "project", "section": "提交规范",
+     "content": "提交代码前必须先执行 `make lint`，否则不允许合并。",
+     "confidence": "high", "tier": "hot", "score": 88,
+     "score_reason": "用户明确要求将 lint 检查作为合并前的强制步骤。"}
+  ]}
 """
 
 _USER_TEMPLATE = """\
-Recent conversation:
+recent_conversation:
 {conversation}
 
-Memory snapshot:
+memory_snapshot:
 {snapshot}
+"""
 
-Return operations JSON only.
+_USER_POLICY_TEMPLATE = """\
+turn_policy:
+- explicit_memory_request: {explicit_memory_request}
+- When true, the user has directly asked to record something; you may
+  create with confidence "high" and score >= 70 if the evidence is
+  explicit. Still avoid near-duplicates — prefer update when an
+  existing item already matches.
+- When false, be conservative: prefer update over create, and prefer
+  noop when the signal is ambiguous or transient.
 """
 
 
@@ -147,21 +341,29 @@ def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
 
 def _is_trivial_turn(messages: list[Any]) -> bool:
     """Return True when the last user message carries no extractable information."""
-    user_msgs = [m for m in messages if getattr(m, "type", "") == "human"]
-    if not user_msgs:
-        return True
-    content = getattr(user_msgs[-1], "content", "")
-    if isinstance(content, list):
-        content = " ".join(
-            p.get("text", "") if isinstance(p, dict) else str(p) for p in content
-        )
-    text = str(content).strip()
+    text = _last_human_text(messages)
     if not text:
         return True
     # Short user messages can still be memory-worthy (especially in Chinese).
     if _MEMORY_SIGNAL_RE.search(text):
         return False
     return bool(_TRIVIAL_RE.match(text))
+
+
+def _last_human_text(messages: list[Any]) -> str:
+    for msg in reversed(messages):
+        if getattr(msg, "type", "") != "human":
+            continue
+        content = getattr(msg, "content", "")
+        if isinstance(content, list):
+            parts = [p.get("text", "") if isinstance(p, dict) else str(p) for p in content]
+            return " ".join(filter(None, parts)).strip()
+        return str(content).strip()
+    return ""
+
+
+def _is_explicit_memory_request(text: str) -> bool:
+    return bool(_EXPLICIT_MEMORY_REQUEST_RE.search(text or ""))
 
 
 def _is_task_complete(messages: list[Any]) -> bool:
@@ -946,19 +1148,19 @@ class MemoryAgentMiddleware(AgentMiddleware):
         if min_turn_interval is None:
             min_turn_interval = _env_int(
                 "INVINCAT_MEMORY_MIN_TURN_INTERVAL",
-                default=2,
+                default=1,
                 minimum=1,
             )
         if min_seconds_between_runs is None:
             min_seconds_between_runs = _env_float(
                 "INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS",
-                default=8.0,
+                default=0.0,
                 minimum=0.0,
             )
         if file_cooldown_seconds is None:
             file_cooldown_seconds = _env_float(
                 "INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS",
-                default=5.0,
+                default=0.0,
                 minimum=0.0,
             )
 
@@ -1006,18 +1208,7 @@ class MemoryAgentMiddleware(AgentMiddleware):
 
     @staticmethod
     def _last_human_text(messages: list[Any]) -> str:
-        for msg in reversed(messages):
-            if getattr(msg, "type", "") != "human":
-                continue
-            content = getattr(msg, "content", "")
-            if isinstance(content, list):
-                parts = [
-                    p.get("text", "") if isinstance(p, dict) else str(p)
-                    for p in content
-                ]
-                return " ".join(filter(None, parts)).strip()
-            return str(content).strip()
-        return ""
+        return _last_human_text(messages)
 
     @staticmethod
     def _message_anchor(message: Any) -> str:
@@ -1163,6 +1354,8 @@ class MemoryAgentMiddleware(AgentMiddleware):
         written_store_paths: list[str] = []
         try:
             conversation = self._format_messages(messages)
+            last_human = self._last_human_text(messages)
+            explicit_memory_request = _is_explicit_memory_request(last_human)
             user_store = await asyncio.to_thread(
                 self._load_or_recover_store, "user", thread_id, source_anchor
             )
@@ -1196,6 +1389,10 @@ class MemoryAgentMiddleware(AgentMiddleware):
                             conversation=conversation,
                             snapshot=json.dumps(snapshot, ensure_ascii=False, indent=2),
                         )
+                        + "\n"
+                        + _USER_POLICY_TEMPLATE.format(
+                            explicit_memory_request=str(explicit_memory_request).lower(),
+                        )
                     ),
                 ],
                 config={"metadata": {"lc_source": "memory_agent"}},
@@ -1206,6 +1403,10 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 raw = " ".join(
                     p.get("text", "") if isinstance(p, dict) else str(p) for p in raw
                 )
+            raw = raw.lstrip()
+            if not raw.startswith("{"):
+                logger.debug("Memory agent: response does not start with JSON object")
+                return []
             start = raw.find("{")
             if start == -1:
                 logger.debug("Memory agent: no JSON found in response")

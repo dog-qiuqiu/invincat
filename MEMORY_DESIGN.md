@@ -105,14 +105,18 @@ flowchart TD
 - 线程内游标 + anchor，仅处理上次成功提取后的 `t+1` 增量消息。
 - 历史被改写（压缩/回放）导致游标失效时，回退一次全量后重建游标。
 
-默认参数：
+默认参数（每轮触发，关闭节流）：
 - `INVINCAT_MEMORY_CONTEXT_MESSAGES=0`
-- `INVINCAT_MEMORY_MIN_TURN_INTERVAL=2`
-- `INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS=8`
-- `INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5`
+- `INVINCAT_MEMORY_MIN_TURN_INTERVAL=1`
+- `INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS=0`
+- `INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=0`
+
+默认设置下，每一个非 trivial 对话轮次结束都会触发一次 memory agent，
+确保记忆与最新对话保持同步。如需降低开销，可将任一变量改为正值以
+重新启用对应节流。
 
 早触发：
-- 命中偏好/规则关键词可提前触发。
+- 命中偏好/规则关键词时，即使上述节流开启也可提前触发。
 
 ## 7. 安全保护
 
