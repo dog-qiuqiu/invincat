@@ -150,7 +150,7 @@ class PlanApprovalWidget(ToolApprovalWidget):
             yield Static(t("tool.details_not_available"), classes="approval-description")
             return
 
-        yield Static("Plan Preview", classes="approval-description")
+        yield Static(t("tool.plan_preview"), classes="approval-description")
         for idx, todo in enumerate(todos, start=1):
             status = str(todo.get("status", "pending")).strip().lower()
             icon = self._STATUS_ICON.get(status, "○")

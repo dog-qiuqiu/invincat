@@ -1677,38 +1677,49 @@ class DeepAgentsApp(App):
                 upgrade_command,
             )
 
-            await self._mount_message(AppMessage("Checking for updates..."))
+            await self._mount_message(AppMessage(t("update.checking")))
             available, latest = await asyncio.to_thread(
                 is_update_available, bypass_cache=True
             )
             if not available:
-                await self._mount_message(AppMessage("Already on the latest version."))
+                await self._mount_message(AppMessage(t("success.up_to_date")))
                 return
 
             from invincat_cli._version import __version__ as cli_version
 
             await self._mount_message(
                 AppMessage(
-                    f"Update available: v{latest} (current: v{cli_version}). "
-                    "Upgrading..."
+                    t("app.update_available_upgrading").format(
+                        latest=latest,
+                        current=cli_version,
+                    )
                 )
             )
             success, output = await perform_upgrade()
             if success:
                 self._update_available = (False, None)
                 await self._mount_message(
-                    AppMessage(f"Updated to v{latest}. Restart to use the new version.")
+                    AppMessage(t("app.updated_to").format(version=latest))
                 )
             else:
                 cmd = upgrade_command()
                 detail = f": {output[:200]}" if output else ""
                 await self._mount_message(
-                    AppMessage(f"Auto-update failed{detail}\nRun manually: {cmd}")
+                    AppMessage(
+                        t("app.auto_update_failed_with_detail").format(
+                            detail=detail,
+                            command=cmd,
+                        )
+                    )
                 )
         except Exception as exc:
             logger.warning("/update command failed", exc_info=True)
             await self._mount_message(
-                ErrorMessage(f"Update failed: {type(exc).__name__}: {exc}")
+                ErrorMessage(
+                    t("app.update_failed_with_error").format(
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                )
             )
 
     async def _handle_auto_update_toggle(self) -> None:
@@ -2080,12 +2091,13 @@ class DeepAgentsApp(App):
                 result_future.set_result({"type": "reject"})
                 denied = ", ".join(disallowed_tool_names)
                 try:
+                    from invincat_cli.i18n import t
+
                     messages = self.query_one("#messages", Container)
                     await self._mount_before_queued(
                         messages,
                         AppMessage(
-                            "Rejected non-plan tool call in /plan mode: "
-                            f"{denied}. Continue refining the plan."
+                            t("plan.auto_reject_non_plan_tool").format(tools=denied)
                         ),
                     )
                 except Exception:  # noqa: BLE001  # best-effort status message
@@ -2381,12 +2393,16 @@ class DeepAgentsApp(App):
             task: The task description to plan.
         """
         if not self._agent or not self._session_state:
-            await self._mount_message(AppMessage("Agent not configured."))
+            from invincat_cli.i18n import t
+
+            await self._mount_message(AppMessage(t("plan.agent_not_configured")))
             return False
 
         planner = await self._ensure_planner_agent()
         if planner is None:
-            await self._mount_message(AppMessage("Planner agent is unavailable."))
+            from invincat_cli.i18n import t
+
+            await self._mount_message(AppMessage(t("plan.planner_unavailable")))
             return False
 
         if not self._planner_thread_id:
@@ -2552,22 +2568,17 @@ class DeepAgentsApp(App):
         """Build main-agent handoff prompt from approved todo items."""
         plan_text = "\n".join(f"{i + 1}. {todo['content']}" for i, todo in enumerate(todos))
         latest_user_text = ""
-        latest_planner_text = ""
 
         if planner_state_values:
             messages = self._normalize_state_messages(planner_state_values.get("messages", []))
             latest_user_text = self._extract_latest_human_text(messages)
-            latest_planner_text = self._extract_latest_ai_text(messages)
 
         prefer_zh = self._prefer_zh_for_text(latest_user_text)
 
         context_lines: list[str] = []
         latest_user_text = latest_user_text.strip()
-        latest_planner_text = latest_planner_text.strip()
         if latest_user_text:
             context_lines.append(latest_user_text)
-        if latest_planner_text and latest_planner_text != latest_user_text:
-            context_lines.append(latest_planner_text)
 
         context_note = ""
         if context_lines:
@@ -2718,7 +2729,7 @@ class DeepAgentsApp(App):
             if not todos:
                 await self._mount_message(
                     AppMessage(
-                        "Planner approval succeeded but no valid todo list was found; please regenerate the plan."
+                        t("plan.approval_no_valid_todos")
                     )
                 )
                 return
@@ -2737,7 +2748,7 @@ class DeepAgentsApp(App):
             todos = extract_todos_from_message(latest_text) or []
         if not todos:
             await self._mount_message(
-                AppMessage("Planner marked plan-ready but no valid todo list was found; please regenerate the plan.")
+                AppMessage(t("plan.ready_no_valid_todos"))
             )
             return
 
@@ -3237,20 +3248,26 @@ class DeepAgentsApp(App):
 
             if result.returncode != 0:
                 await self._mount_message(
-                    ErrorMessage(f"Exit code: {result.returncode}")
+                    ErrorMessage(
+                        t("shell.exit_code").format(code=result.returncode)
+                    )
                 )
             else:
-                await self._mount_message(AppMessage("Command completed"))
+                await self._mount_message(AppMessage(t("shell.command_completed")))
 
             # Anchor to bottom so output stays visible
             with suppress(NoMatches, ScreenStackError):
                 self.query_one("#chat", VerticalScroll).anchor()
 
         except FileNotFoundError:
-            await self._mount_message(ErrorMessage(f"Command not found: {command}"))
+            await self._mount_message(
+                ErrorMessage(t("shell.command_not_found").format(command=command))
+            )
         except OSError as e:
             logger.exception("Failed to execute interactive shell command: %s", command)
-            await self._mount_message(ErrorMessage(f"Failed to run command: {e}"))
+            await self._mount_message(
+                ErrorMessage(t("shell.command_failed").format(error=str(e)))
+            )
         finally:
             await self._cleanup_shell_task()
 
@@ -3284,7 +3301,9 @@ class DeepAgentsApp(App):
                 )
             except TimeoutError:
                 await self._kill_shell_process()
-                await self._mount_message(ErrorMessage("Command timed out (60s limit)"))
+                await self._mount_message(
+                    ErrorMessage(t("shell.command_timeout").format(seconds=60))
+                )
                 return
             except asyncio.CancelledError:
                 await self._kill_shell_process()
@@ -3300,10 +3319,14 @@ class DeepAgentsApp(App):
                 await self._mount_message(msg)
                 await msg.write_initial_content()
             else:
-                await self._mount_message(AppMessage("Command completed (no output)"))
+                await self._mount_message(
+                    AppMessage(t("shell.command_completed_no_output"))
+                )
 
             if proc.returncode and proc.returncode != 0:
-                await self._mount_message(ErrorMessage(f"Exit code: {proc.returncode}"))
+                await self._mount_message(
+                    ErrorMessage(t("shell.exit_code").format(code=proc.returncode))
+                )
 
             # Anchor to bottom so shell output stays visible
             with suppress(NoMatches, ScreenStackError):
@@ -3311,7 +3334,7 @@ class DeepAgentsApp(App):
 
         except OSError as e:
             logger.exception("Failed to execute shell command: %s", command)
-            err_msg = f"Failed to run command: {e}"
+            err_msg = t("shell.command_failed").format(error=str(e))
             await self._mount_message(ErrorMessage(err_msg))
         finally:
             await self._cleanup_shell_task()
@@ -3325,7 +3348,7 @@ class DeepAgentsApp(App):
         self._shell_running = False
         self._shell_worker = None
         if was_interrupted:
-            await self._mount_message(AppMessage("Command interrupted"))
+            await self._mount_message(AppMessage(t("shell.command_interrupted")))
         if self._chat_input:
             self._chat_input.set_cursor_active(active=True)
         try:
@@ -3470,7 +3493,7 @@ class DeepAgentsApp(App):
 
         if not self._session_state:
             await self._mount_message(UserMessage(command))
-            await self._mount_message(AppMessage("No active session."))
+            await self._mount_message(AppMessage(t("trace.no_active_session")))
             return
         thread_id = self._session_state.thread_id
         try:
@@ -3479,15 +3502,14 @@ class DeepAgentsApp(App):
             logger.exception("Failed to build LangSmith thread URL for %s", thread_id)
             await self._mount_message(UserMessage(command))
             await self._mount_message(
-                AppMessage("Failed to resolve LangSmith thread URL.")
+                AppMessage(t("trace.resolve_failed"))
             )
             return
         if not url:
             await self._mount_message(UserMessage(command))
             await self._mount_message(
                 AppMessage(
-                    "LangSmith tracing is not configured. "
-                    "Set LANGSMITH_API_KEY and LANGSMITH_TRACING=true to enable."
+                    t("trace.not_configured")
                 )
             )
             return
@@ -3580,13 +3602,13 @@ class DeepAgentsApp(App):
                     __version__ as cli_version,
                 )
 
-                cli_line = f"deepagents-cli version: {cli_version}"
+                cli_line = t("version.cli_line").format(version=cli_version)
             except ImportError:
                 logger.debug("deepagents_cli._version module not found")
-                cli_line = "deepagents-cli version: unknown"
+                cli_line = t("version.cli_unknown")
             except Exception:
                 logger.warning("Unexpected error looking up CLI version", exc_info=True)
-                cli_line = "deepagents-cli version: unknown"
+                cli_line = t("version.cli_unknown")
             try:
                 from importlib.metadata import (
                     PackageNotFoundError,
@@ -3594,13 +3616,13 @@ class DeepAgentsApp(App):
                 )
 
                 sdk_version = _pkg_version("deepagents")
-                sdk_line = f"deepagents (SDK) version: {sdk_version}"
+                sdk_line = t("version.sdk_line").format(version=sdk_version)
             except PackageNotFoundError:
                 logger.debug("deepagents SDK package not found in environment")
-                sdk_line = "deepagents (SDK) version: unknown"
+                sdk_line = t("version.sdk_unknown")
             except Exception:
                 logger.warning("Unexpected error looking up SDK version", exc_info=True)
-                sdk_line = "deepagents (SDK) version: unknown"
+                sdk_line = t("version.sdk_unknown")
             await self._mount_message(AppMessage(f"{cli_line}\n{sdk_line}"))
         elif cmd == "/clear":
             self._pending_messages.clear()
@@ -3620,7 +3642,7 @@ class DeepAgentsApp(App):
                 except NoMatches:
                     pass
                 await self._mount_message(
-                    AppMessage(f"Started new thread: {new_thread_id}")
+                    AppMessage(t("success.new_thread").format(thread_id=new_thread_id))
                 )
         elif cmd == "/editor":
             await self.action_open_editor()
@@ -3654,9 +3676,13 @@ class DeepAgentsApp(App):
                 if context_limit is not None:
                     limit_str = format_token_count(context_limit)
                     pct = count / context_limit * 100
-                    usage = f"{formatted} / {limit_str} tokens ({pct:.0f}%)"
+                    usage = t("tokens.usage_with_limit").format(
+                        used=formatted,
+                        limit=limit_str,
+                        pct=f"{pct:.0f}",
+                    )
                 else:
-                    usage = f"{formatted} tokens used"
+                    usage = t("tokens.usage_simple").format(used=formatted)
 
                 msg = f"{usage} \u00b7 {model_name}" if model_name else usage
 
@@ -3670,8 +3696,8 @@ class DeepAgentsApp(App):
                     conv_unit = " tokens" if conv_tokens < 1000 else ""  # noqa: PLR2004  # not bothersome, cosmetic
 
                     msg += (
-                        f"\n\u251c System prompt + tools: ~{overhead_str}{overhead_unit} (fixed)"  # noqa: E501
-                        f"\n\u2514 Conversation: ~{conv_str}{conv_unit}"
+                        f"\n{t('tokens.system_tools_fixed').format(tokens=f'{overhead_str}{overhead_unit}')}"  # noqa: E501
+                        f"\n{t('tokens.conversation').format(tokens=f'{conv_str}{conv_unit}')}"
                     )
 
                 await self._mount_message(AppMessage(msg))
@@ -3679,10 +3705,12 @@ class DeepAgentsApp(App):
                 model_name = settings.model_name
                 context_limit = settings.model_context_limit
 
-                parts: list[str] = ["No token usage yet"]
+                parts: list[str] = [t("tokens.no_usage_yet")]
                 if context_limit is not None:
                     limit_str = format_token_count(context_limit)
-                    parts.append(f"{limit_str} token context window")
+                    parts.append(
+                        t("tokens.context_window").format(limit=limit_str)
+                    )
                 if model_name:
                     parts.append(model_name)
 
@@ -3807,7 +3835,9 @@ class DeepAgentsApp(App):
             await self._handle_skill_command(command)
         else:
             await self._mount_message(UserMessage(command))
-            await self._mount_message(AppMessage(f"Unknown command: {cmd}"))
+            await self._mount_message(
+                AppMessage(t("command.unknown").format(command=cmd))
+            )
 
         # Anchor to bottom so command output stays visible
         with suppress(NoMatches, ScreenStackError):
@@ -3830,7 +3860,7 @@ class DeepAgentsApp(App):
         skill_name, args = parse_skill_command(command)
         if not skill_name:
             await self._mount_message(UserMessage(command))
-            await self._mount_message(AppMessage("Usage: /skill:<name> [args]"))
+            await self._mount_message(AppMessage(t("skill.usage")))
             return
 
         # Fast path: look up from the cached discovery results
@@ -3857,7 +3887,10 @@ class DeepAgentsApp(App):
                 await self._mount_message(UserMessage(command))
                 await self._mount_message(
                     AppMessage(
-                        f"Could not load skill: {skill_name}. Filesystem error: {exc}"
+                        t("skill.load_filesystem_error").format(
+                            skill=skill_name,
+                            error=str(exc),
+                        )
                     )
                 )
                 return
@@ -3868,15 +3901,19 @@ class DeepAgentsApp(App):
                 await self._mount_message(UserMessage(command))
                 await self._mount_message(
                     AppMessage(
-                        f"Error loading skill: {skill_name}. "
-                        f"Unexpected error: {type(exc).__name__}: {exc}"
+                        t("skill.load_unexpected_error").format(
+                            skill=skill_name,
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
                     )
                 )
                 return
 
         if cached is None:
             await self._mount_message(UserMessage(command))
-            await self._mount_message(AppMessage(f"Skill not found: {skill_name}"))
+            await self._mount_message(
+                AppMessage(t("skill.not_found").format(skill=skill_name))
+            )
             return
 
         # Load SKILL.md content (filesystem I/O offloaded to thread)
@@ -4144,13 +4181,13 @@ class DeepAgentsApp(App):
 
         if not self._agent or not self._lc_thread_id:
             await self._mount_message(
-                AppMessage("Nothing to offload \u2014 start a conversation first")
+                AppMessage(t("offload.nothing_to_offload"))
             )
             return
 
         if self._agent_running:
             await self._mount_message(
-                AppMessage("Cannot offload while agent is running")
+                AppMessage(t("offload.cannot_while_running"))
             )
             return
 
@@ -4159,12 +4196,14 @@ class DeepAgentsApp(App):
         try:
             state_values = await self._get_thread_state_values(self._lc_thread_id)
         except Exception as exc:  # noqa: BLE001
-            await self._mount_message(ErrorMessage(f"Failed to read state: {exc}"))
+            await self._mount_message(
+                ErrorMessage(t("offload.failed_read_state").format(error=str(exc)))
+            )
             return
 
         if not state_values:
             await self._mount_message(
-                AppMessage("Nothing to offload \u2014 start a conversation first")
+                AppMessage(t("offload.nothing_to_offload"))
             )
             return
 
@@ -4176,7 +4215,7 @@ class DeepAgentsApp(App):
             await dispatch_hook("context.offload", {})
             # Keep old hook name for backward compatibility
             await dispatch_hook("context.compact", {})
-            await self._set_spinner("Offloading")
+            await self._set_spinner(t("status.offloading"))
 
             from langchain_core.messages.utils import convert_to_messages
 
@@ -4275,7 +4314,9 @@ class DeepAgentsApp(App):
             await self._mount_message(ErrorMessage(str(exc)))
         except Exception as exc:  # surface offload errors to user
             logger.exception("Offload failed")
-            await self._mount_message(ErrorMessage(f"Offload failed: {exc}"))
+            await self._mount_message(
+                ErrorMessage(t("offload.failed").format(error=str(exc)))
+            )
         finally:
             self._agent_running = False
             try:
@@ -4356,7 +4397,7 @@ class DeepAgentsApp(App):
             )
         else:
             await self._mount_message(
-                AppMessage("Agent not configured for this session.")
+                AppMessage(t("agent.not_configured_session"))
             )
 
     async def _run_agent_task(
@@ -4428,9 +4469,13 @@ class DeepAgentsApp(App):
             # Ensure any in-flight tool calls don't remain stuck in "Running..."
             # when streaming aborts before tool results arrive.
             if self._ui_adapter:
-                self._ui_adapter.finalize_pending_tools_with_error(f"Agent error: {e}")
+                self._ui_adapter.finalize_pending_tools_with_error(
+                    t("agent.error").format(error=str(e))
+                )
             try:
-                await self._mount_message(ErrorMessage(f"Agent error: {e}"))
+                await self._mount_message(
+                    ErrorMessage(t("agent.error").format(error=str(e)))
+                )
             except Exception:
                 logger.debug(
                     "Could not mount error message (app closing?)", exc_info=True
@@ -4470,7 +4515,9 @@ class DeepAgentsApp(App):
         except Exception:
             logger.exception("Failed to process queued message")
             await self._mount_message(
-                ErrorMessage(f"Failed to process queued message: {msg.text[:60]}")
+                ErrorMessage(
+                    t("queue.process_failed").format(message=msg.text[:60])
+                )
             )
         finally:
             self._processing_pending = False
@@ -4987,7 +5034,9 @@ class DeepAgentsApp(App):
             if summary:
                 await self._mount_message(AppMessage(summary))
 
-            thread_msg_widget = AppMessage(f"Resumed thread: {history_thread_id}")
+            thread_msg_widget = AppMessage(
+                t("thread.resumed").format(thread_id=history_thread_id)
+            )
             await self._mount_message(thread_msg_widget)
             self._schedule_thread_message_link(
                 thread_msg_widget,
@@ -5008,7 +5057,9 @@ class DeepAgentsApp(App):
                 "Failed to load thread history for %s",
                 history_thread_id,
             )
-            await self._mount_message(AppMessage(f"Could not load history: {e}"))
+            await self._mount_message(
+                AppMessage(t("thread.history_load_failed").format(error=str(e)))
+            )
 
     async def _mount_message(
         self, widget: Static | AssistantMessage | ToolCallMessage | SkillMessage
@@ -5323,7 +5374,6 @@ class DeepAgentsApp(App):
             worker: The worker to cancel.
         """
         self._discard_queue()
-        self._pending_plan_handoff_prompt = None
         # Immediately clear running flags to prevent race condition.
         # worker.cancel() is async and only sets a cancellation flag,
         # so _agent_running may still be True when the user sends a new
@@ -6028,23 +6078,25 @@ class DeepAgentsApp(App):
         """
         if not self._agent:
             await self._mount_message(
-                AppMessage("Cannot switch threads: no active agent")
+                AppMessage(t("thread.switch_no_active_agent"))
             )
             return
 
         if not self._session_state:
             await self._mount_message(
-                AppMessage("Cannot switch threads: no active session")
+                AppMessage(t("thread.switch_no_active_session"))
             )
             return
 
         # Skip if already on this thread
         if self._session_state.thread_id == thread_id:
-            await self._mount_message(AppMessage(f"Already on thread: {thread_id}"))
+            await self._mount_message(
+                AppMessage(t("thread.already_on").format(thread_id=thread_id))
+            )
             return
 
         if self._thread_switching:
-            await self._mount_message(AppMessage("Thread switch already in progress."))
+            await self._mount_message(AppMessage(t("app.thread_switch_in_progress")))
             return
 
         # Save previous state for rollback on failure
@@ -6161,7 +6213,7 @@ class DeepAgentsApp(App):
         logger.info("Switching model to %s", model_spec)
 
         if self._model_switching:
-            await self._mount_message(AppMessage("Model switch already in progress."))
+            await self._mount_message(AppMessage(t("model.switch_in_progress")))
             return
 
         self._model_switching = True
@@ -6175,7 +6227,7 @@ class DeepAgentsApp(App):
 
             if not self._remote_agent():
                 await self._mount_message(
-                    ErrorMessage("Model switching requires a server-backed session.")
+                    ErrorMessage(t("model.switch_requires_server"))
                 )
                 return
 
@@ -6200,7 +6252,7 @@ class DeepAgentsApp(App):
                     )
                 )
                 await self._mount_message(
-                    ErrorMessage(f"Missing credentials: {detail}")
+                    ErrorMessage(t("model.missing_credentials").format(detail=detail))
                 )
                 return
             if has_creds is None and provider:
@@ -6214,7 +6266,9 @@ class DeepAgentsApp(App):
                 not provider or provider == current_model_provider
             ):
                 current = f"{current_model_provider}:{current_model_name}"
-                await self._mount_message(AppMessage(f"Already using {current}"))
+                await self._mount_message(
+                    AppMessage(t("model.already_using").format(model=current))
+                )
                 return
 
             # Build the provider:model spec for the configurable middleware.
@@ -6232,7 +6286,7 @@ class DeepAgentsApp(App):
             except Exception as exc:
                 logger.exception("Failed to resolve model metadata for %s", display)
                 await self._mount_message(
-                    ErrorMessage(f"Failed to switch model: {exc}")
+                    ErrorMessage(t("model.switch_failed").format(error=str(exc)))
                 )
                 return
 
@@ -6249,12 +6303,13 @@ class DeepAgentsApp(App):
             if not await asyncio.to_thread(save_recent_model, display):
                 await self._mount_message(
                     ErrorMessage(
-                        "Model switched for this session, but could not save "
-                        "preference. Check permissions for ~/.invincat/"
+                        t("model.preference_save_failed")
                     )
                 )
             else:
-                await self._mount_message(AppMessage(f"Switched to {display}"))
+                await self._mount_message(
+                    AppMessage(t("model.switched_to").format(model=display))
+                )
             logger.info("Model switched to %s (via configurable middleware)", display)
 
             # Anchor to bottom so the confirmation message is visible
@@ -6284,7 +6339,9 @@ class DeepAgentsApp(App):
                 model_spec = f"{provider}:{model_spec}"
 
         if await asyncio.to_thread(save_default_model, model_spec):
-            await self._mount_message(AppMessage(f"Default model set to {model_spec}"))
+            await self._mount_message(
+                AppMessage(t("model.default_set_to").format(spec=model_spec))
+            )
         else:
             await self._mount_message(
                 ErrorMessage(

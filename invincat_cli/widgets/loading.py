@@ -84,14 +84,14 @@ class LoadingWidget(Static):
     }
     """
 
-    def __init__(self, status: str = "Thinking") -> None:
+    def __init__(self, status: str | None = None) -> None:
         """Initialize loading widget.
 
         Args:
             status: Initial status text to display
         """
         super().__init__()
-        self._status = status
+        self._status = status if status else t("status.thinking")
         self._spinner = Spinner()
         self._start_time: float | None = None
         self._spinner_widget: Static | None = None
@@ -117,7 +117,10 @@ class LoadingWidget(Static):
             )
             yield self._status_widget
 
-            self._hint_widget = Static("(0s, esc to interrupt)", classes="loading-hint")
+            self._hint_widget = Static(
+                t("loading.hint").format(duration="0s"),
+                classes="loading-hint",
+            )
             yield self._hint_widget
 
     def on_mount(self) -> None:
@@ -136,7 +139,9 @@ class LoadingWidget(Static):
 
         if self._hint_widget and self._start_time is not None:
             elapsed = int(time() - self._start_time)
-            self._hint_widget.update(f"({format_duration(elapsed)}, {t('status.esc_to_interrupt')})")
+            self._hint_widget.update(
+                t("loading.hint").format(duration=format_duration(elapsed))
+            )
 
     def set_status(self, status: str) -> None:
         """Update the status text.
@@ -162,7 +167,9 @@ class LoadingWidget(Static):
             self._status_widget.update(f" {self._status}... ")
         if self._hint_widget:
             self._hint_widget.update(
-                f"(paused at {format_duration(self._paused_elapsed)})"
+                t("loading.paused_at").format(
+                    duration=format_duration(self._paused_elapsed)
+                )
             )
         if self._spinner_widget:
             self._spinner_widget.update(Content.styled(get_glyphs().pause, "dim"))

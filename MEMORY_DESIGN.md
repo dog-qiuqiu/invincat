@@ -39,7 +39,11 @@
       "archived_at": null,
       "source_thread_id": "__default_thread__",
       "source_anchor": "human|18|...|False",
-      "confidence": "low|medium|high"
+      "confidence": "low|medium|high",
+      "tier": "hot|warm|cold",
+      "score": 0,
+      "score_reason": "",
+      "last_scored_at": "2026-04-22T10:00:00Z"
     }
   ]
 }
@@ -65,7 +69,13 @@ memory extractor 只返回结构化操作：
 }
 ```
 
-支持操作：`create`、`update`、`archive`、`noop`。
+支持操作：`create`、`update`、`rescore`、`retier`、`archive`、`noop`。
+
+评分/分层规则：
+- `score >= 70` -> `hot`
+- `30 <= score < 70` -> `warm`
+- `score < 30` -> `cold`
+- 旧 store 缺失字段时自动回填：`tier=warm`、`score=50`、`score_reason=""`、`last_scored_at=updated_at|created_at`
 
 ## 5. 生命周期与数据流
 
@@ -112,6 +122,7 @@ flowchart TD
 - 同一轮对同一 id 冲突操作拒绝
 - 过高 archive 比例拦截
 - 防“全量清空活跃记忆”保护
+- `rescore/retier` 仅允许命中本轮局部候选集（每 scope 上限 12）
 - 写入路径白名单
 - 原子写盘（tmp + `os.replace`）
 - 损坏 store 处理：
@@ -123,7 +134,8 @@ flowchart TD
 
 `RefreshableMemoryMiddleware` 会：
 - 读取 `memory_*.json`
-- 只渲染 `active` 条目并按 section 分组
+- 只渲染 `active` 且非 `cold` 条目
+- 注入优先级：先 `hot`（每 scope 最多 8），再 `warm`（每 scope 最多 6）
 - 注入 `<agent_memory>` block 到系统提示
 - 限制注入体积（scope 上限 + 总量上限）
 
@@ -134,7 +146,7 @@ flowchart TD
 - memory agent 内部模型输出不会渲染到对话正文
 - `/memory` 可打开全屏记忆管理界面：
   - user/project 分页查看（`1`/`2`，`Tab` 切换）
-  - 条目按字段展示并强调 `status/id/section/content`
+  - 条目按字段展示并强调 `status/tier/score/id/section/content/score_reason`
   - 支持 `r` 刷新、`a` 显示/隐藏 archived、`Esc` 关闭
 
 ## 10. 当前边界

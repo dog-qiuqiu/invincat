@@ -37,8 +37,18 @@ logger = logging.getLogger(__name__)
 MAX_OPERATIONS_PER_RUN = 8
 MAX_ITEM_CONTENT_CHARS = 500
 MAX_SECTION_NAME_CHARS = 80
+MAX_SCORE_REASON_CHARS = 160
 _MAX_OUTPUT_TOKENS = 2000
 _MAX_CONVERSATION_CHARS = 1500
+
+DEFAULT_TIER = "warm"
+DEFAULT_SCORE = 50
+HOT_THRESHOLD = 70
+COLD_THRESHOLD = 30
+MAX_RESCORING_CANDIDATES_PER_SCOPE = 12
+MAX_HOT_ITEMS_PER_SCOPE = 8
+MAX_WARM_ITEMS_PER_SCOPE = 6
+MAX_SNAPSHOT_ITEMS_PER_SCOPE = 80
 
 _MEMORY_SIGNAL_RE = re.compile(
     r"\b("
@@ -67,7 +77,10 @@ _ITEM_ID_PREFIX: dict[str, str] = {"user": "mem_u_", "project": "mem_p_"}
 _ALLOWED_SCOPE: frozenset[str] = frozenset({"user", "project"})
 _ALLOWED_STATUS: frozenset[str] = frozenset({"active", "archived"})
 _ALLOWED_CONFIDENCE: frozenset[str] = frozenset({"low", "medium", "high"})
-_ALLOWED_OPS: frozenset[str] = frozenset({"create", "update", "archive", "noop"})
+_ALLOWED_TIER: frozenset[str] = frozenset({"hot", "warm", "cold"})
+_ALLOWED_OPS: frozenset[str] = frozenset(
+    {"create", "update", "rescore", "retier", "archive", "noop"}
+)
 
 _SYSTEM_PROMPT = """\
 You are a memory curator for an AI assistant.
@@ -79,8 +92,10 @@ You receive:
 Return STRICT JSON only:
 {
   "operations": [
-    {"op": "create", "scope": "user|project", "section": "...", "content": "...", "confidence": "low|medium|high"},
-    {"op": "update", "scope": "user|project", "id": "mem_u_000001", "content": "...", "confidence": "low|medium|high"},
+    {"op": "create", "scope": "user|project", "section": "...", "content": "...", "confidence": "low|medium|high", "tier": "hot|warm|cold", "score": 0-100, "score_reason": "..."},
+    {"op": "update", "scope": "user|project", "id": "mem_u_000001", "content": "...", "confidence": "low|medium|high", "tier": "hot|warm|cold", "score": 0-100, "score_reason": "..."},
+    {"op": "rescore", "scope": "user|project", "id": "mem_u_000001", "score": 0-100, "score_reason": "..."},
+    {"op": "retier", "scope": "user|project", "id": "mem_u_000001", "tier": "hot|warm|cold", "score_reason": "..."},
     {"op": "archive", "scope": "user|project", "id": "mem_p_000031", "reason": "..."},
     {"op": "noop"}
   ]
@@ -89,9 +104,12 @@ Return STRICT JSON only:
 Rules:
 - Output only JSON, no prose, no markdown fences.
 - Prefer update/archive over duplicate create when an existing item already matches.
+- For rescore/retier, only target IDs listed under rescore_candidates in memory_snapshot.
+- Keep rescoring local and sparse; do not touch unrelated IDs.
 - Do NOT output full markdown memory files.
 - Do NOT output file paths.
 - Do NOT invent IDs for create.
+- Score bands: hot >= 70, warm 30..69, cold < 30.
 - Keep memory durable, specific, and actionable.
 - Skip transient one-off details.
 """
@@ -199,6 +217,48 @@ def _normalize_confidence(value: Any, default: str = "medium") -> str:
     return default
 
 
+def _normalize_tier(value: Any, *, default: str = DEFAULT_TIER) -> str:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _ALLOWED_TIER:
+            return normalized
+    return default
+
+
+def _normalize_score(value: Any, *, default: int = DEFAULT_SCORE) -> int:
+    try:
+        score = int(value)
+    except (TypeError, ValueError):
+        score = int(default)
+    return max(0, min(100, score))
+
+
+def _derive_tier_from_score(score: int) -> str:
+    if score >= HOT_THRESHOLD:
+        return "hot"
+    if score < COLD_THRESHOLD:
+        return "cold"
+    return "warm"
+
+
+def _normalize_score_reason(value: Any) -> str:
+    return _normalize_text(value, max_chars=MAX_SCORE_REASON_CHARS)
+
+
+def _align_score_to_tier(score: int, tier: str) -> int:
+    """Coerce score into the numeric band of the declared tier."""
+    normalized_tier = _normalize_tier(tier)
+    normalized_score = _normalize_score(score)
+    if normalized_tier == "hot":
+        return max(HOT_THRESHOLD, normalized_score)
+    if normalized_tier == "cold":
+        return min(COLD_THRESHOLD - 1, normalized_score)
+    # warm band: [30, 69]
+    if normalized_score < COLD_THRESHOLD or normalized_score >= HOT_THRESHOLD:
+        return DEFAULT_SCORE
+    return normalized_score
+
+
 def _normalize_text(value: Any, *, max_chars: int) -> str:
     if not isinstance(value, str):
         return ""
@@ -207,6 +267,79 @@ def _normalize_text(value: Any, *, max_chars: int) -> str:
 
 def _normalize_hash(section: str, content: str) -> str:
     return f"{section.strip().casefold()}::{content.strip().casefold()}"
+
+
+def _extract_terms(text: str) -> set[str]:
+    if not text:
+        return set()
+    lowered = text.casefold()
+    tokens = set(re.findall(r"[a-z0-9_]{2,}", lowered))
+    tokens.update(re.findall(r"[\u4e00-\u9fff]{2,}", text))
+    return tokens
+
+
+def _item_relevance_score(item: dict[str, Any], terms: set[str]) -> int:
+    if not terms:
+        return 0
+    corpus = " ".join(
+        [
+            str(item.get("section", "")).casefold(),
+            str(item.get("content", "")).casefold(),
+            str(item.get("score_reason", "")).casefold(),
+        ]
+    )
+    return sum(1 for term in terms if term and term in corpus)
+
+
+def _select_rescoring_candidates(
+    store: dict[str, Any] | None,
+    *,
+    conversation: str,
+    max_items: int = MAX_RESCORING_CANDIDATES_PER_SCOPE,
+) -> list[dict[str, Any]]:
+    if store is None:
+        return []
+    items = [
+        item
+        for item in store.get("items", [])
+        if isinstance(item, dict) and item.get("status") == "active"
+    ]
+    if not items:
+        return []
+
+    terms = _extract_terms(conversation)
+    ranked = sorted(
+        items,
+        key=lambda item: (
+            1
+            if _normalize_tier(
+                item.get("tier"),
+                default=_derive_tier_from_score(_normalize_score(item.get("score"))),
+            )
+            == "hot"
+            else 0,
+            _item_relevance_score(item, terms),
+            str(item.get("updated_at", "")),
+            str(item.get("id", "")).casefold(),
+        ),
+        reverse=True,
+    )
+    selected = ranked[: max(0, max_items)]
+    return [
+        {
+            "id": item.get("id"),
+            "section": item.get("section"),
+            "content": item.get("content"),
+            "tier": _normalize_tier(
+                item.get("tier"),
+                default=_derive_tier_from_score(_normalize_score(item.get("score"))),
+            ),
+            "score": _normalize_score(item.get("score")),
+            "updated_at": item.get("updated_at"),
+        }
+        for item in selected
+        if isinstance(item.get("id"), str)
+    ]
 
 
 def _read_memory_store(path: Path, scope: str) -> dict[str, Any]:
@@ -270,6 +403,14 @@ def _read_memory_store(path: Path, scope: str) -> dict[str, Any]:
         )
         source_anchor = raw.get("source_anchor") if isinstance(raw.get("source_anchor"), str) else ""
         confidence = _normalize_confidence(raw.get("confidence"), default="medium")
+        score = _normalize_score(raw.get("score"), default=DEFAULT_SCORE)
+        tier = _normalize_tier(raw.get("tier"), default=_derive_tier_from_score(score))
+        score_reason = _normalize_score_reason(raw.get("score_reason"))
+        last_scored_at = (
+            raw.get("last_scored_at")
+            if isinstance(raw.get("last_scored_at"), str)
+            else (updated_at if isinstance(updated_at, str) and updated_at else created_at)
+        )
 
         store["items"].append(
             {
@@ -284,6 +425,10 @@ def _read_memory_store(path: Path, scope: str) -> dict[str, Any]:
                 "source_thread_id": source_thread_id,
                 "source_anchor": source_anchor,
                 "confidence": confidence,
+                "tier": tier,
+                "score": score,
+                "score_reason": score_reason,
+                "last_scored_at": last_scored_at,
                 "norm_hash": _normalize_hash(section, content),
             }
         )
@@ -317,37 +462,62 @@ def _next_memory_id(store: dict[str, Any], scope: str) -> str:
 def _build_memory_snapshot(
     user_store: dict[str, Any] | None,
     project_store: dict[str, Any] | None,
+    *,
+    conversation: str,
 ) -> dict[str, Any]:
-    def _items_for_snapshot(store: dict[str, Any] | None) -> list[dict[str, Any]]:
+    def _scope_snapshot(store: dict[str, Any] | None) -> dict[str, Any]:
         if store is None:
-            return []
+            return {"items": [], "rescore_candidates": []}
         items: list[dict[str, Any]] = []
         for item in store.get("items", []):
             if not isinstance(item, dict):
                 continue
+            score = _normalize_score(item.get("score"), default=DEFAULT_SCORE)
+            tier = _normalize_tier(
+                item.get("tier"),
+                default=_derive_tier_from_score(score),
+            )
             items.append(
                 {
                     "id": item.get("id"),
                     "section": item.get("section"),
                     "content": item.get("content"),
                     "status": item.get("status"),
+                    "tier": tier,
+                    "score": score,
+                    "score_reason": _normalize_score_reason(item.get("score_reason")),
+                    "last_scored_at": item.get("last_scored_at"),
                 }
             )
         items.sort(
             key=lambda x: (
+                str(x.get("status", "")) != "active",
+                {"hot": 0, "warm": 1, "cold": 2}.get(str(x.get("tier", "warm")), 1),
+                -_normalize_score(x.get("score")),
                 str(x.get("section", "")).casefold(),
                 str(x.get("id", "")),
             )
         )
-        return items
+        if len(items) > MAX_SNAPSHOT_ITEMS_PER_SCOPE:
+            items = items[:MAX_SNAPSHOT_ITEMS_PER_SCOPE]
+        candidates = _select_rescoring_candidates(
+            store,
+            conversation=conversation,
+            max_items=MAX_RESCORING_CANDIDATES_PER_SCOPE,
+        )
+        return {"items": items, "rescore_candidates": candidates}
 
     return {
-        "user": _items_for_snapshot(user_store),
-        "project": _items_for_snapshot(project_store),
+        "user": _scope_snapshot(user_store),
+        "project": _scope_snapshot(project_store),
     }
 
 
-def _normalize_and_validate_operations(payload: Any) -> list[dict[str, Any]]:
+def _normalize_and_validate_operations(
+    payload: Any,
+    *,
+    rescoring_candidate_ids_by_scope: dict[str, set[str]] | None = None,
+) -> list[dict[str, Any]]:
     if not isinstance(payload, dict):
         return []
     raw_ops = payload.get("operations", [])
@@ -382,6 +552,14 @@ def _normalize_and_validate_operations(payload: Any) -> list[dict[str, Any]]:
             if not section or not content:
                 continue
             confidence = _normalize_confidence(raw.get("confidence"), default="high")
+            if raw.get("tier") is not None and (
+                not isinstance(raw.get("tier"), str)
+                or str(raw.get("tier")).strip().lower() not in _ALLOWED_TIER
+            ):
+                continue
+            score = _normalize_score(raw.get("score"), default=DEFAULT_SCORE)
+            tier = _normalize_tier(raw.get("tier"), default=_derive_tier_from_score(score))
+            score_reason = _normalize_score_reason(raw.get("score_reason"))
             normalized.append(
                 {
                     "op": "create",
@@ -389,6 +567,9 @@ def _normalize_and_validate_operations(payload: Any) -> list[dict[str, Any]]:
                     "section": section,
                     "content": content,
                     "confidence": confidence,
+                    "tier": tier,
+                    "score": score,
+                    "score_reason": score_reason,
                 }
             )
             continue
@@ -398,16 +579,88 @@ def _normalize_and_validate_operations(payload: Any) -> list[dict[str, Any]]:
             if not isinstance(item_id, str) or not item_id.strip():
                 continue
             content = _normalize_text(raw.get("content"), max_chars=MAX_ITEM_CONTENT_CHARS)
-            if not content:
+            has_content = bool(content)
+            has_confidence = raw.get("confidence") is not None
+            has_tier = raw.get("tier") is not None
+            has_score = raw.get("score") is not None
+            has_score_reason = raw.get("score_reason") is not None
+            if not any((has_content, has_confidence, has_tier, has_score, has_score_reason)):
                 continue
+            if has_tier and (
+                not isinstance(raw.get("tier"), str)
+                or str(raw.get("tier")).strip().lower() not in _ALLOWED_TIER
+            ):
+                continue
+            score = _normalize_score(raw.get("score"), default=DEFAULT_SCORE)
+            tier = _normalize_tier(raw.get("tier"), default=_derive_tier_from_score(score))
+            score_reason = _normalize_score_reason(raw.get("score_reason"))
             confidence = _normalize_confidence(raw.get("confidence"), default="high")
+            op_payload: dict[str, Any] = {
+                "op": "update",
+                "scope": scope,
+                "id": item_id.strip(),
+            }
+            if has_content:
+                op_payload["content"] = content
+            if has_confidence:
+                op_payload["confidence"] = confidence
+            if has_tier:
+                op_payload["tier"] = tier
+            if has_score:
+                op_payload["score"] = score
+            if has_score_reason:
+                op_payload["score_reason"] = score_reason
+            normalized.append(op_payload)
+            continue
+
+        if op == "rescore":
+            item_id = raw.get("id")
+            if not isinstance(item_id, str) or not item_id.strip():
+                continue
+            if raw.get("score") is None:
+                continue
+            scope_candidates = (
+                (rescoring_candidate_ids_by_scope or {}).get(scope)
+                if rescoring_candidate_ids_by_scope is not None
+                else None
+            )
+            if scope_candidates is not None and item_id.strip() not in scope_candidates:
+                continue
+            score = _normalize_score(raw.get("score"), default=DEFAULT_SCORE)
             normalized.append(
                 {
-                    "op": "update",
+                    "op": "rescore",
                     "scope": scope,
                     "id": item_id.strip(),
-                    "content": content,
-                    "confidence": confidence,
+                    "score": score,
+                    "score_reason": _normalize_score_reason(raw.get("score_reason")),
+                }
+            )
+            continue
+
+        if op == "retier":
+            item_id = raw.get("id")
+            if not isinstance(item_id, str) or not item_id.strip():
+                continue
+            if raw.get("tier") is None:
+                continue
+            tier_raw = raw.get("tier")
+            if not isinstance(tier_raw, str) or tier_raw.strip().lower() not in _ALLOWED_TIER:
+                continue
+            scope_candidates = (
+                (rescoring_candidate_ids_by_scope or {}).get(scope)
+                if rescoring_candidate_ids_by_scope is not None
+                else None
+            )
+            if scope_candidates is not None and item_id.strip() not in scope_candidates:
+                continue
+            normalized.append(
+                {
+                    "op": "retier",
+                    "scope": scope,
+                    "id": item_id.strip(),
+                    "tier": _normalize_tier(tier_raw),
+                    "score_reason": _normalize_score_reason(raw.get("score_reason")),
                 }
             )
             continue
@@ -527,6 +780,9 @@ def _apply_operations(
             if duplicate:
                 continue
             item_id = _next_memory_id(store, scope)
+            score = _normalize_score(op.get("score"), default=DEFAULT_SCORE)
+            tier = _normalize_tier(op.get("tier"), default=_derive_tier_from_score(score))
+            score = _align_score_to_tier(score, tier)
             store["items"].append(
                 {
                     "id": item_id,
@@ -540,6 +796,10 @@ def _apply_operations(
                     "source_thread_id": thread_id,
                     "source_anchor": source_anchor,
                     "confidence": _normalize_confidence(op.get("confidence"), default="high"),
+                    "tier": tier,
+                    "score": score,
+                    "score_reason": _normalize_score_reason(op.get("score_reason")),
+                    "last_scored_at": now_iso,
                     "norm_hash": _normalize_hash(section, content),
                 }
             )
@@ -553,18 +813,62 @@ def _apply_operations(
         if item is None:
             continue
         if op_name == "update":
-            content = str(op["content"]).strip()
-            if not content:
-                continue
-            item["content"] = content
+            if "content" in op:
+                content = str(op.get("content", "")).strip()
+                if not content:
+                    continue
+                item["content"] = content
+                item["norm_hash"] = _normalize_hash(str(item.get("section", "")), content)
             item["updated_at"] = now_iso
             item["source_thread_id"] = thread_id
             item["source_anchor"] = source_anchor
-            item["confidence"] = _normalize_confidence(op.get("confidence"), default="high")
-            item["norm_hash"] = _normalize_hash(str(item.get("section", "")), content)
+            if "confidence" in op:
+                item["confidence"] = _normalize_confidence(
+                    op.get("confidence"),
+                    default=str(item.get("confidence", "medium")),
+                )
+            has_score = "score" in op
+            has_tier = "tier" in op
+            if has_score:
+                score = _normalize_score(op.get("score"), default=_normalize_score(item.get("score")))
+                item["score"] = score
+                item["tier"] = _derive_tier_from_score(score)
+            if has_tier:
+                default_tier = _normalize_tier(
+                    item.get("tier"),
+                    default=_derive_tier_from_score(_normalize_score(item.get("score"))),
+                )
+                item["tier"] = _normalize_tier(op.get("tier"), default=default_tier)
+                item["score"] = _align_score_to_tier(
+                    _normalize_score(item.get("score")),
+                    str(item["tier"]),
+                )
+            if "score_reason" in op:
+                item["score_reason"] = _normalize_score_reason(op.get("score_reason"))
+            item["last_scored_at"] = now_iso
             if item.get("status") == "archived":
                 item["status"] = "active"
                 item["archived_at"] = None
+            changed_scopes.add(scope)
+        elif op_name == "rescore":
+            score = _normalize_score(op.get("score"), default=_normalize_score(item.get("score")))
+            item["score"] = score
+            item["tier"] = _derive_tier_from_score(score)
+            item["score_reason"] = _normalize_score_reason(op.get("score_reason"))
+            item["last_scored_at"] = now_iso
+            changed_scopes.add(scope)
+        elif op_name == "retier":
+            default_tier = _normalize_tier(
+                item.get("tier"),
+                default=_derive_tier_from_score(_normalize_score(item.get("score"))),
+            )
+            item["tier"] = _normalize_tier(op.get("tier"), default=default_tier)
+            item["score"] = _align_score_to_tier(
+                _normalize_score(item.get("score")),
+                str(item["tier"]),
+            )
+            item["score_reason"] = _normalize_score_reason(op.get("score_reason"))
+            item["last_scored_at"] = now_iso
             changed_scopes.add(scope)
         elif op_name == "archive":
             if item.get("status") == "archived":
@@ -878,7 +1182,11 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 return []
             user_before = deepcopy(user_store)
             project_before = deepcopy(project_store)
-            snapshot = _build_memory_snapshot(user_store, project_store)
+            snapshot = _build_memory_snapshot(
+                user_store,
+                project_store,
+                conversation=conversation,
+            )
 
             response = await model.bind(max_tokens=_MAX_OUTPUT_TOKENS).ainvoke(
                 [
@@ -903,7 +1211,22 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 logger.debug("Memory agent: no JSON found in response")
                 return []
             data, _ = json.JSONDecoder().raw_decode(raw, start)
-            operations = _normalize_and_validate_operations(data)
+            rescoring_candidate_ids_by_scope = {
+                scope: {
+                    str(candidate.get("id"))
+                    for candidate in (
+                        ((snapshot.get(scope) or {}).get("rescore_candidates") or [])
+                        if isinstance(snapshot.get(scope), dict)
+                        else []
+                    )
+                    if isinstance(candidate, dict) and isinstance(candidate.get("id"), str)
+                }
+                for scope in ("user", "project")
+            }
+            operations = _normalize_and_validate_operations(
+                data,
+                rescoring_candidate_ids_by_scope=rescoring_candidate_ids_by_scope,
+            )
             if not operations:
                 return []
 

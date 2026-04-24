@@ -399,7 +399,7 @@ def test_finalize_planner_approval_queues_plan_handoff_to_main_agent() -> None:
     asyncio.run(_run())
 
 
-def test_finalize_planner_approval_includes_planner_context_in_handoff_prompt() -> None:
+def test_finalize_planner_approval_handoff_uses_user_context_only() -> None:
     app = DeepAgentsApp(agent=None, assistant_id="agent", backend=None)
     app._session_state = SimpleNamespace(plan_mode=True, thread_id="planner-thread")
     app._main_thread_before_plan = "main-thread"
@@ -439,7 +439,7 @@ def test_finalize_planner_approval_includes_planner_context_in_handoff_prompt() 
     assert "请立即执行以下已批准计划" in handoff_prompt
     assert "规划阶段关键上下文" in handoff_prompt
     assert "请按性能优先，不要引入新依赖" in handoff_prompt
-    assert "我会先做最小变更并补测试" in handoff_prompt
+    assert "我会先做最小变更并补测试" not in handoff_prompt
     assert all(not isinstance(w, UserMessage) for w in captured_mounted_widgets)
 
 
@@ -459,6 +459,23 @@ def test_maybe_drain_deferred_keeps_pending_handoff_when_execution_fails() -> No
             pass
 
     asyncio.run(_run())
+    assert app._pending_plan_handoff_prompt == "Execute approved plan"
+
+
+def test_cancel_worker_does_not_drop_pending_plan_handoff() -> None:
+    app = DeepAgentsApp(agent=None, assistant_id="agent", backend=None)
+    app._pending_plan_handoff_prompt = "Execute approved plan"
+
+    class _Worker:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+    worker = _Worker()
+    app._cancel_worker(worker)  # noqa: SLF001
+    assert worker.cancelled is True
     assert app._pending_plan_handoff_prompt == "Execute approved plan"
 
 
