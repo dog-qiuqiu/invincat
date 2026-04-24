@@ -64,12 +64,13 @@ The memory extractor model returns strict JSON operations:
     {"op": "create", "scope": "user", "section": "...", "content": "...", "confidence": "high"},
     {"op": "update", "scope": "project", "id": "mem_p_000042", "content": "...", "confidence": "high"},
     {"op": "archive", "scope": "project", "id": "mem_p_000031", "reason": "superseded"},
+    {"op": "delete", "scope": "project", "id": "mem_p_000032", "reason": "contradicted by current facts"},
     {"op": "noop"}
   ]
 }
 ```
 
-Supported ops: `create`, `update`, `rescore`, `retier`, `archive`, `noop`.
+Supported ops: `create`, `update`, `rescore`, `retier`, `archive`, `delete`, `noop`.
 
 Score/tier policy:
 - `score >= 70` -> `hot`
@@ -127,9 +128,12 @@ Signal-based early trigger:
 - Scope and op schema validation.
 - Duplicate create suppression.
 - Conflict guard: same id touched multiple times in one batch is rejected.
-- Archive-ratio guard: blocks over-aggressive archive batches.
-- Empty-wipe guard: prevents turning non-empty active memory into fully inactive set in one write.
+- Removal-ratio guard: blocks over-aggressive archive/delete batches.
+- Empty-wipe guard: prevents bulk clearing of active memory in one write.
 - `rescore/retier` are restricted to local candidates only (max 12 per scope).
+- `delete` removes memory that conflicts with current facts, has been superseded, or would mislead future turns.
+- On each completed turn, the full store is scanned first and active memories with a `score_reason` that clearly says the fact is invalid, outdated, superseded, or misleading are deterministically deleted; this cleanup does not depend on the truncated model snapshot, memory-agent model output, trivial-turn detection, or extraction throttles.
+- `rescore/retier` may only adjust priority metadata; if the fact changed or the old content would mislead, the agent must use `update` with corrected `content`, or `delete + create`.
 - Path whitelist: writes allowed only for configured memory store paths.
 - Atomic write: temp file + `os.replace`.
 - Corrupt-store handling:

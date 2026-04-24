@@ -64,12 +64,13 @@ memory extractor 只返回结构化操作：
     {"op": "create", "scope": "user", "section": "...", "content": "...", "confidence": "high"},
     {"op": "update", "scope": "project", "id": "mem_p_000042", "content": "...", "confidence": "high"},
     {"op": "archive", "scope": "project", "id": "mem_p_000031", "reason": "superseded"},
+    {"op": "delete", "scope": "project", "id": "mem_p_000032", "reason": "contradicted by current facts"},
     {"op": "noop"}
   ]
 }
 ```
 
-支持操作：`create`、`update`、`rescore`、`retier`、`archive`、`noop`。
+支持操作：`create`、`update`、`rescore`、`retier`、`archive`、`delete`、`noop`。
 
 评分/分层规则：
 - `score >= 70` -> `hot`
@@ -124,9 +125,12 @@ flowchart TD
 - scope/op schema 校验
 - 重复 create 自动去重
 - 同一轮对同一 id 冲突操作拒绝
-- 过高 archive 比例拦截
-- 防“全量清空活跃记忆”保护
+- 过高删除/归档比例拦截
+- 防批量“全量清空活跃记忆”保护
 - `rescore/retier` 仅允许命中本轮局部候选集（每 scope 上限 12）
+- `delete` 用于移除与当前事实不符、被替代或会误导的记忆
+- 每个已完成回合会先扫描完整 store，确定性删除 `score_reason` 明确表示事实不符、过期、被替代或会误导的 active 记忆；该清理不依赖截断后的模型 snapshot、memory agent 模型输出、trivial-turn 判断或抽取节流
+- `rescore/retier` 只允许调整优先级元数据；如果事实内容变化或旧内容会误导，必须使用带更正 `content` 的 `update`，或 `delete + create`
 - 写入路径白名单
 - 原子写盘（tmp + `os.replace`）
 - 损坏 store 处理：

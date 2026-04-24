@@ -93,7 +93,21 @@ _ALLOWED_STATUS: frozenset[str] = frozenset({"active", "archived"})
 _ALLOWED_CONFIDENCE: frozenset[str] = frozenset({"low", "medium", "high"})
 _ALLOWED_TIER: frozenset[str] = frozenset({"hot", "warm", "cold"})
 _ALLOWED_OPS: frozenset[str] = frozenset(
-    {"create", "update", "rescore", "retier", "archive", "noop"}
+    {"create", "update", "rescore", "retier", "archive", "delete", "noop"}
+)
+_INVALID_FACT_REASON_RE = re.compile(
+    r"\b("
+    r"no longer valid|no longer true|not valid|not true|contradict(?:ed|s)?|"
+    r"false|incorrect|wrong|superseded|replaced|obsolete|outdated|stale|"
+    r"invalid|misleading|inaccurate|no longer accurate|no longer applies|"
+    r"conflict(?:s|ed)? with|conflicts current facts|changed facts|latest facts"
+    r")\b|"
+    r"(事实不符|不符合事实|不符合当前事实|与事实不符|与当前事实不符|"
+    r"事实不一致|与事实不一致|与当前事实不一致|当前事实不一致|"
+    r"不再有效|不再适用|不再正确|不再准确|不准确|不成立|"
+    r"已过期|过时|被替代|已替代|矛盾|冲突|错误|不正确|会误导|失效|"
+    r"事实已变|事实变化|事实改变|当前事实已变|最新事实)",
+    re.IGNORECASE,
 )
 
 _SYSTEM_PROMPT = """\
@@ -162,6 +176,10 @@ Allowed op shapes (fields marked "optional" may be omitted):
     {"op": "archive", "scope": "...", "id": "mem_p_000031",
      "reason": "<why no longer valid>"}
 
+  delete:
+    {"op": "delete", "scope": "...", "id": "mem_p_000031",
+     "reason": "<why this memory conflicts with current facts>"}
+
   noop:
     {"op": "noop"}
 
@@ -195,13 +213,24 @@ OPERATION DISCIPLINE
 - At most one operation per item id per run.
 - When an existing item already matches, prefer update over create.
   Never produce a near-duplicate.
-- update vs archive:
+- update vs delete/archive:
     * update  — the fact is still true but phrasing/score/tier needs
-                refinement, or new evidence strengthens it
+                refinement, or new evidence strengthens it. If the
+                new evidence changes what the memory says, include the
+                corrected content in the update.
+    * delete  — the fact is contradicted by current facts, superseded,
+                or would mislead future turns. Prefer delete over
+                lowering score for factually wrong memory.
     * archive — the fact is no longer valid, has been contradicted,
-                or its context no longer applies
+                or its context no longer applies, but should be kept
+                for audit/history instead of being physically removed.
 - rescore/retier require clear new evidence this turn and must target
   only IDs listed in rescore_candidates.
+- rescore/retier only change priority metadata. They do not change
+  content. Do not use them to record a changed fact, contradiction,
+  migration, replacement, or correction. If the existing content would
+  remain false or misleading after the operation, use update with
+  corrected content, or delete the old item and create the replacement.
 
 ====================================================================
 FIELD GUIDANCE
@@ -238,7 +267,7 @@ score (0-100 integer) — durability and cross-turn usefulness.
     75 — strong repeated preference; clearly load-bearing
     55 — observed habit; useful but not always relevant
     35 — niche convention; applies in specific contexts only
-    20 — weak or fading signal; candidate for future archive
+    20 — weak or fading signal; candidate for future delete/archive
   Keep score consistent with tier (the system coerces mismatches
   into the declared tier's band, so inconsistency wastes evidence).
 
@@ -267,11 +296,11 @@ Example B — explicit standing rule:
   ]}
 
 Example C — existing item is contradicted:
-  snapshot has mem_p_000007 "Uses Poetry for dependency management".
-  conversation: user says "we migrated off Poetry, everything is on
+snapshot has mem_p_000007 "Uses Poetry for dependency management".
+conversation: user says "we migrated off Poetry, everything is on
                 uv now."
-  output: {"operations": [
-    {"op": "archive", "scope": "project", "id": "mem_p_000007",
+output: {"operations": [
+    {"op": "delete", "scope": "project", "id": "mem_p_000007",
      "reason": "User stated the project migrated from Poetry to uv."},
     {"op": "create", "scope": "project", "section": "Tooling",
      "content": "Uses `uv` for dependency management.",
@@ -445,6 +474,10 @@ def _derive_tier_from_score(score: int) -> str:
 
 def _normalize_score_reason(value: Any) -> str:
     return _normalize_text(value, max_chars=MAX_SCORE_REASON_CHARS)
+
+
+def _score_reason_implies_invalid_fact(reason: str) -> bool:
+    return bool(_INVALID_FACT_REASON_RE.search(reason or ""))
 
 
 def _align_score_to_tier(score: int, tier: str) -> int:
@@ -797,6 +830,23 @@ def _normalize_and_validate_operations(
             tier = _normalize_tier(raw.get("tier"), default=_derive_tier_from_score(score))
             score_reason = _normalize_score_reason(raw.get("score_reason"))
             confidence = _normalize_confidence(raw.get("confidence"), default="high")
+            if (
+                not has_content
+                and _score_reason_implies_invalid_fact(score_reason)
+                and (
+                    (has_score and score < COLD_THRESHOLD)
+                    or (has_tier and tier == "cold")
+                )
+            ):
+                normalized.append(
+                    {
+                        "op": "delete",
+                        "scope": scope,
+                        "id": item_id.strip(),
+                        "reason": score_reason or "Existing memory is no longer valid.",
+                    }
+                )
+                continue
             op_payload: dict[str, Any] = {
                 "op": "update",
                 "scope": scope,
@@ -829,13 +879,24 @@ def _normalize_and_validate_operations(
             if scope_candidates is not None and item_id.strip() not in scope_candidates:
                 continue
             score = _normalize_score(raw.get("score"), default=DEFAULT_SCORE)
+            score_reason = _normalize_score_reason(raw.get("score_reason"))
+            if score < COLD_THRESHOLD and _score_reason_implies_invalid_fact(score_reason):
+                normalized.append(
+                    {
+                        "op": "delete",
+                        "scope": scope,
+                        "id": item_id.strip(),
+                        "reason": score_reason or "Existing memory is no longer valid.",
+                    }
+                )
+                continue
             normalized.append(
                 {
                     "op": "rescore",
                     "scope": scope,
                     "id": item_id.strip(),
                     "score": score,
-                    "score_reason": _normalize_score_reason(raw.get("score_reason")),
+                    "score_reason": score_reason,
                 }
             )
             continue
@@ -856,25 +917,37 @@ def _normalize_and_validate_operations(
             )
             if scope_candidates is not None and item_id.strip() not in scope_candidates:
                 continue
+            score_reason = _normalize_score_reason(raw.get("score_reason"))
+            tier = _normalize_tier(tier_raw)
+            if tier == "cold" and _score_reason_implies_invalid_fact(score_reason):
+                normalized.append(
+                    {
+                        "op": "delete",
+                        "scope": scope,
+                        "id": item_id.strip(),
+                        "reason": score_reason or "Existing memory is no longer valid.",
+                    }
+                )
+                continue
             normalized.append(
                 {
                     "op": "retier",
                     "scope": scope,
                     "id": item_id.strip(),
-                    "tier": _normalize_tier(tier_raw),
-                    "score_reason": _normalize_score_reason(raw.get("score_reason")),
+                    "tier": tier,
+                    "score_reason": score_reason,
                 }
             )
             continue
 
-        if op == "archive":
+        if op in {"archive", "delete"}:
             item_id = raw.get("id")
             if not isinstance(item_id, str) or not item_id.strip():
                 continue
             reason = _normalize_text(raw.get("reason"), max_chars=120)
             normalized.append(
                 {
-                    "op": "archive",
+                    "op": op,
                     "scope": scope,
                     "id": item_id.strip(),
                     "reason": reason or None,
@@ -903,6 +976,62 @@ def _active_items(store: dict[str, Any] | None) -> list[dict[str, Any]]:
     ]
 
 
+def _build_invalid_fact_cleanup_operations(
+    user_store: dict[str, Any] | None,
+    project_store: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Build deterministic deletes for active memories already marked invalid.
+
+    This scans the full store, not the truncated model snapshot, so previously
+    mis-scored invalid facts do not linger just because the model returned noop.
+    """
+    operations: list[dict[str, Any]] = []
+    for scope, store in (("user", user_store), ("project", project_store)):
+        if store is None:
+            continue
+        for item in store.get("items", []):
+            if not isinstance(item, dict) or item.get("status") != "active":
+                continue
+            reason = _normalize_score_reason(item.get("score_reason"))
+            item_id = item.get("id")
+            if not isinstance(item_id, str) or not item_id.strip():
+                continue
+            if _score_reason_implies_invalid_fact(reason):
+                operations.append(
+                    {
+                        "op": "delete",
+                        "scope": scope,
+                        "id": item_id.strip(),
+                        "reason": reason or "Existing memory is no longer valid.",
+                        "_cleanup": True,
+                    }
+                )
+    return operations
+
+
+def _cleanup_deletes_all_active(
+    store: dict[str, Any] | None,
+    operations: list[dict[str, Any]],
+    scope: str,
+) -> bool:
+    active_ids = {
+        str(item.get("id"))
+        for item in _active_items(store)
+        if isinstance(item.get("id"), str)
+    }
+    if not active_ids:
+        return False
+    cleanup_delete_ids = {
+        str(op.get("id"))
+        for op in operations
+        if op.get("op") == "delete"
+        and op.get("scope") == scope
+        and op.get("_cleanup") is True
+        and isinstance(op.get("id"), str)
+    }
+    return active_ids.issubset(cleanup_delete_ids)
+
+
 def _apply_operations(
     user_store: dict[str, Any] | None,
     project_store: dict[str, Any] | None,
@@ -924,10 +1053,18 @@ def _apply_operations(
             id_touch_count[item_id] = id_touch_count.get(item_id, 0) + 1
     conflicted_ids = {item_id for item_id, count in id_touch_count.items() if count > 1}
 
-    # Archive ratio guard (per-scope).
-    archive_target_count: dict[str, int] = {"user": 0, "project": 0}
+    # Removal ratio guard (per-scope). Applies to archive and physical delete.
+    # Ops that explicitly cite a contradiction/invalid-fact reason are exempt
+    # (same as _cleanup ops) — blocking them causes the paired `create` to
+    # still execute, leaving both the contradicted and the replacement memory
+    # in the store simultaneously.
+    removal_target_count: dict[str, int] = {"user": 0, "project": 0}
     for op in operations:
-        if op.get("op") != "archive":
+        if op.get("op") not in {"archive", "delete"}:
+            continue
+        if op.get("_cleanup") is True:
+            continue
+        if _score_reason_implies_invalid_fact(str(op.get("reason") or "")):
             continue
         scope = op.get("scope")
         item_id = op.get("id")
@@ -938,17 +1075,17 @@ def _apply_operations(
         store = user_store if scope == "user" else project_store
         item = _find_item(store, item_id)
         if item is not None and item.get("status") == "active":
-            archive_target_count[scope] += 1
+            removal_target_count[scope] += 1
 
-    archive_blocked_scope: set[str] = set()
+    removal_blocked_scope: set[str] = set()
     for scope in ("user", "project"):
         store = user_store if scope == "user" else project_store
         active_total = len(_active_items(store))
         if active_total <= 0:
             continue
         allowed = max(1, math.floor(active_total * 0.2))
-        if archive_target_count[scope] > allowed:
-            archive_blocked_scope.add(scope)
+        if removal_target_count[scope] > allowed:
+            removal_blocked_scope.add(scope)
 
     def _get_or_create_store(scope: str) -> dict[str, Any]:
         nonlocal user_store, project_store
@@ -967,7 +1104,12 @@ def _apply_operations(
         scope = op.get("scope")
         if not isinstance(scope, str) or scope not in _ALLOWED_SCOPE:
             continue
-        if op_name == "archive" and scope in archive_blocked_scope:
+        if (
+            op_name in {"archive", "delete"}
+            and scope in removal_blocked_scope
+            and not op.get("_cleanup")
+            and not _score_reason_implies_invalid_fact(str(op.get("reason") or ""))
+        ):
             continue
 
         store = _get_or_create_store(scope)
@@ -1080,6 +1222,16 @@ def _apply_operations(
             item["archived_at"] = now_iso
             item["source_thread_id"] = thread_id
             item["source_anchor"] = source_anchor
+            changed_scopes.add(scope)
+        elif op_name == "delete":
+            items = store.get("items", [])
+            if not isinstance(items, list):
+                continue
+            store["items"] = [
+                existing
+                for existing in items
+                if not (isinstance(existing, dict) and existing.get("id") == item_id)
+            ]
             changed_scopes.add(scope)
 
     return user_store, project_store, sorted(changed_scopes)
@@ -1343,6 +1495,109 @@ class MemoryAgentMiddleware(AgentMiddleware):
             _write_memory_store(store_path, store)
         return store
 
+    async def _apply_and_write_memory_operations(
+        self,
+        user_store: dict[str, Any] | None,
+        project_store: dict[str, Any] | None,
+        user_before: dict[str, Any] | None,
+        project_before: dict[str, Any] | None,
+        operations: list[dict[str, Any]],
+        *,
+        thread_id: str,
+        source_anchor: str,
+        now_iso: str,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, list[str]]:
+        """Apply operations and write changed memory stores."""
+        if not operations:
+            return user_store, project_store, []
+
+        new_user, new_project, changed_scopes = _apply_operations(
+            user_store,
+            project_store,
+            operations,
+            thread_id=thread_id,
+            source_anchor=source_anchor,
+            now_iso=now_iso,
+        )
+        if not changed_scopes:
+            return new_user, new_project, []
+
+        written_store_paths: list[str] = []
+        for scope in changed_scopes:
+            store = new_user if scope == "user" else new_project
+            before_store = user_before if scope == "user" else project_before
+            if store is None:
+                continue
+
+            store_path_raw = self._memory_store_paths.get(scope)
+            if not store_path_raw:
+                continue
+            store_path = Path(store_path_raw).expanduser().resolve()
+            if not self._is_authorized_path(store_path):
+                logger.warning("Memory agent: rejected unauthorized write for %s scope", scope)
+                continue
+
+            before_active_items = _active_items(before_store)
+            if (
+                len(before_active_items) > 1
+                and not _active_items(store)
+                and not _cleanup_deletes_all_active(before_store, operations, scope)
+            ):
+                logger.warning(
+                    "Memory agent: refusing bulk full-active wipe for %s store",
+                    scope,
+                )
+                continue
+
+            await asyncio.to_thread(_write_memory_store, store_path, store)
+            written_store_paths.append(str(store_path))
+
+        return new_user, new_project, written_store_paths
+
+    async def _cleanup_invalid_fact_stores(
+        self,
+        *,
+        thread_id: str,
+        source_anchor: str,
+    ) -> list[str] | None:
+        """Delete active memories already marked as factually invalid."""
+        user_store = await asyncio.to_thread(
+            self._load_or_recover_store, "user", thread_id, source_anchor
+        )
+        project_store = await asyncio.to_thread(
+            self._load_or_recover_store, "project", thread_id, source_anchor
+        )
+        unreadable_scopes: list[str] = []
+        if isinstance(user_store, dict) and user_store.get("__read_error__"):
+            unreadable_scopes.append("user")
+        if isinstance(project_store, dict) and project_store.get("__read_error__"):
+            unreadable_scopes.append("project")
+        if unreadable_scopes:
+            logger.warning(
+                "Memory agent: skip cleanup because store is unreadable (scopes=%s)",
+                ",".join(unreadable_scopes),
+            )
+            return []
+
+        cleanup_operations = _build_invalid_fact_cleanup_operations(
+            user_store,
+            project_store,
+        )
+        if not cleanup_operations:
+            return []
+
+        _, _, written = await self._apply_and_write_memory_operations(
+            user_store,
+            project_store,
+            deepcopy(user_store),
+            deepcopy(project_store),
+            cleanup_operations,
+            thread_id=thread_id,
+            source_anchor=source_anchor,
+            now_iso=_iso_now(),
+        )
+        return written
+
     async def _extract_and_write(
         self,
         model: Any,
@@ -1375,28 +1630,58 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 return []
             user_before = deepcopy(user_store)
             project_before = deepcopy(project_store)
+            cleanup_operations = _build_invalid_fact_cleanup_operations(
+                user_store,
+                project_store,
+            )
+            if cleanup_operations:
+                user_store, project_store, cleanup_written = (
+                    await self._apply_and_write_memory_operations(
+                        user_store,
+                        project_store,
+                        user_before,
+                        project_before,
+                        cleanup_operations,
+                        thread_id=thread_id,
+                        source_anchor=source_anchor,
+                        now_iso=_iso_now(),
+                    )
+                )
+                written_store_paths.extend(cleanup_written)
+                if cleanup_written:
+                    user_before = deepcopy(user_store)
+                    project_before = deepcopy(project_store)
+
             snapshot = _build_memory_snapshot(
                 user_store,
                 project_store,
                 conversation=conversation,
             )
 
-            response = await model.bind(max_tokens=_MAX_OUTPUT_TOKENS).ainvoke(
-                [
-                    SystemMessage(content=_SYSTEM_PROMPT),
-                    HumanMessage(
-                        content=_USER_TEMPLATE.format(
-                            conversation=conversation,
-                            snapshot=json.dumps(snapshot, ensure_ascii=False, indent=2),
-                        )
-                        + "\n"
-                        + _USER_POLICY_TEMPLATE.format(
-                            explicit_memory_request=str(explicit_memory_request).lower(),
-                        )
-                    ),
-                ],
-                config={"metadata": {"lc_source": "memory_agent"}},
-            )
+            try:
+                response = await model.bind(max_tokens=_MAX_OUTPUT_TOKENS).ainvoke(
+                    [
+                        SystemMessage(content=_SYSTEM_PROMPT),
+                        HumanMessage(
+                            content=_USER_TEMPLATE.format(
+                                conversation=conversation,
+                                snapshot=json.dumps(snapshot, ensure_ascii=False, indent=2),
+                            )
+                            + "\n"
+                            + _USER_POLICY_TEMPLATE.format(
+                                explicit_memory_request=str(explicit_memory_request).lower(),
+                            )
+                        ),
+                    ],
+                    config={"metadata": {"lc_source": "memory_agent"}},
+                )
+            except Exception:
+                logger.warning("Memory agent model call failed", exc_info=True)
+                if written_store_paths:
+                    self._last_run_turn = self._turn_index
+                    self._last_run_at = time.monotonic()
+                    return list(dict.fromkeys(written_store_paths))
+                return None
 
             raw: str = response.content
             if isinstance(raw, list):
@@ -1404,14 +1689,15 @@ class MemoryAgentMiddleware(AgentMiddleware):
                     p.get("text", "") if isinstance(p, dict) else str(p) for p in raw
                 )
             raw = raw.lstrip()
-            if not raw.startswith("{"):
-                logger.debug("Memory agent: response does not start with JSON object")
-                return []
+            data: Any = {"operations": []}
             start = raw.find("{")
-            if start == -1:
-                logger.debug("Memory agent: no JSON found in response")
-                return []
-            data, _ = json.JSONDecoder().raw_decode(raw, start)
+            if not raw.startswith("{") or start == -1:
+                logger.debug("Memory agent: model response has no JSON object")
+            else:
+                try:
+                    data, _ = json.JSONDecoder().raw_decode(raw, start)
+                except json.JSONDecodeError:
+                    logger.debug("Memory agent: model returned malformed JSON", exc_info=True)
             rescoring_candidate_ids_by_scope = {
                 scope: {
                     str(candidate.get("id"))
@@ -1429,53 +1715,29 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 rescoring_candidate_ids_by_scope=rescoring_candidate_ids_by_scope,
             )
             if not operations:
-                return []
+                if written_store_paths:
+                    self._last_run_turn = self._turn_index
+                    self._last_run_at = time.monotonic()
+                return list(dict.fromkeys(written_store_paths))
 
             now_iso = _iso_now()
-            new_user, new_project, changed_scopes = _apply_operations(
+            new_user, new_project, model_written = await self._apply_and_write_memory_operations(
                 user_store,
                 project_store,
+                user_before,
+                project_before,
                 operations,
                 thread_id=thread_id,
                 source_anchor=source_anchor,
                 now_iso=now_iso,
             )
-            if not changed_scopes:
-                return []
-
-            for scope in changed_scopes:
-                store = new_user if scope == "user" else new_project
-                before_store = user_before if scope == "user" else project_before
-                if store is None:
-                    continue
-
-                store_path_raw = self._memory_store_paths.get(scope)
-                if not store_path_raw:
-                    continue
-                store_path = Path(store_path_raw).expanduser().resolve()
-                if not self._is_authorized_path(store_path):
-                    logger.warning("Memory agent: rejected unauthorized write for %s scope", scope)
-                    continue
-
-                before_items = (
-                    before_store.get("items", [])
-                    if isinstance(before_store, dict)
-                    else []
-                )
-                if before_items and not _active_items(store):
-                    logger.warning(
-                        "Memory agent: refusing full-active wipe for non-empty %s store",
-                        scope,
-                    )
-                    continue
-
-                await asyncio.to_thread(_write_memory_store, store_path, store)
-                written_store_paths.append(str(store_path))
+            del new_user, new_project
+            written_store_paths.extend(model_written)
 
             if written_store_paths:
                 self._last_run_turn = self._turn_index
                 self._last_run_at = time.monotonic()
-            return written_store_paths
+            return list(dict.fromkeys(written_store_paths))
 
         except json.JSONDecodeError:
             logger.debug("Memory agent: model returned malformed JSON", exc_info=True)
@@ -1523,15 +1785,39 @@ class MemoryAgentMiddleware(AgentMiddleware):
             if not _is_task_complete(messages):
                 logger.debug("Memory agent: skipping extraction — task not complete")
                 return None
-            if _is_trivial_turn(messages):
-                logger.debug("Memory agent: skipping trivial turn")
-                return None
-            if not self._should_run_for_turn(messages):
-                return None
 
             thread_id = self._resolve_thread_id()
+            cleanup_source_anchor = self._message_anchor(messages[-1])
+            cleanup_written = await self._cleanup_invalid_fact_stores(
+                thread_id=thread_id,
+                source_anchor=cleanup_source_anchor,
+            )
+            cleanup_written = list(dict.fromkeys(cleanup_written or []))
+
+            if _is_trivial_turn(messages):
+                logger.debug("Memory agent: skipping trivial turn")
+                if cleanup_written:
+                    self._advance_cursor(thread_id, messages)
+                    return {
+                        "memory_contents": None,
+                        "_auto_memory_updated_paths": cleanup_written,
+                    }
+                return None
+            if not self._should_run_for_turn(messages):
+                if cleanup_written:
+                    return {
+                        "memory_contents": None,
+                        "_auto_memory_updated_paths": cleanup_written,
+                    }
+                return None
+
             incremental = self._slice_incremental_messages(thread_id, messages)
             if not incremental:
+                if cleanup_written:
+                    return {
+                        "memory_contents": None,
+                        "_auto_memory_updated_paths": cleanup_written,
+                    }
                 return None
 
             if self._context_messages <= 0:
@@ -1562,12 +1848,18 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 self._emit_memory_status(runtime, "done")
             if written is None:
                 logger.debug("Memory agent: extraction failed, cursor is not advanced")
+                if cleanup_written:
+                    return {
+                        "memory_contents": None,
+                        "_auto_memory_updated_paths": cleanup_written,
+                    }
                 return None
             self._advance_cursor(thread_id, messages)
-            if written:
+            combined_written = list(dict.fromkeys([*cleanup_written, *written]))
+            if combined_written:
                 return {
                     "memory_contents": None,
-                    "_auto_memory_updated_paths": written,
+                    "_auto_memory_updated_paths": combined_written,
                 }
             return None
         except asyncio.CancelledError:

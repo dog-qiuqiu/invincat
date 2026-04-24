@@ -16,6 +16,7 @@ from invincat_cli.memory_agent import (
     MAX_SNAPSHOT_ITEMS_PER_SCOPE,
     MAX_ITEM_CONTENT_CHARS,
     MemoryAgentMiddleware,
+    _build_invalid_fact_cleanup_operations,
     _build_memory_snapshot,
     _derive_tier_from_score,
     _apply_operations,
@@ -134,6 +135,23 @@ def test_archive_existing_item() -> None:
     assert new_project["items"][0]["archived_at"] == "2026-04-22T10:10:00Z"
 
 
+def test_delete_existing_item() -> None:
+    project_store = _new_store("project")
+    project_store["items"].append(_item("mem_p_000001", content="Old incorrect fact"))
+    project_store["items"].append(_item("mem_p_000002", content="Current fact"))
+    _, new_project, changed = _apply_operations(
+        None,
+        project_store,
+        [{"op": "delete", "scope": "project", "id": "mem_p_000001", "reason": "wrong"}],
+        thread_id="t1",
+        source_anchor="a1",
+        now_iso="2026-04-22T10:10:00Z",
+    )
+    assert new_project is not None
+    assert changed == ["project"]
+    assert [item["id"] for item in new_project["items"]] == ["mem_p_000002"]
+
+
 def test_update_nonexistent_id_rejected() -> None:
     project_store = _new_store("project")
     _, new_project, changed = _apply_operations(
@@ -200,7 +218,7 @@ def test_conflicting_operations_on_same_id_rejected() -> None:
         project_store,
         [
             {"op": "update", "scope": "project", "id": "mem_p_000001", "content": "A"},
-            {"op": "archive", "scope": "project", "id": "mem_p_000001", "reason": "x"},
+            {"op": "delete", "scope": "project", "id": "mem_p_000001", "reason": "x"},
         ],
         thread_id="t1",
         source_anchor="a1",
@@ -212,7 +230,8 @@ def test_conflicting_operations_on_same_id_rejected() -> None:
     assert new_project["items"][0]["content"] == "Use snake_case."
 
 
-def test_archive_ratio_guard_blocks_excessive_archives() -> None:
+def test_removal_ratio_guard_blocks_excessive_archives_and_deletes() -> None:
+    # Ratio guard fires when ops have no contradiction reason (arbitrary removals).
     project_store = _new_store("project")
     for idx in range(5):
         project_store["items"].append(_item(f"mem_p_{idx+1:06d}", content=f"Rule {idx}"))
@@ -220,8 +239,8 @@ def test_archive_ratio_guard_blocks_excessive_archives() -> None:
         None,
         project_store,
         [
-            {"op": "archive", "scope": "project", "id": "mem_p_000001"},
-            {"op": "archive", "scope": "project", "id": "mem_p_000002"},
+            {"op": "archive", "scope": "project", "id": "mem_p_000001", "reason": ""},
+            {"op": "delete", "scope": "project", "id": "mem_p_000002", "reason": ""},
         ],
         thread_id="t1",
         source_anchor="a1",
@@ -230,6 +249,82 @@ def test_archive_ratio_guard_blocks_excessive_archives() -> None:
     assert new_project is not None
     assert changed == []
     assert all(item["status"] == "active" for item in new_project["items"])
+
+
+def test_removal_ratio_guard_allows_contradiction_deletes() -> None:
+    # Contradiction-based deletes must NOT be blocked by the ratio guard.
+    # The model follows "delete old + create new" for contradicted facts;
+    # blocking the delete while allowing the create would leave both the
+    # contradicted and the replacement memory in the store simultaneously.
+    project_store = _new_store("project")
+    for idx in range(5):
+        project_store["items"].append(_item(f"mem_p_{idx+1:06d}", content=f"Rule {idx}"))
+    _, new_project, changed = _apply_operations(
+        None,
+        project_store,
+        [
+            {
+                "op": "delete",
+                "scope": "project",
+                "id": "mem_p_000001",
+                "reason": "User stated this is no longer valid.",
+            },
+            {
+                "op": "delete",
+                "scope": "project",
+                "id": "mem_p_000002",
+                "reason": "Contradicts current facts per user.",
+            },
+        ],
+        thread_id="t1",
+        source_anchor="a1",
+        now_iso="2026-04-22T10:10:00Z",
+    )
+    assert new_project is not None
+    assert changed == ["project"]
+    remaining_ids = {item["id"] for item in new_project["items"]}
+    assert "mem_p_000001" not in remaining_ids
+    assert "mem_p_000002" not in remaining_ids
+    assert len(new_project["items"]) == 3
+
+
+def test_contradiction_delete_plus_create_no_duplicate() -> None:
+    # Regression: when the model emits delete(old) + create(new) for a
+    # contradicted fact, the old item must be removed and only the new one
+    # should survive — not both.
+    project_store = _new_store("project")
+    project_store["items"].append(
+        _item("mem_p_000001", content="Uses Poetry for dependency management.")
+    )
+    _, new_project, changed = _apply_operations(
+        None,
+        project_store,
+        [
+            {
+                "op": "delete",
+                "scope": "project",
+                "id": "mem_p_000001",
+                "reason": "User stated the project migrated from Poetry to uv.",
+            },
+            {
+                "op": "create",
+                "scope": "project",
+                "section": "Tooling",
+                "content": "Uses `uv` for dependency management.",
+                "confidence": "high",
+                "tier": "hot",
+                "score": 80,
+                "score_reason": "User confirmed migration from Poetry to uv.",
+            },
+        ],
+        thread_id="t1",
+        source_anchor="a1",
+        now_iso="2026-04-22T10:10:00Z",
+    )
+    assert new_project is not None
+    assert changed == ["project"]
+    assert len(new_project["items"]) == 1
+    assert new_project["items"][0]["content"] == "Uses `uv` for dependency management."
 
 
 def test_atomic_write_and_whitelist_authorization(tmp_path: Path) -> None:
@@ -253,12 +348,38 @@ def test_operation_validation_contract() -> None:
             {"op": "create", "scope": "project", "section": "S", "content": "C"},
             {"op": "update", "scope": "project", "id": "mem_p_000001", "content": ""},
             {"op": "archive", "scope": "project", "id": "mem_p_000001"},
+            {"op": "delete", "scope": "project", "id": "mem_p_000002", "reason": "wrong"},
             {"op": "noop"},
         ]
     }
     ops = _normalize_and_validate_operations(payload)
-    assert [op["op"] for op in ops] == ["create", "archive", "noop"]
+    assert [op["op"] for op in ops] == ["create", "archive", "delete", "noop"]
     assert ops[0]["content"] == "C"
+
+
+def test_update_metadata_only_invalid_fact_deletes_item() -> None:
+    ops = _normalize_and_validate_operations(
+        {
+            "operations": [
+                {
+                    "op": "update",
+                    "scope": "project",
+                    "id": "mem_p_000001",
+                    "score": 20,
+                    "score_reason": "The memory is no longer accurate.",
+                }
+            ]
+        }
+    )
+
+    assert ops == [
+        {
+            "op": "delete",
+            "scope": "project",
+            "id": "mem_p_000001",
+            "reason": "The memory is no longer accurate.",
+        }
+    ]
 
 
 def test_rescore_does_not_modify_content_or_updated_at() -> None:
@@ -290,6 +411,47 @@ def test_rescore_does_not_modify_content_or_updated_at() -> None:
     assert item["tier"] == "cold"
 
 
+def test_rescore_with_invalid_fact_reason_deletes_item() -> None:
+    ops = _normalize_and_validate_operations(
+        {
+            "operations": [
+                {
+                    "op": "rescore",
+                    "scope": "project",
+                    "id": "mem_p_000001",
+                    "score": 10,
+                    "score_reason": "Existing memory is contradicted by current facts.",
+                }
+            ]
+        },
+        rescoring_candidate_ids_by_scope={"project": {"mem_p_000001"}},
+    )
+
+    assert ops == [
+        {
+            "op": "delete",
+            "scope": "project",
+            "id": "mem_p_000001",
+            "reason": "Existing memory is contradicted by current facts.",
+        }
+    ]
+
+    project_store = _new_store("project")
+    project_store["items"].append(_item("mem_p_000001", content="Old incorrect fact"))
+    _, new_project, changed = _apply_operations(
+        None,
+        project_store,
+        ops,
+        thread_id="t1",
+        source_anchor="a1",
+        now_iso="2026-04-22T10:10:00Z",
+    )
+
+    assert new_project is not None
+    assert changed == ["project"]
+    assert new_project["items"] == []
+
+
 def test_retier_does_not_modify_content_or_updated_at() -> None:
     project_store = _new_store("project")
     project_store["items"].append(_item("mem_p_000001", content="Keep this text"))
@@ -317,6 +479,91 @@ def test_retier_does_not_modify_content_or_updated_at() -> None:
     assert item["updated_at"] == original_updated_at
     assert item["tier"] == "cold"
     assert item["score"] < COLD_THRESHOLD
+
+
+def test_retier_with_invalid_fact_reason_deletes_item() -> None:
+    ops = _normalize_and_validate_operations(
+        {
+            "operations": [
+                {
+                    "op": "retier",
+                    "scope": "project",
+                    "id": "mem_p_000001",
+                    "tier": "cold",
+                    "score_reason": "这条记忆与当前事实不符，已被替代。",
+                }
+            ]
+        },
+        rescoring_candidate_ids_by_scope={"project": {"mem_p_000001"}},
+    )
+
+    assert ops == [
+        {
+            "op": "delete",
+            "scope": "project",
+            "id": "mem_p_000001",
+            "reason": "这条记忆与当前事实不符，已被替代。",
+        }
+    ]
+
+
+def test_invalid_fact_cleanup_scans_full_store_beyond_snapshot_cap() -> None:
+    project_store = _new_store("project")
+    for idx in range(MAX_SNAPSHOT_ITEMS_PER_SCOPE + 20):
+        project_store["items"].append(
+            _item(
+                f"mem_p_{idx + 1:06d}",
+                content=f"Valid rule {idx}",
+            )
+        )
+    hidden_invalid_id = f"mem_p_{MAX_SNAPSHOT_ITEMS_PER_SCOPE + 21:06d}"
+    invalid = _item(hidden_invalid_id, content="Old incorrect fact")
+    invalid["tier"] = "cold"
+    invalid["score"] = 5
+    invalid["score_reason"] = "Existing memory is contradicted by current facts."
+    project_store["items"].append(invalid)
+
+    snapshot = _build_memory_snapshot(
+        None,
+        project_store,
+        conversation="unrelated turn",
+    )
+    assert all(
+        item["id"] != hidden_invalid_id
+        for item in snapshot["project"]["items"]
+    )
+
+    cleanup = _build_invalid_fact_cleanup_operations(None, project_store)
+    assert cleanup == [
+        {
+            "op": "delete",
+            "scope": "project",
+            "id": hidden_invalid_id,
+            "reason": "Existing memory is contradicted by current facts.",
+            "_cleanup": True,
+        }
+    ]
+
+
+def test_invalid_fact_cleanup_deletes_warm_item_when_reason_is_clear() -> None:
+    project_store = _new_store("project")
+    invalid = _item("mem_p_000001", content="Old incorrect fact")
+    invalid["tier"] = "warm"
+    invalid["score"] = 45
+    invalid["score_reason"] = "该记忆与当前事实不一致，内容不准确。"
+    project_store["items"].append(invalid)
+
+    cleanup = _build_invalid_fact_cleanup_operations(None, project_store)
+
+    assert cleanup == [
+        {
+            "op": "delete",
+            "scope": "project",
+            "id": "mem_p_000001",
+            "reason": "该记忆与当前事实不一致，内容不准确。",
+            "_cleanup": True,
+        }
+    ]
 
 
 def test_old_schema_items_are_backfilled_with_default_tier_score(tmp_path: Path) -> None:
@@ -455,6 +702,30 @@ class _Runtime:
         self.events.append(payload)
 
 
+class _NoopMemoryModel:
+    def bind(self, **_kwargs: Any) -> "_NoopMemoryModel":
+        return self
+
+    async def ainvoke(self, *_args: Any, **_kwargs: Any) -> Any:
+        return type("Response", (), {"content": '{"operations": [{"op": "noop"}]}'})()
+
+
+class _MalformedMemoryModel:
+    def bind(self, **_kwargs: Any) -> "_MalformedMemoryModel":
+        return self
+
+    async def ainvoke(self, *_args: Any, **_kwargs: Any) -> Any:
+        return type("Response", (), {"content": "not json"})()
+
+
+class _FailingMemoryModel:
+    def bind(self, **_kwargs: Any) -> "_FailingMemoryModel":
+        return self
+
+    async def ainvoke(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("model unavailable")
+
+
 def test_aafter_agent_emits_status_and_advances_cursor(monkeypatch: Any) -> None:
     middleware = MemoryAgentMiddleware(memory_paths=["/tmp/AGENTS.md"])
     middleware._captured_model = object()
@@ -504,6 +775,35 @@ def test_aafter_agent_does_not_advance_cursor_on_extract_failure(monkeypatch: An
     assert "thread-2" not in middleware._cursor_by_thread
 
 
+def test_aafter_agent_runs_cleanup_even_for_trivial_turn(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    store = tmp_path / "memory_project.json"
+    project_store = _new_store("project")
+    invalid = _item("mem_p_000001", content="Old incorrect fact")
+    invalid["score_reason"] = "该记忆与当前事实不一致，内容不准确。"
+    project_store["items"].append(invalid)
+    _write_memory_store(store, project_store)
+
+    middleware = MemoryAgentMiddleware(
+        memory_paths=[],
+        memory_store_paths={"project": str(store)},
+    )
+    middleware._captured_model = object()
+    monkeypatch.setattr(middleware, "_resolve_thread_id", lambda: "thread-trivial")
+
+    messages = [_Msg("human", "收到"), _Msg("ai", "ok", tool_calls=[])]
+    result = asyncio.run(middleware.aafter_agent({"messages": messages}, _Runtime()))
+
+    assert result == {
+        "memory_contents": None,
+        "_auto_memory_updated_paths": [str(store.resolve())],
+    }
+    assert middleware._cursor_by_thread.get("thread-trivial") == len(messages)
+    assert _read_memory_store(store, "project")["items"] == []
+
+
 def test_unreadable_store_is_auto_recovered_before_extract(tmp_path: Path) -> None:
     store = tmp_path / "memory_project.json"
     store.write_text("{not-json", encoding="utf-8")
@@ -530,6 +830,99 @@ def test_unreadable_store_is_auto_recovered_before_extract(tmp_path: Path) -> No
     assert reloaded.get("__read_error__") is None
     backups = list(tmp_path.glob("memory_project.json.corrupt.*.bak"))
     assert backups
+
+
+def test_extract_deletes_existing_invalid_fact_even_when_model_noops(tmp_path: Path) -> None:
+    store = tmp_path / "memory_project.json"
+    project_store = _new_store("project")
+    invalid = _item("mem_p_000001", content="Old incorrect fact")
+    invalid["tier"] = "cold"
+    invalid["score"] = 8
+    invalid["score_reason"] = "这条记忆与当前事实不符，已被替代。"
+    project_store["items"].append(invalid)
+    _write_memory_store(store, project_store)
+
+    middleware = MemoryAgentMiddleware(
+        memory_paths=[],
+        memory_store_paths={"project": str(store)},
+    )
+    written = asyncio.run(
+        middleware._extract_and_write(
+            model=_NoopMemoryModel(),
+            messages=[
+                _Msg("human", "记忆整理一下"),
+                _Msg("ai", "ok", tool_calls=[]),
+            ],
+            thread_id="thread-cleanup",
+            source_anchor="a1",
+        )
+    )
+
+    assert written == [str(store.resolve())]
+    reloaded = _read_memory_store(store, "project")
+    assert reloaded["items"] == []
+
+
+def test_extract_cleanup_is_written_before_model_failure(tmp_path: Path) -> None:
+    store = tmp_path / "memory_project.json"
+    project_store = _new_store("project")
+    invalid = _item("mem_p_000001", content="Old incorrect fact")
+    invalid["tier"] = "warm"
+    invalid["score"] = 45
+    invalid["score_reason"] = "该记忆不符合当前事实。"
+    project_store["items"].append(invalid)
+    _write_memory_store(store, project_store)
+
+    middleware = MemoryAgentMiddleware(
+        memory_paths=[],
+        memory_store_paths={"project": str(store)},
+    )
+    written = asyncio.run(
+        middleware._extract_and_write(
+            model=_FailingMemoryModel(),
+            messages=[
+                _Msg("human", "memory cleanup"),
+                _Msg("ai", "ok", tool_calls=[]),
+            ],
+            thread_id="thread-cleanup",
+            source_anchor="a1",
+        )
+    )
+
+    assert written == [str(store.resolve())]
+    reloaded = _read_memory_store(store, "project")
+    assert reloaded["items"] == []
+
+
+def test_extract_cleanup_runs_when_model_returns_malformed_json(tmp_path: Path) -> None:
+    store = tmp_path / "memory_project.json"
+    project_store = _new_store("project")
+    invalid = _item("mem_p_000001", content="Old incorrect fact")
+    invalid["tier"] = "cold"
+    invalid["score"] = 8
+    invalid["score_reason"] = "Existing memory is contradicted by current facts."
+    project_store["items"].append(invalid)
+    _write_memory_store(store, project_store)
+
+    middleware = MemoryAgentMiddleware(
+        memory_paths=[],
+        memory_store_paths={"project": str(store)},
+    )
+    written = asyncio.run(
+        middleware._extract_and_write(
+            model=_MalformedMemoryModel(),
+            messages=[
+                _Msg("human", "memory cleanup"),
+                _Msg("ai", "ok", tool_calls=[]),
+            ],
+            thread_id="thread-cleanup",
+            source_anchor="a1",
+        )
+    )
+
+    assert written == [str(store.resolve())]
+    reloaded = _read_memory_store(store, "project")
+    assert reloaded["items"] == []
 
 
 def test_short_memory_signal_is_not_trivial() -> None:
@@ -618,6 +1011,16 @@ def test_system_prompt_contains_conservative_policy_contract() -> None:
     assert "if ambiguous, prefer project or noop" in lowered
     assert "do not store" in lowered
     assert "first non-whitespace character must be \"{\"" in lowered
+
+
+def test_system_prompt_forbids_metadata_only_fact_corrections() -> None:
+    lowered = _SYSTEM_PROMPT.lower()
+    assert "rescore/retier only change priority metadata" in lowered
+    assert "do not use them to record a changed fact" in lowered
+    assert "use update with" in lowered
+    assert "corrected content" in lowered
+    assert "delete the old item and create the replacement" in lowered
+    assert '"op": "delete"' in lowered
 
 
 def test_recover_corrupt_store_without_legacy_fallback(tmp_path: Path) -> None:
