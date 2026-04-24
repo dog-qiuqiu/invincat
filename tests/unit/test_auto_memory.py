@@ -231,3 +231,106 @@ def test_total_memory_injection_budget_is_enforced(tmp_path: Path) -> None:
     contents = update["memory_contents"]
     total_len = sum(len(v) for v in contents.values())
     assert total_len <= auto_memory_module._MAX_TOTAL_INJECTION_CHARS
+
+
+def test_hot_priority_and_cold_exclusion_in_injection(tmp_path: Path) -> None:
+    project_store = tmp_path / "memory_project.json"
+    _make_store(
+        project_store,
+        scope="project",
+        items=[
+            {
+                "id": "mem_p_000001",
+                "section": "Rules",
+                "content": "Warm item",
+                "status": "active",
+                "tier": "warm",
+                "score": 60,
+            },
+            {
+                "id": "mem_p_000002",
+                "section": "Rules",
+                "content": "Hot item",
+                "status": "active",
+                "tier": "hot",
+                "score": 90,
+            },
+            {
+                "id": "mem_p_000003",
+                "section": "Rules",
+                "content": "Cold item",
+                "status": "active",
+                "tier": "cold",
+                "score": 10,
+            },
+        ],
+    )
+    mw = RefreshableMemoryMiddleware(
+        backend=object(),
+        memory_store_paths={"project": str(project_store)},
+    )
+    update = mw.before_agent({"memory_contents": None}, runtime=object())
+    assert isinstance(update, dict)
+    rendered = "\n".join(update["memory_contents"].values())
+    assert "Hot item" in rendered
+    assert "Warm item" in rendered
+    assert "Cold item" not in rendered
+    assert rendered.index("Hot item") < rendered.index("Warm item")
+
+
+def test_same_tier_sorted_by_score_desc(tmp_path: Path) -> None:
+    project_store = tmp_path / "memory_project.json"
+    _make_store(
+        project_store,
+        scope="project",
+        items=[
+            {
+                "id": "mem_p_000001",
+                "section": "Rules",
+                "content": "score 75",
+                "status": "active",
+                "tier": "hot",
+                "score": 75,
+            },
+            {
+                "id": "mem_p_000002",
+                "section": "Rules",
+                "content": "score 95",
+                "status": "active",
+                "tier": "hot",
+                "score": 95,
+            },
+        ],
+    )
+    mw = RefreshableMemoryMiddleware(
+        backend=object(),
+        memory_store_paths={"project": str(project_store)},
+    )
+    update = mw.before_agent({"memory_contents": None}, runtime=object())
+    assert isinstance(update, dict)
+    rendered = "\n".join(update["memory_contents"].values())
+    assert rendered.index("score 95") < rendered.index("score 75")
+
+
+def test_legacy_item_without_tier_score_is_handled(tmp_path: Path) -> None:
+    project_store = tmp_path / "memory_project.json"
+    _make_store(
+        project_store,
+        scope="project",
+        items=[
+            {
+                "id": "mem_p_000001",
+                "section": "Rules",
+                "content": "Legacy item",
+                "status": "active",
+            }
+        ],
+    )
+    mw = RefreshableMemoryMiddleware(
+        backend=object(),
+        memory_store_paths={"project": str(project_store)},
+    )
+    update = mw.before_agent({"memory_contents": None}, runtime=object())
+    assert isinstance(update, dict)
+    rendered = "\n".join(update["memory_contents"].values())
+    assert "Legacy item" in rendered

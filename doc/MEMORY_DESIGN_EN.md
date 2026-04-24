@@ -39,7 +39,11 @@ Each store is a JSON object:
       "archived_at": null,
       "source_thread_id": "__default_thread__",
       "source_anchor": "human|18|...|False",
-      "confidence": "low|medium|high"
+      "confidence": "low|medium|high",
+      "tier": "hot|warm|cold",
+      "score": 0,
+      "score_reason": "",
+      "last_scored_at": "2026-04-22T10:00:00Z"
     }
   ]
 }
@@ -65,7 +69,14 @@ The memory extractor model returns strict JSON operations:
 }
 ```
 
-Supported ops: `create`, `update`, `archive`, `noop`.
+Supported ops: `create`, `update`, `rescore`, `retier`, `archive`, `noop`.
+
+Score/tier policy:
+- `score >= 70` -> `hot`
+- `30 <= score < 70` -> `warm`
+- `score < 30` -> `cold`
+- Backward compatibility for old stores: missing fields are backfilled as
+  `tier=warm`, `score=50`, `score_reason=""`, `last_scored_at=updated_at|created_at`.
 
 ## 5. Runtime Flow
 
@@ -112,6 +123,7 @@ Signal-based early trigger:
 - Conflict guard: same id touched multiple times in one batch is rejected.
 - Archive-ratio guard: blocks over-aggressive archive batches.
 - Empty-wipe guard: prevents turning non-empty active memory into fully inactive set in one write.
+- `rescore/retier` are restricted to local candidates only (max 12 per scope).
 - Path whitelist: writes allowed only for configured memory store paths.
 - Atomic write: temp file + `os.replace`.
 - Corrupt-store handling:
@@ -123,7 +135,8 @@ Signal-based early trigger:
 
 `RefreshableMemoryMiddleware`:
 - Reads `memory_*.json`.
-- Renders only `active` items grouped by section.
+- Renders only `active` and non-`cold` items.
+- Injection priority is `hot` first (max 8 per scope), then `warm` (max 6 per scope).
 - Injects memory in `<agent_memory>` block into the system message.
 - Enforces injection budgets:
   - per-scope render cap
@@ -136,7 +149,7 @@ Signal-based early trigger:
 - Internal memory-agent model output is not rendered in assistant chat
 - `/memory` opens a full-screen memory manager:
   - dedicated pages for user/project scope (`1`/`2`, `Tab` to switch)
-  - field-focused item rendering with emphasis on `status/id/section/content`
+  - field-focused item rendering with emphasis on `status/tier/score/id/section/content/score_reason`
   - supports `r` refresh, `a` show/hide archived, `Esc` close
 
 ## 10. Known Boundary

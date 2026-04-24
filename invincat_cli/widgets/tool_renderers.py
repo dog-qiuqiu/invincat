@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from invincat_cli.widgets.tool_widgets import (
     EditFileApprovalWidget,
     GenericApprovalWidget,
+    PlanApprovalWidget,
     WriteFileApprovalWidget,
 )
 
@@ -73,6 +74,25 @@ class TaskRenderer(ToolRenderer):
         return GenericApprovalWidget, {}
 
 
+class ApprovePlanRenderer(ToolRenderer):
+    """Renderer for planner approvals - shows todo list cleanly."""
+
+    @staticmethod
+    def get_approval_widget(  # noqa: D102  # Protocol method — docstring on base class
+        tool_args: dict[str, Any],
+    ) -> tuple[type[ToolApprovalWidget], dict[str, Any]]:
+        raw_todos = tool_args.get("todos", [])
+        todos = [
+            {
+                "content": str(item.get("content", "")),
+                "status": str(item.get("status", "pending")),
+            }
+            for item in raw_todos
+            if isinstance(item, dict)
+        ]
+        return PlanApprovalWidget, {"todos": todos}
+
+
 class EditFileRenderer(ToolRenderer):
     """Renderer for edit_file tool - shows unified diff."""
 
@@ -125,6 +145,7 @@ class EditFileRenderer(ToolRenderer):
 
 _RENDERER_REGISTRY: dict[str, type[ToolRenderer]] = {
     "task": TaskRenderer,
+    "approve_plan": ApprovePlanRenderer,
     "write_file": WriteFileRenderer,
     "edit_file": EditFileRenderer,
 }

@@ -850,6 +850,8 @@ def create_cli_agent(
     cwd: str | Path | None = None,
     project_context: ProjectContext | None = None,
     async_subagents: list[AsyncSubAgent] | None = None,
+    extra_middleware: Sequence[AgentMiddleware] | None = None,
+    approve_plan_system_prompt: str | None = None,
 ) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -903,6 +905,8 @@ def create_cli_agent(
             (only in local mode). When enabled, the `execute` tool is available.
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
+        approve_plan_system_prompt: Optional override for the `approve_plan`
+            middleware system prompt (useful for planner-specific behavior).
         mcp_server_info: MCP server metadata to surface in the system prompt.
         cwd: Override the working directory for the agent's filesystem backend
             and system prompt.
@@ -912,6 +916,8 @@ def create_cli_agent(
         async_subagents: Remote LangGraph deployments to expose as async subagent tools.
 
             Loaded from `[async_subagents]` in `config.toml` or passed directly.
+        extra_middleware: Optional middleware appended at the end of the CLI
+            middleware stack. Useful for mode-specific guardrails.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -1044,7 +1050,12 @@ def create_cli_agent(
     # Add approve_plan middleware for plan confirmation
     from invincat_cli.approve_plan import ApprovePlanMiddleware
 
-    agent_middleware.append(ApprovePlanMiddleware())
+    if approve_plan_system_prompt is not None:
+        agent_middleware.append(
+            ApprovePlanMiddleware(system_prompt=approve_plan_system_prompt)
+        )
+    else:
+        agent_middleware.append(ApprovePlanMiddleware())
 
     # Add memory middleware
     if enable_memory:
@@ -1207,6 +1218,8 @@ def create_cli_agent(
     agent_middleware.append(
         create_summarization_tool_middleware(model, composite_backend)
     )
+    if extra_middleware:
+        agent_middleware.extend(extra_middleware)
 
     # Create the agent
     all_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = [

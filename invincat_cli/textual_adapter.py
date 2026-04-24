@@ -57,7 +57,9 @@ from invincat_cli.file_ops import FileOpTracker
 from invincat_cli.formatting import format_duration
 from invincat_cli.hooks import dispatch_hook
 from invincat_cli.input import MediaTracker, parse_file_mentions
+from invincat_cli.i18n import t
 from invincat_cli.media_utils import create_multimodal_content
+from invincat_cli.plan_agent import PLANNER_ALLOWED_TOOLS
 from invincat_cli.tool_display import format_tool_message_content
 from invincat_cli.widgets.messages import (
     AppMessage,
@@ -69,6 +71,8 @@ from invincat_cli.widgets.messages import (
 
 logger = logging.getLogger(__name__)
 configure_debug_logging(logger)
+
+_PLANNER_ALLOWED_TOOL_SET: frozenset[str] = frozenset(PLANNER_ALLOWED_TOOLS)
 
 _hitl_adapter_cache: TypeAdapter | None = None
 """Lazy singleton for the HITL request validator."""
@@ -497,6 +501,7 @@ async def execute_task_textual(
     context: CLIContext | None = None,
     *,
     sandbox_type: str | None = None,
+    is_planner_turn: bool = False,
     message_kwargs: dict[str, Any] | None = None,
     turn_stats: SessionStats | None = None,
 ) -> SessionStats:
@@ -517,6 +522,8 @@ async def execute_task_textual(
             to the graph via `context=`.
         sandbox_type: Sandbox provider name for trace metadata, or `None`
             if no sandbox is active.
+        is_planner_turn: Whether this streamed turn is running on the planner
+            peer-agent in `/plan` mode.
         message_kwargs: Extra fields merged into the stream input message
             dict (e.g., `additional_kwargs` for persisting skill metadata
             in the checkpoint).
@@ -585,6 +592,7 @@ async def execute_task_textual(
         message_content = final_input
 
     thread_id = session_state.thread_id
+    planner_mode_enforced = bool(is_planner_turn and session_state.plan_mode)
     config = build_stream_config(thread_id, assistant_id, sandbox_type=sandbox_type)
 
     await dispatch_hook("session.start", {"thread_id": thread_id})
@@ -613,7 +621,7 @@ async def execute_task_textual(
 
     # Show spinner
     if adapter._set_spinner:
-        await adapter._set_spinner("Thinking")
+        await adapter._set_spinner(t("status.thinking"))
 
     # Hide token display during streaming (will be shown with accurate count at end)
     if adapter._on_tokens_hide:
@@ -717,7 +725,7 @@ async def execute_task_textual(
                                     if not memory_update_in_progress:
                                         memory_update_in_progress = True
                                         if adapter._set_spinner:
-                                            await adapter._set_spinner("Updating memory")
+                                            await adapter._set_spinner(t("status.memory_updating"))
                                 elif status == "done":
                                     if memory_update_in_progress:
                                         memory_update_in_progress = False
@@ -725,7 +733,7 @@ async def execute_task_textual(
                                             adapter._set_spinner
                                             and not adapter._current_tool_messages
                                         ):
-                                            await adapter._set_spinner("Thinking")
+                                            await adapter._set_spinner(t("status.thinking"))
                             continue
 
                         # Handle UPDATES stream - for interrupts and todos
@@ -851,13 +859,13 @@ async def execute_task_textual(
                                 if not summarization_in_progress:
                                     summarization_in_progress = True
                                     if adapter._set_spinner:
-                                        await adapter._set_spinner("Offloading")
+                                        await adapter._set_spinner(t("status.offloading"))
                                 continue
                             if _is_internal_model_chunk(metadata):
                                 if not memory_update_in_progress:
                                     memory_update_in_progress = True
                                     if adapter._set_spinner:
-                                        await adapter._set_spinner("Updating memory")
+                                        await adapter._set_spinner(t("status.memory_updating"))
                                 continue
         
                             # Regular (non-summarization) chunks resumed — summarization
@@ -872,12 +880,12 @@ async def execute_task_textual(
                                         exc_info=True,
                                     )
                                 if adapter._set_spinner and not adapter._current_tool_messages:
-                                    await adapter._set_spinner("Thinking")
+                                    await adapter._set_spinner(t("status.thinking"))
 
                             if memory_update_in_progress:
                                 memory_update_in_progress = False
                                 if adapter._set_spinner and not adapter._current_tool_messages:
-                                    await adapter._set_spinner("Thinking")
+                                    await adapter._set_spinner(t("status.thinking"))
         
                             if isinstance(message, HumanMessage):
                                 content = message.text
@@ -1161,7 +1169,7 @@ async def execute_task_textual(
                                 # completed (avoids premature "Thinking..." when
                                 # parallel tool calls are active).
                                 if adapter._set_spinner and not adapter._current_tool_messages:
-                                    await adapter._set_spinner("Thinking")
+                                    await adapter._set_spinner(t("status.thinking"))
         
                                 # Show file operation results - always show diffs in chat
                                 if record:
@@ -1332,11 +1340,16 @@ async def execute_task_textual(
                                     # Need at least a name before doing anything
                                     if buffer_name is None:
                                         continue
-        
+
                                     # Normalize display_key to str for consistent map keys
                                     raw_display_key = buffer_id if buffer_id is not None else raw_buffer_key
                                     display_key = _normalize_tool_id(raw_display_key) or str(raw_display_key)
-        
+
+                                    tool_blocked_in_plan_mode = (
+                                        planner_mode_enforced
+                                        and buffer_name not in _PLANNER_ALLOWED_TOOL_SET
+                                    )
+
                                     # --- EARLY MOUNT: show widget as soon as name is known,
                                     # before args have finished streaming.  This eliminates
                                     # the blank gap between the assistant text message and
@@ -1429,7 +1442,17 @@ async def execute_task_textual(
                                             )
                                             await adapter._mount_message(tool_msg)
                                             adapter._current_tool_messages[display_key] = tool_msg
-        
+
+                                    if tool_blocked_in_plan_mode:
+                                        tool_msg = adapter._current_tool_messages.get(display_key)
+                                        if tool_msg is not None:
+                                            tool_msg.set_error(
+                                                t("plan.blocked_tool_error")
+                                            )
+                                        buffer["args_finalized"] = True
+                                        tool_call_buffers.pop(raw_buffer_key, None)
+                                        continue
+
                                     # --- ARGS UPDATE: once args are fully parseable, update
                                     # the already-visible widget and register the file op.
                                     if not buffer.get("args_finalized"):
@@ -1535,13 +1558,13 @@ async def execute_task_textual(
                         exc_info=True,
                     )
                 if adapter._set_spinner and not adapter._current_tool_messages:
-                    await adapter._set_spinner("Thinking")
+                    await adapter._set_spinner(t("status.thinking"))
 
             # Reset memory status if stream ended while memory middleware was running.
             if memory_update_in_progress:
                 memory_update_in_progress = False
                 if adapter._set_spinner and not adapter._current_tool_messages:
-                    await adapter._set_spinner("Thinking")
+                    await adapter._set_spinner(t("status.thinking"))
 
             # Flush any remaining text from all namespaces
             for ns_key, pending_text in list(pending_text_by_namespace.items()):
@@ -1564,6 +1587,7 @@ async def execute_task_textual(
             # Handle HITL after stream completes
             if interrupt_occurred:
                 any_rejected = False
+                suppress_resumed_output = False
                 resume_payload: dict[str, Any] = {}
 
                 # Inject error resumes for ask_user interrupts that failed validation.
@@ -1633,7 +1657,7 @@ async def execute_task_textual(
                                 norm_tool_id = _normalize_tool_id(tool_id)
                                 if norm_tool_id and norm_tool_id in adapter._current_tool_messages:
                                     tool_msg = adapter._current_tool_messages[norm_tool_id]
-                                    tool_msg.set_success("User answered")
+                                    tool_msg.set_success(t("ask_user.tool_result_answered"))
                                     adapter._current_tool_messages.pop(norm_tool_id, None)
                             else:
                                 logger.error(
@@ -1730,7 +1754,7 @@ async def execute_task_textual(
                             norm_tool_id = _normalize_tool_id(tool_id)
                             if norm_tool_id and norm_tool_id in adapter._current_tool_messages:
                                 tool_msg = adapter._current_tool_messages[norm_tool_id]
-                                tool_msg.set_success("Plan approved")
+                                tool_msg.set_success(t("approve.tool_result_approved"))
                                 adapter._current_tool_messages.pop(norm_tool_id, None)
                         elif result_type == "rejected":
                             resume_payload[interrupt_id] = {"type": "rejected"}
@@ -1753,6 +1777,9 @@ async def execute_task_textual(
                             "type": "error",
                             "error": "approve_plan not supported by this UI",
                         }
+
+                if any_rejected:
+                    pending_interrupts = {}
 
                 for interrupt_id, hitl_request in list(pending_interrupts.items()):
                     action_requests = hitl_request["action_requests"]
@@ -1841,6 +1868,7 @@ async def execute_task_textual(
                                     tool_msg.set_rejected()
                                 adapter._current_tool_messages.clear()
                                 any_rejected = True
+                                suppress_resumed_output = True
                             else:
                                 logger.warning(
                                     "Unexpected HITL decision type: %s",
@@ -1856,6 +1884,7 @@ async def execute_task_textual(
                                     tool_msg.set_rejected()
                                 adapter._current_tool_messages.clear()
                                 any_rejected = True
+                                suppress_resumed_output = True
                         else:
                             logger.warning(
                                 "HITL decision was not a dict: %s",
@@ -1870,13 +1899,12 @@ async def execute_task_textual(
                                 tool_msg.set_rejected()
                             adapter._current_tool_messages.clear()
                             any_rejected = True
+                            suppress_resumed_output = True
 
                         resume_payload[interrupt_id] = {"decisions": decisions}
 
                         if any_rejected:
                             break
-
-                suppress_resumed_output = any_rejected
 
             if interrupt_occurred and resume_payload:
                 if suppress_resumed_output and not pending_ask_user:
@@ -1932,7 +1960,7 @@ async def execute_task_textual(
         # showing them as "pending" forever.
         for tool_msg in list(adapter._current_tool_messages.values()):
             try:
-                tool_msg.set_error("Interrupted by error")
+                tool_msg.set_error(t("tool.interrupted_by_error"))
             except Exception:  # noqa: BLE001
                 pass
         adapter._current_tool_messages.clear()
@@ -2000,7 +2028,7 @@ async def _handle_interrupt_cleanup(
     try:
         if adapter._set_spinner:
             await adapter._set_spinner(None)
-        await adapter._mount_message(AppMessage("Interrupted by user"))
+        await adapter._mount_message(AppMessage(t("tool.interrupted_by_user")))
     except (asyncio.CancelledError, Exception):
         logger.debug("UI cleanup partially failed during interrupt", exc_info=True)
 

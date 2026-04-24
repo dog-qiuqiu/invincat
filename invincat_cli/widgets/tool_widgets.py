@@ -133,6 +133,40 @@ class GenericApprovalWidget(ToolApprovalWidget):
             )
 
 
+class PlanApprovalWidget(ToolApprovalWidget):
+    """Approval widget for planner todos shown inside ApprovalMenu."""
+
+    _STATUS_ICON = {
+        "pending": "○",
+        "in_progress": "◐",
+        "completed": "●",
+    }
+
+    def compose(self) -> ComposeResult:
+        """Render planner todos as a compact checklist."""
+        todos_raw = self.data.get("todos", [])
+        todos = [item for item in todos_raw if isinstance(item, dict)]
+        if not todos:
+            yield Static(t("tool.details_not_available"), classes="approval-description")
+            return
+
+        yield Static(t("tool.plan_preview"), classes="approval-description")
+        for idx, todo in enumerate(todos, start=1):
+            status = str(todo.get("status", "pending")).strip().lower()
+            icon = self._STATUS_ICON.get(status, "○")
+            content = str(todo.get("content", "")).strip()
+            if not content:
+                continue
+            if len(content) > _MAX_VALUE_LEN:
+                hidden = len(content) - _MAX_VALUE_LEN
+                content = content[:_MAX_VALUE_LEN] + t("tool.more_chars", count=hidden)
+            yield Static(
+                f"{icon} {idx}. {content}",
+                markup=False,
+                classes=f"approval-description plan-todo-{status}",
+            )
+
+
 class WriteFileApprovalWidget(ToolApprovalWidget):
     """Approval widget for write_file - shows file content with syntax highlighting."""
 

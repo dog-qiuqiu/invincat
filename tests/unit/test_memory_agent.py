@@ -8,13 +8,21 @@ from typing import Any
 
 
 from invincat_cli.memory_agent import (
+    DEFAULT_SCORE,
+    DEFAULT_TIER,
+    COLD_THRESHOLD,
+    HOT_THRESHOLD,
+    MAX_SNAPSHOT_ITEMS_PER_SCOPE,
     MAX_ITEM_CONTENT_CHARS,
     MemoryAgentMiddleware,
+    _build_memory_snapshot,
+    _derive_tier_from_score,
     _apply_operations,
     _atomic_write_text,
     _backup_corrupt_store,
     _is_trivial_turn,
     _new_store,
+    _normalize_score,
     _normalize_and_validate_operations,
     _read_memory_store,
     _write_memory_store,
@@ -41,6 +49,10 @@ def _item(
         "source_thread_id": "__default_thread__",
         "source_anchor": "human|1|x|False",
         "confidence": "high",
+        "tier": "warm",
+        "score": 50,
+        "score_reason": "",
+        "last_scored_at": "2026-04-22T10:00:00Z",
         "norm_hash": f"{section.casefold()}::{content.casefold()}",
     }
 
@@ -54,6 +66,9 @@ def test_empty_store_create() -> None:
             "section": "User Preferences",
             "content": "Prefer concise answers in Chinese.",
             "confidence": "high",
+            "tier": "hot",
+            "score": 90,
+            "score_reason": "Explicit stable preference.",
         }
     ]
     new_user, _, changed = _apply_operations(
@@ -68,6 +83,8 @@ def test_empty_store_create() -> None:
     assert changed == ["user"]
     assert len(new_user["items"]) == 1
     assert new_user["items"][0]["id"] == "mem_u_000001"
+    assert new_user["items"][0]["tier"] == "hot"
+    assert new_user["items"][0]["score"] == 90
 
 
 def test_update_existing_item() -> None:
@@ -83,6 +100,7 @@ def test_update_existing_item() -> None:
                 "id": "mem_p_000001",
                 "content": "Backend API fields should be snake_case.",
                 "confidence": "high",
+                "score": 88,
             }
         ],
         thread_id="t1",
@@ -92,6 +110,8 @@ def test_update_existing_item() -> None:
     assert new_project is not None
     assert changed == ["project"]
     assert new_project["items"][0]["content"] == "Backend API fields should be snake_case."
+    assert new_project["items"][0]["tier"] == "hot"
+    assert new_project["items"][0]["score"] == 88
 
 
 def test_archive_existing_item() -> None:
@@ -237,6 +257,167 @@ def test_operation_validation_contract() -> None:
     ops = _normalize_and_validate_operations(payload)
     assert [op["op"] for op in ops] == ["create", "archive", "noop"]
     assert ops[0]["content"] == "C"
+
+
+def test_rescore_does_not_modify_content_or_updated_at() -> None:
+    project_store = _new_store("project")
+    project_store["items"].append(_item("mem_p_000001", content="Keep this text"))
+    original_updated_at = project_store["items"][0]["updated_at"]
+    _, new_project, changed = _apply_operations(
+        None,
+        project_store,
+        [
+            {
+                "op": "rescore",
+                "scope": "project",
+                "id": "mem_p_000001",
+                "score": 12,
+                "score_reason": "Stale",
+            }
+        ],
+        thread_id="t1",
+        source_anchor="a1",
+        now_iso="2026-04-22T11:00:00Z",
+    )
+    assert new_project is not None
+    assert changed == ["project"]
+    item = new_project["items"][0]
+    assert item["content"] == "Keep this text"
+    assert item["updated_at"] == original_updated_at
+    assert item["score"] == 12
+    assert item["tier"] == "cold"
+
+
+def test_retier_does_not_modify_content_or_updated_at() -> None:
+    project_store = _new_store("project")
+    project_store["items"].append(_item("mem_p_000001", content="Keep this text"))
+    original_updated_at = project_store["items"][0]["updated_at"]
+    _, new_project, changed = _apply_operations(
+        None,
+        project_store,
+        [
+            {
+                "op": "retier",
+                "scope": "project",
+                "id": "mem_p_000001",
+                "tier": "cold",
+                "score_reason": "History only",
+            }
+        ],
+        thread_id="t1",
+        source_anchor="a1",
+        now_iso="2026-04-22T11:00:00Z",
+    )
+    assert new_project is not None
+    assert changed == ["project"]
+    item = new_project["items"][0]
+    assert item["content"] == "Keep this text"
+    assert item["updated_at"] == original_updated_at
+    assert item["tier"] == "cold"
+    assert item["score"] < COLD_THRESHOLD
+
+
+def test_old_schema_items_are_backfilled_with_default_tier_score(tmp_path: Path) -> None:
+    store_path = tmp_path / "memory_project.json"
+    _atomic_write_text(
+        store_path,
+        (
+            '{"version":1,"scope":"project","items":[{"id":"mem_p_000001","scope":"project",'
+            '"section":"Rules","content":"Use uv.","status":"active","created_at":"2026-04-22T10:00:00Z",'
+            '"updated_at":"2026-04-22T10:00:00Z"}]}\n'
+        ),
+    )
+    loaded = _read_memory_store(store_path, "project")
+    item = loaded["items"][0]
+    assert item["tier"] == DEFAULT_TIER
+    assert item["score"] == DEFAULT_SCORE
+    assert item["last_scored_at"] == "2026-04-22T10:00:00Z"
+
+
+def test_operation_validation_rejects_invalid_tier() -> None:
+    payload = {
+        "operations": [
+            {
+                "op": "create",
+                "scope": "project",
+                "section": "S",
+                "content": "C",
+                "tier": "invalid",
+            }
+        ]
+    }
+    assert _normalize_and_validate_operations(payload) == []
+
+
+def test_score_clamp_and_tier_derivation() -> None:
+    payload = {
+        "operations": [
+            {
+                "op": "create",
+                "scope": "project",
+                "section": "Rules",
+                "content": "Use uv",
+                "score": 188,
+            },
+            {
+                "op": "rescore",
+                "scope": "project",
+                "id": "mem_p_000001",
+                "score": -7,
+            },
+        ]
+    }
+    ops = _normalize_and_validate_operations(
+        payload,
+        rescoring_candidate_ids_by_scope={"project": {"mem_p_000001"}},
+    )
+    assert ops[0]["score"] == 100
+    assert ops[1]["score"] == 0
+    assert _derive_tier_from_score(_normalize_score(88)) == "hot"
+
+
+def test_create_aligns_score_with_explicit_tier() -> None:
+    new_user, _, changed = _apply_operations(
+        _new_store("user"),
+        None,
+        [
+            {
+                "op": "create",
+                "scope": "user",
+                "section": "Prefs",
+                "content": "Prefer concise output.",
+                "tier": "hot",
+                "score": 10,
+            }
+        ],
+        thread_id="t1",
+        source_anchor="a1",
+        now_iso="2026-04-22T10:00:00Z",
+    )
+    assert new_user is not None
+    assert changed == ["user"]
+    item = new_user["items"][0]
+    assert item["tier"] == "hot"
+    assert item["score"] >= HOT_THRESHOLD
+
+
+def test_memory_snapshot_caps_items_per_scope() -> None:
+    project_store = _new_store("project")
+    for idx in range(MAX_SNAPSHOT_ITEMS_PER_SCOPE + 20):
+        project_store["items"].append(
+            _item(
+                f"mem_p_{idx + 1:06d}",
+                content=f"Rule {idx}",
+            )
+        )
+    snapshot = _build_memory_snapshot(
+        None,
+        project_store,
+        conversation="use uv and keep tests green",
+    )
+    project_snapshot = snapshot["project"]
+    assert isinstance(project_snapshot, dict)
+    assert len(project_snapshot["items"]) == MAX_SNAPSHOT_ITEMS_PER_SCOPE
 
 
 def test_store_read_write_roundtrip(tmp_path: Path) -> None:

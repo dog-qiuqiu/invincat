@@ -126,19 +126,30 @@ Press `Tab` to autocomplete available commands. See [Slash Commands](#slash-comm
 
 ---
 
-## Task Planning
+## Plan Mode
 
-```
-/plan <task description>
-```
+Use planner mode when you want to discuss and approve a plan before execution:
 
-Generate a structured plan before executing. A dedicated planner sub-agent breaks the task into ordered steps and presents them for your review. The main agent only starts executing after you explicitly approve.
-
-```
-/plan add JWT authentication to user_service.py and update the related tests
+```bash
+/plan
 ```
 
-The dialog offers three options: **Approve and execute** / **Refine** / **Cancel**.
+Then describe your task in chat. The planner agent will:
+
+- analyze requirements with read-only tools
+- write a todo list (`write_todos`)
+- ask for explicit approval (`approve_plan`)
+
+After approval, planner mode exits and keeps the approved checklist visible.
+Execution is manual: tell the main agent to execute when you're ready.
+
+Exit planner mode anytime:
+
+```bash
+/exit-plan
+```
+
+`/exit-plan` also cancels an in-flight planner turn and drops queued planner handoff actions, so no stale plan execution will continue after exit.
 
 ---
 
@@ -366,6 +377,8 @@ Type `/` in the input box and press `Tab` to view and autocomplete all commands.
 |---------|-------------|
 | `/clear` | Clear current conversation, start new session |
 | `/threads` | Browse and restore historical sessions |
+| `/plan` | Enter planner mode (plan and approve checklist only) |
+| `/exit-plan` | Exit planner mode, cancel running planner turn and queued handoff |
 | `/quit` / `/q` | Exit program |
 
 ### Model & Interface

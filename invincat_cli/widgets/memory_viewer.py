@@ -15,6 +15,8 @@ from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
+from invincat_cli.i18n import t
+
 if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.timer import Timer
@@ -22,6 +24,7 @@ if TYPE_CHECKING:
 _MAX_CONTENT_PREVIEW_CHARS = 140
 _REFRESH_INTERVAL_SECONDS = 1.5
 _ALLOWED_STATUS = frozenset({"active", "archived"})
+_ALLOWED_TIER = frozenset({"hot", "warm", "cold"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +36,10 @@ class MemoryItemView:
     section: str
     status: str
     content: str
+    tier: str
+    score: int
+    score_reason: str
+    last_scored_at: str
     updated_at: str
 
 
@@ -72,6 +79,22 @@ def _trim(text: Any, max_chars: int) -> str:
     if len(normalized) <= max_chars:
         return normalized
     return normalized[: max_chars - 3].rstrip() + "..."
+
+
+def _normalize_tier(value: Any) -> str:
+    if isinstance(value, str):
+        tier = value.strip().lower()
+        if tier in _ALLOWED_TIER:
+            return tier
+    return "warm"
+
+
+def _normalize_score(value: Any) -> int:
+    try:
+        score = int(value)
+    except (TypeError, ValueError):
+        score = 50
+    return max(0, min(100, score))
 
 
 def _markup_text(lines: list[str]) -> Content:
@@ -137,6 +160,12 @@ def _load_scope_snapshot(scope: str, path: str) -> MemoryScopeView:
         if not item_id or not section or not content or status not in _ALLOWED_STATUS:
             continue
         updated_at = _trim(raw_item.get("updated_at"), max_chars=64)
+        tier = _normalize_tier(raw_item.get("tier"))
+        score = _normalize_score(raw_item.get("score"))
+        score_reason = _trim(raw_item.get("score_reason"), max_chars=160)
+        last_scored_at = _trim(raw_item.get("last_scored_at"), max_chars=64)
+        if not last_scored_at:
+            last_scored_at = updated_at
         items.append(
             MemoryItemView(
                 scope=scope,
@@ -144,6 +173,10 @@ def _load_scope_snapshot(scope: str, path: str) -> MemoryScopeView:
                 section=section,
                 status=status,
                 content=content,
+                tier=tier,
+                score=score,
+                score_reason=score_reason,
+                last_scored_at=last_scored_at,
                 updated_at=updated_at,
             )
         )
@@ -248,9 +281,9 @@ class MemoryViewerScreen(ModalScreen[None]):
             yield Static("", id="memory-title", classes="memory-title")
             yield Static("", id="memory-summary", classes="memory-summary")
             with VerticalScroll(id="memory-list", classes="memory-list"):
-                yield Static("Loading memory...")
+                yield Static(t("memory.viewer.loading"))
             yield Static(
-                "1 user · 2 project · tab switch · r refresh · a toggle archived · esc close",
+                t("memory.viewer.help"),
                 classes="memory-help",
             )
 
@@ -280,66 +313,101 @@ class MemoryViewerScreen(ModalScreen[None]):
         elif self._current_scope not in ordered_scopes:
             self._current_scope = ordered_scopes[0]
 
-        title.update(f"Memory Manager · Scope: {self._current_scope}")
+        title.update(t("memory.viewer.title").format(scope=self._current_scope))
 
         lines: list[str] = []
         view = snapshots.get(self._current_scope)
         if view is None:
             summary.update(
-                "Scopes: "
-                f"{valid_scopes}/{total_scopes} valid · "
-                f"Current scope unavailable: {self._current_scope}"
+                t("memory.viewer.summary_unavailable").format(
+                    valid=valid_scopes,
+                    total=total_scopes,
+                    scope=self._current_scope,
+                )
             )
-            lines.append("No memory store configured for current scope.")
+            lines.append(t("memory.viewer.no_scope_configured"))
         else:
             latest = _iso_to_local(view.latest_updated_at) or "-"
             summary.update(
-                "Scopes: "
-                f"{valid_scopes}/{total_scopes} valid · "
-                f"path: {view.path} · "
-                f"total={view.total} active={view.active} archived={view.archived} "
-                f"latest={latest}"
+                t("memory.viewer.summary").format(
+                    valid=valid_scopes,
+                    total=total_scopes,
+                    path=view.path,
+                    items_total=view.total,
+                    active=view.active,
+                    archived=view.archived,
+                    latest=latest,
+                )
             )
             lines.append(
-                "[bold #5DADE2]scope[/bold #5DADE2]: "
+                f"[bold #5DADE2]{escape(t('memory.viewer.label.scope'))}[/bold #5DADE2]: "
                 f"{escape(view.scope)}"
             )
             lines.append(
-                "[bold #5DADE2]path[/bold #5DADE2]: "
+                f"[bold #5DADE2]{escape(t('memory.viewer.label.path'))}[/bold #5DADE2]: "
                 f"{escape(view.path)}"
             )
             if not view.exists:
-                lines.append("[bold #F5B041]status[/bold #F5B041]: missing")
+                lines.append(
+                    f"[bold #F5B041]{escape(t('memory.viewer.label.status'))}[/bold #F5B041]: "
+                    f"{escape(t('memory.viewer.status.missing'))}"
+                )
             elif not view.valid:
                 err = escape(view.error or "unknown error")
-                lines.append(f"[bold #EC7063]status[/bold #EC7063]: invalid ({err})")
+                lines.append(
+                    f"[bold #EC7063]{escape(t('memory.viewer.label.status'))}[/bold #EC7063]: "
+                    f"{escape(t('memory.viewer.status.invalid').format(error=err))}"
+                )
             else:
-                lines.append("[bold #58D68D]status[/bold #58D68D]: ok")
+                lines.append(
+                    f"[bold #58D68D]{escape(t('memory.viewer.label.status'))}[/bold #58D68D]: "
+                    f"{escape(t('memory.viewer.status.ok'))}"
+                )
                 rendered_items = 0
+                tier_rank = {"hot": 0, "warm": 1, "cold": 2}
                 sorted_items = sorted(
                     view.items,
-                    key=lambda item: (item.section.casefold(), item.item_id),
+                    key=lambda item: (
+                        0 if item.status == "active" else 1,
+                        tier_rank.get(item.tier, 1),
+                        -item.score,
+                        item.section.casefold(),
+                        item.item_id,
+                    ),
                 )
                 for item in sorted_items:
                     if item.status == "archived" and not self._show_archived:
                         continue
                     rendered_items += 1
                     lines.append(
-                        "  [bold #AF7AC5]status[/bold #AF7AC5]="
+                        f"  [bold #AF7AC5]{escape(t('memory.viewer.label.status'))}[/bold #AF7AC5]="
                         f"{escape(item.status)}  "
-                        "[bold #AF7AC5]id[/bold #AF7AC5]="
+                        f"[bold #AF7AC5]{escape(t('memory.viewer.label.id'))}[/bold #AF7AC5]="
                         f"{escape(item.item_id)}  "
-                        "[bold #AF7AC5]section[/bold #AF7AC5]="
-                        f"{escape(item.section)}"
+                        f"[bold #AF7AC5]{escape(t('memory.viewer.label.section'))}[/bold #AF7AC5]="
+                        f"{escape(item.section)}  "
+                        f"[bold #AF7AC5]{escape(t('memory.viewer.label.tier'))}[/bold #AF7AC5]="
+                        f"{escape(item.tier)}  "
+                        f"[bold #AF7AC5]{escape(t('memory.viewer.label.score'))}[/bold #AF7AC5]="
+                        f"{item.score}"
                     )
                     lines.append(
-                        "    [bold #AF7AC5]content[/bold #AF7AC5]="
+                        f"    [bold #AF7AC5]{escape(t('memory.viewer.label.content'))}[/bold #AF7AC5]="
                         f"{escape(item.content)}"
                     )
+                    if item.score_reason:
+                        lines.append(
+                            f"    [bold #AF7AC5]{escape(t('memory.viewer.label.score_reason'))}[/bold #AF7AC5]="
+                            f"{escape(item.score_reason)}"
+                        )
+                    lines.append(
+                        f"    [bold #AF7AC5]{escape(t('memory.viewer.label.last_scored_at'))}[/bold #AF7AC5]="
+                        f"{escape(item.last_scored_at or '-')}"
+                    )
                 if rendered_items == 0:
-                    lines.append("  - (no visible items)")
+                    lines.append(f"  - {t('memory.viewer.no_visible_items')}")
 
-        content = "\n".join(lines).strip() if lines else "No memory stores configured."
+        content = "\n".join(lines).strip() if lines else t("memory.viewer.no_stores_configured")
         children = list(container.children)
         if children and isinstance(children[0], Static):
             children[0].update(_markup_text([content]))

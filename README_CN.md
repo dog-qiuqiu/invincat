@@ -126,19 +126,30 @@ invincat-cli -n "运行测试套件" -S all -y
 
 ---
 
-## 任务规划
+## 计划模式（Plan Mode）
 
-```
-/plan <任务描述>
-```
+当你希望“先规划、后执行”时，使用计划模式：
 
-在执行前生成结构化计划。规划子 Agent 会将任务拆解为有序步骤并展示给你确认，只有在你批准后主 Agent 才会开始执行。
-
-```
-/plan 为 user_service.py 添加 JWT 认证，更新相关测试
+```bash
+/plan
 ```
 
-弹窗提供三个选项：**批准并执行** / **精化** / **取消**。
+进入后直接描述任务。planner agent 会：
+
+- 使用只读工具分析需求
+- 产出 todo 清单（`write_todos`）
+- 发起显式审批（`approve_plan`）
+
+审批通过后会退出计划模式并保留已确认清单。
+执行是手动触发：你确认后再让主 agent 开始执行。
+
+可随时退出计划模式：
+
+```bash
+/exit-plan
+```
+
+`/exit-plan` 会同时取消进行中的 planner 回合，并清理已排队的计划 handoff，避免退出后仍继续执行旧计划。
 
 ---
 
@@ -364,6 +375,8 @@ INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5
 |------|------|
 | `/clear` | 清除当前对话，开始新会话 |
 | `/threads` | 浏览并恢复历史会话 |
+| `/plan` | 进入计划模式（仅规划并审批清单） |
+| `/exit-plan` | 退出计划模式，并取消运行中的 planner 与已排队 handoff |
 | `/quit` / `/q` | 退出程序 |
 
 ### 模型与界面

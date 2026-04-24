@@ -7,6 +7,8 @@ from invincat_cli.command_registry import (
     SLASH_COMMANDS,
     SIDE_EFFECT_FREE,
 )
+from invincat_cli.plan_agent import PLANNER_ALLOWED_TOOLS
+from invincat_cli.app import _PLAN_MODE_ALLOWED_INTERRUPT_TOOLS
 
 
 class TestSlashCommandRegistration:
@@ -27,6 +29,12 @@ class TestSlashCommandRegistration:
         plan = next(cmd for cmd in COMMANDS if cmd.name == "/plan")
         assert plan.description, "/plan should have a localized description"
 
-    def test_exit_plan_not_registered(self) -> None:
+    def test_exit_plan_registered(self) -> None:
         names = {cmd.name for cmd in COMMANDS}
-        assert "/exit-plan" not in names
+        assert "/exit-plan" in names
+
+    def test_exit_plan_is_side_effect_free(self) -> None:
+        assert "/exit-plan" in SIDE_EFFECT_FREE
+
+    def test_plan_interrupt_allowlist_tracks_planner_allowed_tools(self) -> None:
+        assert _PLAN_MODE_ALLOWED_INTERRUPT_TOOLS == frozenset(PLANNER_ALLOWED_TOOLS)

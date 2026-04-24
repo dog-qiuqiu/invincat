@@ -15,6 +15,12 @@ from langchain.agents.middleware.types import (
     ModelResponse,
 )
 from langchain_core.messages import SystemMessage
+from invincat_cli.memory_agent import (
+    MAX_HOT_ITEMS_PER_SCOPE as _MAX_HOT_ITEMS_PER_SCOPE,
+)
+from invincat_cli.memory_agent import (
+    MAX_WARM_ITEMS_PER_SCOPE as _MAX_WARM_ITEMS_PER_SCOPE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +31,7 @@ _MEMORY_INJECTION_TEMPLATE = """<agent_memory>
 _MAX_SCOPE_RENDER_CHARS = 4000
 _MAX_TOTAL_INJECTION_CHARS = 8000
 _ALLOWED_ITEM_STATUS = {"active", "archived"}
+_ALLOWED_ITEM_TIER = {"hot", "warm", "cold"}
 
 
 def _normalize_text(value: Any, *, max_chars: int) -> str:
@@ -51,26 +58,33 @@ def _is_valid_store_item(raw: Any) -> bool:
     return True
 
 
-def _render_store_content(store: dict[str, Any], *, max_chars: int = _MAX_SCOPE_RENDER_CHARS) -> str:
-    # tuple: (updated_at, item_id, content) — updated_at enables recency sort
-    grouped: dict[str, list[tuple[str, str, str]]] = {}
-    items = store.get("items", [])
-    if not isinstance(items, list):
-        return ""
+def _normalize_item_tier(raw: Any) -> str:
+    if isinstance(raw, str):
+        tier = raw.strip().lower()
+        if tier in _ALLOWED_ITEM_TIER:
+            return tier
+    return "warm"
+
+
+def _normalize_item_score(raw: Any) -> int:
+    try:
+        score = int(raw)
+    except (TypeError, ValueError):
+        score = 50
+    return max(0, min(100, score))
+
+
+def _select_items_for_injection(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
     for raw in items:
         if not _is_valid_store_item(raw):
             continue
         if str(raw.get("status", "")).strip().lower() != "active":
             continue
-        item_id = str(raw.get("id", "")).strip()
-        updated_at = str(raw.get("updated_at") or "")
-        section = _normalize_text(raw.get("section") or "Imported Notes", max_chars=80)
-        content = _normalize_text(raw.get("content"), max_chars=500)
-        if not section:
-            section = "Imported Notes"
-        if not content:
+        tier = _normalize_item_tier(raw.get("tier"))
+        if tier == "cold":
             continue
-        grouped.setdefault(section, []).append((updated_at, item_id, content))
+        grouped.setdefault(section, []).append((item_id, content))
 
     if not grouped:
         return ""
@@ -87,23 +101,13 @@ def _render_store_content(store: dict[str, Any], *, max_chars: int = _MAX_SCOPE_
         used_chars += line_len
         return True
 
-    for section in sorted(grouped, key=str.casefold):
-        # Sort by updated_at descending so most recently updated facts appear first.
-        # Items without updated_at sort after those with a timestamp (empty string < ISO date).
-        entries = sorted(grouped[section], key=lambda x: x[0], reverse=True)
-        if lines:
-            if not _try_append(""):
-                break
-        if not _try_append(f"# {section}"):
+    for item in selected:
+        line = (
+            f"- [{item['tier']}:{item['score']}] "
+            f"{item['section']}: {item['content']}"
+        )
+        if not _try_append(line):
             break
-        if not _try_append(""):
-            break
-        for _, _, content in entries:
-            if not _try_append(f"- {content}"):
-                break
-        else:
-            continue
-        break
     return "\n".join(lines).strip()
 
 
