@@ -258,12 +258,28 @@ AI can remember your preferences, project conventions, and important information
 - Strong write safety: schema validation, dedup/conflict guards, path whitelist, and atomic write (`tmp + os.replace`) prevent corruption.
 - Transparent and operable: `/memory` provides full-screen live inspection and management for both scopes.
 
+### Memory Runtime Architecture
+
+```mermaid
+flowchart LR
+    A[Conversation Turn] --> B[Main Agent Response]
+    B --> C[MemoryAgentMiddleware aafter_agent]
+    C --> D{Non-trivial + completed + throttle passed?}
+    D -- No --> E[Skip extraction]
+    D -- Yes --> F[Incremental slice by cursor + anchor]
+    F --> G[Collect tool evidence]
+    G --> H[Structured ops JSON]
+    H --> I[Validate + guardrails]
+    I --> J[Atomic write memory_user.json / memory_project.json]
+    J --> K[Next turn RefreshableMemoryMiddleware injects active memory]
+```
+
 ### Memory Files
 
 | Type | Path | Scope |
 |------|------|-------|
 | Global Memory Store | `~/.invincat/{assistant_id}/memory_user.json` (default: `~/.invincat/agent/memory_user.json`) | Universal for all projects (coding style, personal preferences) |
-| Project Memory Store | `{project root}/.invincat/memory_project.json` | Only for current Git repository (architecture conventions, tech stack) |
+| Project Memory Store | `{project root}/.invincat/memory_project.json` (fallback: `{cwd}/.invincat/memory_project.json` when project root is not detected) | Current project context (repository conventions, architecture, stack); falls back to current working directory when no project root is detected |
 
 `AGENTS.md` is deprecated for runtime memory injection. The runtime memory pipeline now uses `memory_*.json` as the single source of truth.
 
@@ -296,6 +312,31 @@ By default the memory agent runs after every non-trivial turn
 (`MIN_TURN_INTERVAL=1`, no wall-clock or file cooldown) so memory stays
 in sync with the latest signal. Raise the values to re-enable throttling
 if the extraction cost becomes a concern.
+
+For production tuning (cost-sensitive setups), a practical starting point is:
+
+```bash
+INVINCAT_MEMORY_MIN_TURN_INTERVAL=2
+INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS=8
+INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5
+```
+
+### Troubleshooting Project Memory Not Updating
+
+If project memory updates appear rare, check in this order:
+
+1. Is the turn non-trivial and completed? Very short confirmations (`ok`, `thanks`, `继续`) are skipped.
+2. Did evidence come from supported tools? Project evidence extraction prioritizes `read_file`, `edit_file`, `write_file`, `execute`, `bash`, `shell`.
+3. Is evidence durable and convention-like? Temporary logs or one-off statuses are intentionally ignored.
+4. Is throttling active? `MIN_TURN_INTERVAL`, wall-clock cooldown, or file cooldown can suppress runs.
+5. Was history rewritten? Cursor mismatch triggers fallback behavior; check whether compaction/replay happened.
+6. Did writes fail guardrails? Invalid/conflicting operations are dropped by schema and safety validation.
+
+Quick verification path:
+
+1. Run one concrete, non-trivial turn that states a stable project rule.
+2. Ensure at least one supporting read/execute tool result exists in that turn.
+3. Open `/memory` and check the `project` tab for new or updated active items.
 
 ### Memory Design Docs
 
@@ -402,6 +443,9 @@ Type `/` in the input box and press `Tab` to view and autocomplete all commands.
 | `/mcp` | View connected MCP servers and tools |
 | `/editor` | Edit current input in external editor |
 | `/skill-creator` | Interactive wizard for creating new skills |
+| `/changelog` | Open release notes/changelog |
+| `/feedback` | Show feedback channel information |
+| `/docs` | Open project documentation entry |
 
 ### Others
 

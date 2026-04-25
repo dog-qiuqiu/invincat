@@ -19,7 +19,7 @@
 
 - 长期记忆真源：
   - 用户级：`~/.invincat/{assistant_id}/memory_user.json`
-  - 项目级：`{project_root}/.invincat/memory_project.json`
+  - 项目级：`{project_root}/.invincat/memory_project.json`（若未识别项目根则回退到 `{cwd}/.invincat/memory_project.json`）
 - 会话历史（checkpoint/offload）不等价于长期策略记忆。
 - `AGENTS.md` 已从运行时记忆注入链路中弃用。
 
@@ -140,7 +140,7 @@ flowchart TD
 - 同一轮对同一 id 冲突操作拒绝
 - 过高删除/归档比例拦截
 - 防批量“全量清空活跃记忆”保护
-- `rescore/retier` 仅允许命中本轮局部候选集（每 scope 上限 12）
+- `rescore/retier` 仅允许命中本轮局部候选集（每 scope 上限 16）
 - `delete` 用于移除与当前事实不符、被替代或会误导的记忆
 - 每个已完成回合会先扫描完整 store，确定性删除 `score_reason` 明确表示事实不符、过期、被替代或会误导的 active 记忆；该清理不依赖截断后的模型 snapshot、memory agent 模型输出、trivial-turn 判断或抽取节流
 - `rescore/retier` 只允许调整优先级元数据；如果事实内容变化或旧内容会误导，必须使用带更正 `content` 的 `update`，或 `delete + create`
@@ -189,3 +189,108 @@ flowchart TD
 - 可运维性强：
   - JSON 结构易读、易 diff、易备份，便于团队审查和回溯。
   - `/memory` 提供可视化管理入口，能直接核对 active/archived 与评分字段。
+
+## 12. 项目级记忆的工具证据策略
+
+项目级抽取采用保守策略，并对证据进行门槛化约束。
+
+- 仅以下工具结果可作为项目证据来源：
+  - `read_file`
+  - `edit_file`
+  - `write_file`
+  - `execute`
+  - `bash`
+  - `shell`
+- 证据文本还需通过质量过滤：
+  - 归一化并截断到预算范围
+  - 满足最小有效长度
+  - 命中“约定/架构/测试/构建/规范”相关关键词模式
+- 证据预算控制：
+  - 每轮最多采样固定数量的工具证据
+  - 单条证据与总证据字符数均有限额
+
+设计意图：
+- 避免一次性日志和短期噪声被误写入长期项目记忆。
+- 提升项目记忆对稳定仓库约定的命中率与精度。
+
+## 13. 排障：为什么项目级记忆不容易更新
+
+建议按顺序排查：
+
+1. 回合是否满足触发条件：
+   - 必须是“已完成且非 trivial”的回合。
+2. 是否被节流抑制：
+   - 检查 `INVINCAT_MEMORY_MIN_TURN_INTERVAL`
+   - 检查 `INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS`
+   - 检查 `INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS`
+3. 是否有足够证据：
+   - 回合内至少有一条来自白名单工具的结果。
+   - 证据必须体现稳定约定，而非临时状态噪声。
+4. 历史是否发生重写：
+   - 压缩/回放后可能触发游标失效回退。
+5. 是否被安全校验拒绝：
+   - 冲突/无效/高风险操作会在落盘前被丢弃。
+6. 最终确认：
+   - 打开 `/memory`，查看 `project` 的 active 条目和评分字段。
+
+## 14. 生命周期示例
+
+示例 A：create -> 强化 -> archive
+
+```json
+{
+  "operations": [
+    {"op": "create", "scope": "project", "section": "Code Style", "content": "Use Ruff for linting and formatting.", "confidence": "high", "tier": "warm", "score": 66, "score_reason": "Repeated repository convention in tool evidence"}
+  ]
+}
+```
+
+```json
+{
+  "operations": [
+    {"op": "rescore", "scope": "project", "id": "mem_p_000021", "score": 78, "score_reason": "Confirmed across multiple recent turns"}
+  ]
+}
+```
+
+```json
+{
+  "operations": [
+    {"op": "archive", "scope": "project", "id": "mem_p_000021", "reason": "Low confidence over time with no reinforcement"}
+  ]
+}
+```
+
+示例 B：失效清理 + 新事实替换
+
+```json
+{
+  "operations": [
+    {"op": "delete", "scope": "project", "id": "mem_p_000031", "reason": "Superseded by current repository convention"},
+    {"op": "create", "scope": "project", "section": "Testing", "content": "Use pytest with marker-based test selection.", "confidence": "high", "tier": "warm", "score": 70, "score_reason": "Current workflow evidence from recent tool outputs"}
+  ]
+}
+```
+
+## 15. 隐私与敏感信息处理
+
+- 工具证据中的敏感绝对路径会先做脱敏再参与抽取。
+- 记忆 store 设计目标是沉淀长期约定，不应存储密钥、令牌等敏感信息。
+- 路径白名单保证只允许写入已配置的 memory store 文件。
+- 损坏恢复流程避免不安全的部分写入，并保留备份供排查。
+
+## 16. 可观测性与调试信号
+
+- UI 信号：
+  - spinner 出现 `Updating memory...` 表示进入抽取/写入阶段。
+  - 状态栏更新可看到写入目标路径摘要。
+- 运行信号：
+  - trivial-turn 跳过
+  - 节流跳过（轮次/时间/文件冷却）
+  - 历史改写后的游标回退
+  - 操作校验丢弃（schema/冲突/安全规则）
+- 运维排查流程：
+  1. 构造一个明确、非 trivial 的偏好/约定回合
+  2. 确认回合内有支撑该约定的工具结果
+  3. 在 `/memory` 的 user/project 页核对变化
+  4. 必要时对 `memory_*.json` 做 diff 追踪

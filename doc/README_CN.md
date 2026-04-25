@@ -252,12 +252,28 @@ AI 可以在会话之间记住你的偏好、项目约定和重要信息。
 - 写入安全防护完整：schema 校验、去重/冲突保护、路径白名单、原子写盘（`tmp + os.replace`）。
 - 可观测可运维：`/memory` 提供 user/project 双视图的实时管理能力。
 
+### 记忆运行时架构
+
+```mermaid
+flowchart LR
+    A[对话回合] --> B[主 Agent 响应]
+    B --> C[MemoryAgentMiddleware 回合后异步执行]
+    C --> D{非 trivial + 已完成 + 通过节流?}
+    D -- 否 --> E[跳过本次抽取]
+    D -- 是 --> F[基于 cursor + anchor 构建增量切片]
+    F --> G[收集工具证据]
+    G --> H[生成结构化 operations JSON]
+    H --> I[校验与安全保护]
+    I --> J[原子写入 memory_user.json / memory_project.json]
+    J --> K[下轮由 RefreshableMemoryMiddleware 注入 active 记忆]
+```
+
 ### 记忆文件
 
 | 类型 | 路径 | 适用范围 |
 |------|------|---------|
 | 全局记忆存储 | `~/.invincat/{assistant_id}/memory_user.json`（默认：`~/.invincat/agent/memory_user.json`） | 所有项目通用（编码风格、个人偏好）|
-| 项目记忆存储 | `{项目根目录}/.invincat/memory_project.json` | 仅当前 Git 仓库（架构约定、技术栈）|
+| 项目记忆存储 | `{项目根目录}/.invincat/memory_project.json`（若未识别项目根则回退到 `{cwd}/.invincat/memory_project.json`） | 当前项目上下文（仓库约定、架构、技术栈）；未识别项目根时回退到当前工作目录 |
 
 `AGENTS.md` 已从运行时记忆注入链路中弃用，当前以 `memory_*.json` 为唯一真源。
 
@@ -275,13 +291,38 @@ AI 可以在会话之间记住你的偏好、项目约定和重要信息。
 
 ```bash
 INVINCAT_MEMORY_CONTEXT_MESSAGES=0
+INVINCAT_MEMORY_MIN_TURN_INTERVAL=1
+INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS=0
+INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=0
+```
+
+`INVINCAT_MEMORY_CONTEXT_MESSAGES=0` 表示对“自上次记忆提取后的增量消息”
+不设上限；设置为正整数则只取该增量中的最近 N 条消息。
+
+默认值表示“每个非 trivial 回合尽量同步一次记忆”。若你更关注成本，可从以下生产建议值开始：
+
+```bash
 INVINCAT_MEMORY_MIN_TURN_INTERVAL=2
 INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS=8
 INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5
 ```
 
-`INVINCAT_MEMORY_CONTEXT_MESSAGES=0` 表示对“自上次记忆提取后的增量消息”
-不设上限；设置为正整数则只取该增量中的最近 N 条消息。
+### 项目级记忆不易更新时如何排查
+
+建议按这个顺序检查：
+
+1. 回合是否“非 trivial 且已完成”？`ok/谢谢/继续` 这类短确认会被跳过。
+2. 证据是否来自支持的工具？项目证据优先来自 `read_file`、`edit_file`、`write_file`、`execute`、`bash`、`shell`。
+3. 内容是否稳定可复用？一次性日志、临时状态默认不写入长期项目记忆。
+4. 是否被节流？`MIN_TURN_INTERVAL`、时间冷却、文件冷却都可能抑制触发。
+5. 历史是否发生重写？压缩/回放可能触发游标失效回退。
+6. 是否被安全校验拒绝？冲突或无效操作会在落盘前被丢弃。
+
+快速验证路径：
+
+1. 发起一个明确、非 trivial 的“项目稳定约定”回合。
+2. 让回合里至少包含一次可支撑该约定的读文件或命令结果。
+3. 打开 `/memory`，在 `project` 页查看是否新增或更新了 active 条目。
 
 ### 记忆设计文档
 
@@ -388,6 +429,9 @@ INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5
 | `/mcp` | 查看已连接的 MCP 服务器和工具 |
 | `/editor` | 在外部编辑器中编辑当前输入 |
 | `/skill-creator` | 创建新技能的交互向导 |
+| `/changelog` | 打开版本更新日志 |
+| `/feedback` | 查看反馈渠道信息 |
+| `/docs` | 打开项目文档入口 |
 
 ### 其他
 

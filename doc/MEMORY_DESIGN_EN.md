@@ -19,7 +19,7 @@ What differentiates this design from naive "chat history as memory":
 
 - Long-term memory source of truth:
   - User scope: `~/.invincat/{assistant_id}/memory_user.json`
-  - Project scope: `{project_root}/.invincat/memory_project.json`
+  - Project scope: `{project_root}/.invincat/memory_project.json` (fallback: `{cwd}/.invincat/memory_project.json` when project root is not detected)
 - Conversation history (checkpoints/offload) is not long-term policy memory.
 - `AGENTS.md` is deprecated in the runtime memory injection path.
 
@@ -143,7 +143,7 @@ Signal-based early trigger:
 - Conflict guard: same id touched multiple times in one batch is rejected.
 - Removal-ratio guard: blocks over-aggressive archive/delete batches.
 - Empty-wipe guard: prevents bulk clearing of active memory in one write.
-- `rescore/retier` are restricted to local candidates only (max 12 per scope).
+- `rescore/retier` are restricted to local candidates only (max 16 per scope).
 - `delete` removes memory that conflicts with current facts, has been superseded, or would mislead future turns.
 - On each completed turn, the full store is scanned first and active memories with a `score_reason` that clearly says the fact is invalid, outdated, superseded, or misleading are deterministically deleted; this cleanup does not depend on the truncated model snapshot, memory-agent model output, trivial-turn detection, or extraction throttles.
 - `rescore/retier` may only adjust priority metadata; if the fact changed or the old content would mislead, the agent must use `update` with corrected `content`, or `delete + create`.
@@ -194,3 +194,108 @@ Signal-based early trigger:
 - Operational transparency:
   - JSON stores are human-readable and easy to diff, backup, and audit.
   - `/memory` UI provides direct visibility into active/archived items and key scoring fields.
+
+## 12. Tool-Evidence Strategy for Project Memory
+
+Project-scope extraction is intentionally conservative and evidence-gated.
+
+- Tool-name allowlist for evidence snippets:
+  - `read_file`
+  - `edit_file`
+  - `write_file`
+  - `execute`
+  - `bash`
+  - `shell`
+- Evidence text must pass additional quality filters:
+  - normalized and size-limited
+  - minimum effective length
+  - keyword/pattern match for durable conventions (architecture, lint/test/build/workflow signals)
+- Evidence payload budgets:
+  - max tool evidence items per run
+  - per-item and total character caps
+
+Why this matters:
+- Reduces noisy one-off logs being overfit into long-term memory.
+- Improves project-memory precision for stable repository conventions.
+
+## 13. Troubleshooting: Project Memory Rarely Updates
+
+Use this checklist in order:
+
+1. Turn eligibility:
+   - ensure the turn is completed and non-trivial.
+2. Throttle checks:
+   - verify `INVINCAT_MEMORY_MIN_TURN_INTERVAL`
+   - verify `INVINCAT_MEMORY_MIN_SECONDS_BETWEEN_RUNS`
+   - verify `INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS`
+3. Evidence availability:
+   - ensure at least one allowlisted tool result exists in the turn.
+   - ensure evidence is convention-level and durable, not temporary runtime noise.
+4. Cursor and history:
+   - if history was compacted/replayed, cursor can reset; extractor may run with fallback behavior.
+5. Guardrail rejections:
+   - invalid/conflicting operations are dropped before write.
+6. Final verification:
+   - open `/memory`, check `project` scope active items and score fields.
+
+## 14. Lifecycle Examples
+
+Example A: create -> strengthen -> archive
+
+```json
+{
+  "operations": [
+    {"op": "create", "scope": "project", "section": "Code Style", "content": "Use Ruff for linting and formatting.", "confidence": "high", "tier": "warm", "score": 66, "score_reason": "Repeated repository convention in tool evidence"}
+  ]
+}
+```
+
+```json
+{
+  "operations": [
+    {"op": "rescore", "scope": "project", "id": "mem_p_000021", "score": 78, "score_reason": "Confirmed across multiple recent turns"}
+  ]
+}
+```
+
+```json
+{
+  "operations": [
+    {"op": "archive", "scope": "project", "id": "mem_p_000021", "reason": "Low confidence over time with no reinforcement"}
+  ]
+}
+```
+
+Example B: invalid fact cleanup + replacement
+
+```json
+{
+  "operations": [
+    {"op": "delete", "scope": "project", "id": "mem_p_000031", "reason": "Superseded by current repository convention"},
+    {"op": "create", "scope": "project", "section": "Testing", "content": "Use pytest with marker-based test selection.", "confidence": "high", "tier": "warm", "score": 70, "score_reason": "Current workflow evidence from recent tool outputs"}
+  ]
+}
+```
+
+## 15. Privacy and Sensitive-Data Handling
+
+- Sensitive absolute paths in evidence are redacted before model input/output shaping.
+- Memory stores are intended for durable conventions, not secrets/tokens.
+- Path whitelist ensures only configured memory-store files can be written.
+- Corrupt store recovery avoids unsafe partial writes and preserves a backup.
+
+## 16. Observability and Debugging Signals
+
+- UI signals:
+  - spinner `Updating memory...` indicates extraction/write stage.
+  - status bar updates indicate write target path summary.
+- Runtime behavior signals:
+  - trivial-turn skip
+  - throttle skip (interval/wall-clock/file cooldown)
+  - cursor reset fallback after history rewrite
+  - operation validation drop (schema/conflict/safety checks)
+- Operator workflow:
+  1. reproduce with one explicit non-trivial preference/convention turn
+  2. verify supporting tool evidence exists
+  3. inspect `/memory` user/project tabs
+  4. inspect memory store JSON diffs when needed
