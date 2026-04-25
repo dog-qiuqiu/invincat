@@ -244,6 +244,20 @@ Or equivalently `/compact`. After execution, it shows how many messages were com
 
 AI can remember your preferences, project conventions, and important information across sessions.
 
+### Memory Architecture Highlights
+
+- JSON single source of truth: runtime memory uses `memory_user.json` and `memory_project.json` only, which keeps reads/writes auditable and deterministic.
+- Dual-scope isolation: separates cross-project personal preferences (`user`) from repository conventions (`project`) to avoid memory pollution.
+- Read/write pipeline decoupling:
+  - `RefreshableMemoryMiddleware` is responsible only for loading/rendering/injecting memory.
+  - `MemoryAgentMiddleware` is responsible only for post-turn extraction and structured writes.
+- Async post-turn extraction: memory updates run after main responses, so memory persistence does not block interactive latency.
+- Incremental extraction with recovery: consumes only delta messages after last successful cursor, with full-history fallback when history is rewritten.
+- Evidence-aware project memory: project scope favors durable conventions backed by tool evidence and avoids transient session noise.
+- Deterministic invalid-fact cleanup: stale or contradicted active memories can be removed by rule-based validation, reducing long-lived wrong memory.
+- Strong write safety: schema validation, dedup/conflict guards, path whitelist, and atomic write (`tmp + os.replace`) prevent corruption.
+- Transparent and operable: `/memory` provides full-screen live inspection and management for both scopes.
+
 ### Memory Files
 
 | Type | Path | Scope |

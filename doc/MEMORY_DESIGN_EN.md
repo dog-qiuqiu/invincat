@@ -2,6 +2,19 @@
 
 This document describes the current long-term memory implementation based on structured JSON stores.
 
+## 0. Design Goals and Differentiators
+
+- Reliable in production: memory behavior should be deterministic, inspectable, and safe under long-running sessions.
+- Low latency by construction: memory persistence must not block primary assistant response delivery.
+- Minimal-but-useful memory: prioritize durable, reusable conventions over transient task chatter.
+- Scope correctness: avoid cross-project contamination by splitting user and project memory stores.
+- Evidence-driven updates: project memory should be grounded in concrete conversation/tool evidence.
+
+What differentiates this design from naive "chat history as memory":
+- Explicit memory stores (`memory_*.json`) instead of implicit replay-only memory.
+- Structured operation protocol (`create/update/rescore/retier/archive/delete/noop`) rather than free-form rewrites.
+- Middleware split between read/inject and write/extract paths, making failures easier to isolate.
+
 ## 1. Scope
 
 - Long-term memory source of truth:
@@ -166,3 +179,18 @@ Signal-based early trigger:
 
 - Automatic migration from legacy `AGENTS.md` is currently not in the JSON-only runtime path by default.
 - If your deployment has old `AGENTS.md` only, run a migration step before enforcing JSON-only rollout.
+
+## 11. Architecture Advantages and Innovation Points
+
+- End-to-end controllability:
+  - Memory writes are constrained to a typed operation contract and validated before disk.
+  - Runtime prevents direct main-agent edits to memory store files.
+- Better signal quality:
+  - Post-turn extraction + incremental cursoring reduces repeated reprocessing and stale carry-over.
+  - Early triggers on preference/rule signals improve capture timeliness.
+- Strong drift resistance:
+  - Deterministic invalid-fact cleanup removes stale/misleading active memory even when extraction is throttled.
+  - Tiering/scoring keeps injected memory focused on high-value items.
+- Operational transparency:
+  - JSON stores are human-readable and easy to diff, backup, and audit.
+  - `/memory` UI provides direct visibility into active/archived items and key scoring fields.
