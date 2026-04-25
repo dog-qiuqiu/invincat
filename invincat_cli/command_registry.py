@@ -114,11 +114,6 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="leave planner mode",
     ),
     SlashCommand(
-        name="/remember",
-        description_key="remember",
-        bypass_tier=BypassTier.QUEUED,
-    ),
-    SlashCommand(
         name="/skill-creator",
         description_key="skill_creator",
         bypass_tier=BypassTier.QUEUED,
@@ -289,18 +284,6 @@ def parse_skill_command(command: str) -> tuple[str, str]:
     args = parts[1] if len(parts) > 1 else ""
     return skill_name, args
 
-
-_STATIC_SKILL_ALIASES: frozenset[str] = frozenset({"remember", "skill-creator"})
-"""Built-in skill names that have a dedicated top-level slash command.
-
-Only list skills whose `/skill:<name>` form is redundant because a `/<name>`
-convenience alias exists in `COMMANDS`.  Do **not** add every command name
-here — that would silently suppress unrelated user skills that happen to share a
-name with a slash command (e.g., a user skill called `model` should still
-appear as `/skill:model`).
-"""
-
-
 def build_skill_commands(
     skills: list[ExtendedSkillMetadata],
 ) -> list[tuple[str, str, str]]:
@@ -308,10 +291,6 @@ def build_skill_commands(
 
     Each skill becomes a `/skill:<name>` entry with its description
     and the skill name as a hidden keyword for fuzzy matching.
-
-    Skills that already have a dedicated slash command in `COMMANDS`
-    (e.g., `remember` → `/remember`) are excluded to avoid duplicate
-    autocomplete entries.
 
     Args:
         skills: List of discovered skill metadata.
@@ -322,5 +301,4 @@ def build_skill_commands(
     return [
         (f"/skill:{skill['name']}", skill["description"], skill["name"])
         for skill in skills
-        if skill["name"] not in _STATIC_SKILL_ALIASES
     ]

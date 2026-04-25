@@ -206,14 +206,6 @@ AI 可以在会话之间记住你的偏好、项目约定和重要信息。
 
 `AGENTS.md` 已从运行时记忆注入链路中弃用，当前以 `memory_*.json` 为唯一真源。
 
-### 手动更新记忆
-
-```
-/remember
-```
-
-触发 AI 主动整理对话中值得保存的内容，写入记忆文件。
-
 ### 自动记忆更新
 
 记忆更新会在“非 trivial 且任务完成”的回合后触发，并结合以下机制控制频率：
@@ -270,7 +262,7 @@ INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5
 
 | 位置 | 路径 | 说明 |
 |------|------|------|
-| 内置技能 | 随包安装 | `remember`、`skill-creator` |
+| 内置技能 | 随包安装 | `skill-creator` |
 | 全局自定义 | `~/.invincat/agent/skills/` | 跨项目可用 |
 | 项目级 | `.invincat/skills/` | 仅当前项目可用 |
 
@@ -332,7 +324,6 @@ INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5
 | 命令 | 说明 |
 |------|------|
 | `/offload` / `/compact` | 手动压缩上下文，释放 token |
-| `/remember` | 手动触发记忆更新 |
 | `/memory` | 打开全屏记忆管理界面（实时查看 user/project） |
 
 ### 工具与扩展
@@ -366,7 +357,7 @@ INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5
 执行 `/offload` 手动压缩历史，或等待系统自动压缩（使用量超过 80% 时触发）。
 
 **Q: 如何让 AI 记住我的编码偏好？**
-直接告诉 AI，例如"记住：我的项目使用 4 空格缩进，不加分号"，AI 会在适当时机自动保存到记忆文件。也可执行 `/remember` 手动触发保存。
+直接告诉 AI，例如"记住：我的项目使用 4 空格缩进，不加分号"，AI 会在适当时机自动保存到记忆文件。
 
 **Q: 如何在不同项目间共享技能？**
 将技能文件放在 `~/.invincat/agent/skills/` 目录下即可全局生效；放在 `.invincat/skills/` 则仅当前项目可用。

@@ -3751,12 +3751,6 @@ class DeepAgentsApp(App):
                     parts.append(model_name)
 
                 await self._mount_message(AppMessage(" · ".join(parts)))
-        elif cmd == "/remember" or cmd.startswith("/remember "):
-            # Convenience alias for /skill:remember — shorter and discoverable
-            # before skill loading completes.
-            args = command.strip()[len("/remember") :].strip()
-            rewritten = f"/skill:remember {args}" if args else "/skill:remember"
-            await self._handle_skill_command(rewritten)
         elif cmd == "/skill-creator" or cmd.startswith("/skill-creator "):
             # Convenience alias for /skill:skill-creator — shorter and
             # discoverable before skill loading completes.

@@ -37,7 +37,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "welcome.tips.2": "Try /threads to resume a previous conversation",
         "welcome.tips.3": "Use /offload when your conversation gets long",
         "welcome.tips.4": "Use /mcp to see your loaded tools and servers",
-        "welcome.tips.5": "Use /remember to save learnings from this conversation",
         "welcome.tips.6": "Use /model to switch models mid-conversation",
         "welcome.tips.7": "Press ctrl+x to compose prompts in your external editor",
         "welcome.tips.8": "Press ctrl+u to delete to the start of the line in the chat input",
@@ -127,7 +126,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "memory.viewer.status.invalid": "invalid ({error})",
         "memory.viewer.status.ok": "ok",
         "memory.viewer.no_visible_items": "(no visible items)",
-        "command.remember": "Update memory and skills from conversation",
         "command.skill_creator": "Guide for creating effective agent skills",
         "command.threads": "Browse and resume previous threads",
         "command.trace": "Open current thread in LangSmith",
@@ -416,7 +414,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "welcome.tips.2": "尝试 /threads 恢复之前的对话",
         "welcome.tips.3": "对话过长时使用 /offload 释放上下文空间",
         "welcome.tips.4": "使用 /mcp 查看已加载的工具和服务器",
-        "welcome.tips.5": "使用 /remember 保存对话中的学习内容",
         "welcome.tips.6": "使用 /model 在对话中切换模型",
         "welcome.tips.7": "按 ctrl+x 在外部编辑器中编写提示",
         "welcome.tips.8": "按 ctrl+u 删除输入行首的内容",
@@ -506,7 +503,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "memory.viewer.status.invalid": "无效（{error}）",
         "memory.viewer.status.ok": "正常",
         "memory.viewer.no_visible_items": "（无可见条目）",
-        "command.remember": "从对话中更新记忆和技能",
         "command.skill_creator": "创建有效代理技能的指南",
         "command.threads": "浏览并恢复之前的对话",
         "command.trace": "在 LangSmith 中打开当前对话",
@@ -884,10 +880,13 @@ class I18n:
         Returns:
             List of all translated tip texts.
         """
-        tips = []
+        language_tips = self._translations.get(self._language, {})
+        fallback_tips = self._translations.get(DEFAULT_LANGUAGE, {})
+        tips: list[str] = []
         for i in range(1, 13):
-            tip = self.t(f"welcome.tips.{i}")
-            if tip != f"welcome.tips.{i}":
+            key = f"welcome.tips.{i}"
+            tip = language_tips.get(key) or fallback_tips.get(key)
+            if tip:
                 tips.append(tip)
         return tips
 

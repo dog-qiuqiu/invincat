@@ -208,14 +208,6 @@ AI can remember your preferences, project conventions, and important information
 
 `AGENTS.md` is deprecated for runtime memory injection. The runtime memory pipeline now uses `memory_*.json` as the single source of truth.
 
-### Manual Memory Update
-
-```
-/remember
-```
-
-Triggers AI to actively organize content worth saving from the conversation and write it to memory files.
-
 ### Auto Memory Update
 
 Memory updates are triggered after non-trivial completed turns, with:
@@ -280,7 +272,7 @@ Skills are predefined workflow templates for reusing complex task steps.
 
 | Location | Path | Description |
 |----------|------|-------------|
-| Built-in Skills | Installed with package | `remember`, `skill-creator` |
+| Built-in Skills | Installed with package | `skill-creator` |
 | Global Custom | `~/.invincat/agent/skills/` | Available across projects |
 | Project-level | `.invincat/skills/` | Only available in current project |
 
@@ -342,7 +334,6 @@ Type `/` in the input box and press `Tab` to view and autocomplete all commands.
 | Command | Description |
 |---------|-------------|
 | `/offload` / `/compact` | Manually compress context, free tokens |
-| `/remember` | Manually trigger memory update |
 | `/memory` | Open full-screen memory manager (live user/project view) |
 
 ### Tools & Extensions
@@ -376,7 +367,7 @@ Press `Esc` to interrupt the current AI response; if AI is waiting for tool appr
 Run `/offload` to manually compress history, or wait for automatic compression (triggers when usage exceeds 80%).
 
 **Q: How to make AI remember my coding preferences?**
-Just tell AI directly, for example "Remember: my project uses 4-space indentation, no semicolons", and AI will automatically save it to memory files at the appropriate time. You can also run `/remember` to manually trigger saving.
+Just tell AI directly, for example "Remember: my project uses 4-space indentation, no semicolons", and AI will automatically save it to memory files at the appropriate time.
 
 **Q: How to share skills across different projects?**
 Place skill files in the `~/.invincat/agent/skills/` directory for global availability; place in `.invincat/skills/` for current project only.
