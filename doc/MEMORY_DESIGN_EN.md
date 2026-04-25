@@ -33,6 +33,28 @@ Compared with replay-only memory approaches, this design is better suited for pr
 - More controllable: each memory item has explicit create/update/archive/delete semantics.
 - More operable: JSON stores are easy to diff, review, back up, and roll back.
 
+## 0.2 Memory Agent System-Prompt Rationale (Responsibility Mapping)
+
+The Memory Agent system prompt is not for "retelling chat history". It enforces a constrained memory-governance role:
+
+| Prompt responsibility constraint | Corresponding Memory Store design goal |
+|---|---|
+| Define the role as a conservative memory curator (`noop` when uncertain) | Precision-first memory writes; avoid storing noisy signals |
+| Require strict JSON output with only typed ops (`create/update/rescore/retier/archive/delete/noop`) | Keep store evolution validatable, replayable, and governable |
+| Enforce scope routing (`user` vs `project`) | Align with dual-store isolation; prevent cross-project contamination |
+| Store only durable / reusable / specific facts | Match the "minimal but high-value" memory strategy |
+| Explicitly reject temporary states, one-off errors, sensitive data, short-lived todos | Control bloat and protect operational safety |
+| Keep operations sparse; avoid duplicate creates; prefer updating existing items | Prevent memory-store inflation and duplication drift |
+| Distinguish `update` / `archive` / `delete` semantics | Enable lifecycle governance (correction, retirement, cleanup) |
+
+From a boundary perspective, the system prompt is responsible only for memory-operation decisions. It does not:
+- alter user-visible main response flow
+- bypass schema/safety guards for direct writes
+- replace memory stores as the source of truth
+
+So the execution chain is: `prompt-level decision` -> `runtime validation/guardrails` -> `atomic store write`.  
+This is the concrete closure of the Memory Store design rationale above.
+
 ## 1. Scope
 
 - Long-term memory source of truth:

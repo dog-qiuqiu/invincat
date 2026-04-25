@@ -258,6 +258,16 @@ AI can remember your preferences, project conventions, and important information
 - Strong write safety: schema validation, dedup/conflict guards, path whitelist, and atomic write (`tmp + os.replace`) prevent corruption.
 - Transparent and operable: `/memory` provides full-screen live inspection and management for both scopes.
 
+### Memory Governance Innovation
+
+This project treats memory as a governed subsystem, not just a longer chat history.
+
+- Decision/write split: the memory agent decides operations, while runtime validators and guards decide what is actually persisted.
+- Typed lifecycle model: memory evolves through explicit operations (`create/update/rescore/retier/archive/delete/noop`) instead of opaque free-form rewrites.
+- Built-in drift control: invalid-fact cleanup, scoring/tiering, and archive/delete semantics prevent memory from becoming stale or bloated.
+- Evidence-gated project memory: project conventions require durable signals and tool evidence, reducing accidental writes from transient noise.
+- Operator-friendly governance: memory stores are inspectable JSON, and `/memory` provides live visibility for review and correction.
+
 ### Memory Runtime Architecture
 
 ```mermaid
