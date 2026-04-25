@@ -1134,25 +1134,22 @@ def create_cli_agent(
         # Guard must be registered before any memory middleware so it runs first.
         agent_middleware.append(MemoryFileGuardMiddleware())
 
-        project_expected_path = (
-            project_context.project_root / ".invincat" / "AGENTS.md"
-            if project_context is not None and project_context.project_root
-            else settings.get_project_agent_md_expected_path()
-        )
+        # Resolve project store directory: prefer detected project root, fall back
+        # to the effective cwd so project memory is always available regardless
+        # of whether a project-root marker (.git, pyproject.toml, …) exists.
+        if project_context is not None and project_context.project_root:
+            _project_store_dir = project_context.project_root / ".invincat"
+        else:
+            _cwd_base = effective_cwd if effective_cwd is not None else Path.cwd()
+            _project_store_dir = _cwd_base / ".invincat"
 
         from invincat_cli.auto_memory import RefreshableMemoryMiddleware
 
         user_store_path = str(
             settings.get_user_agent_md_path(assistant_id).parent / "memory_user.json"
         )
-        project_store_path = (
-            str(project_expected_path.parent / "memory_project.json")
-            if project_expected_path
-            else None
-        )
-        memory_store_paths = {"user": user_store_path}
-        if project_store_path:
-            memory_store_paths["project"] = project_store_path
+        project_store_path = str(_project_store_dir / "memory_project.json")
+        memory_store_paths = {"user": user_store_path, "project": project_store_path}
 
         agent_middleware.append(
             RefreshableMemoryMiddleware(
