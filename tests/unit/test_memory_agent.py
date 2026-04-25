@@ -955,6 +955,71 @@ def test_short_memory_signal_is_not_trivial() -> None:
     assert _is_trivial_turn(msgs) is False
 
 
+def test_format_messages_includes_project_tool_evidence() -> None:
+    tool = _Msg(
+        "tool",
+        "pyproject.toml: [tool.ruff] line-length = 100; lint must run before commit.",
+    )
+    tool.name = "read_file"
+    rendered = MemoryAgentMiddleware._format_messages(
+        [
+            _Msg("human", "Please remember project conventions."),
+            _Msg("ai", "I checked the config.", tool_calls=[]),
+            tool,
+        ]
+    )
+
+    assert "tool_evidence:" in rendered
+    assert "tool[read_file]:" in rendered
+    assert "line-length = 100" in rendered
+
+
+def test_format_messages_skips_non_informative_tool_output() -> None:
+    tool = _Msg("tool", "Command exited with code 0.")
+    tool.name = "execute"
+    rendered = MemoryAgentMiddleware._format_messages(
+        [
+            _Msg("human", "ok"),
+            _Msg("ai", "Done.", tool_calls=[]),
+            tool,
+        ]
+    )
+
+    assert "tool_evidence:" not in rendered
+
+
+def test_format_messages_respects_tool_whitelist() -> None:
+    tool = _Msg("tool", "Lint must run before commit and tests must pass.")
+    tool.name = "web_search"
+    rendered = MemoryAgentMiddleware._format_messages(
+        [
+            _Msg("human", "remember project rules"),
+            _Msg("ai", "ok", tool_calls=[]),
+            tool,
+        ]
+    )
+
+    assert "tool_evidence:" not in rendered
+
+
+def test_format_messages_redacts_sensitive_absolute_paths() -> None:
+    tool = _Msg(
+        "tool",
+        "Found rule in /Users/alice/work/repo/pyproject.toml: lint must run before commit.",
+    )
+    tool.name = "read_file"
+    rendered = MemoryAgentMiddleware._format_messages(
+        [
+            _Msg("human", "remember project conventions"),
+            _Msg("ai", "ok", tool_calls=[]),
+            tool,
+        ]
+    )
+
+    assert "<ABS_PATH>" in rendered
+    assert "/Users/alice/work/repo/pyproject.toml" not in rendered
+
+
 def test_invalid_schema_store_sets_read_error(tmp_path: Path) -> None:
     store_path = tmp_path / "memory_project.json"
     store_path.write_text('{"scope":"project","items":"bad"}', encoding="utf-8")

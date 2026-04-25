@@ -45,6 +45,9 @@ MAX_SECTION_NAME_CHARS = 80
 MAX_SCORE_REASON_CHARS = 160
 _MAX_OUTPUT_TOKENS = 2000
 _MAX_CONVERSATION_CHARS = 1500
+_MAX_TOOL_EVIDENCE_ITEMS = 3
+_MAX_TOOL_EVIDENCE_CHARS = 600
+_MAX_TOTAL_TOOL_EVIDENCE_CHARS = 1200
 
 DEFAULT_TIER = "warm"
 DEFAULT_SCORE = 50
@@ -87,6 +90,39 @@ _TRIVIAL_RE = re.compile(
     r"收到|了解|行|嗯嗯|好的收到"
     r")\s*[.!?。！？]?\s*$",
     re.IGNORECASE,
+)
+
+_PROJECT_MEMORY_EVIDENCE_RE = re.compile(
+    r"\b("
+    r"must|should|always|never|prefer|convention|rule|guideline|policy|"
+    r"architecture|workflow|tooling|framework|stack|directory|module|"
+    r"api|handler|schema|migration|lint|format|test|ci|build|deploy|"
+    r"pyproject\.toml|package\.json|cargo\.toml|go\.mod|makefile|dockerfile|"
+    r"ruff|eslint|prettier|pytest|vitest|uv|poetry|pnpm|npm|yarn"
+    r")\b|"
+    r"(必须|应当|应该|总是|不要|约定|规范|规则|策略|架构|工作流|工具链|"
+    r"框架|技术栈|目录|模块|接口|处理器|迁移|格式化|测试|构建|部署|"
+    r"代码风格|提交规范|分支策略|命名规范)",
+    re.IGNORECASE,
+)
+_PROJECT_MEMORY_TOOL_WHITELIST: frozenset[str] = frozenset(
+    {
+        "read_file",
+        "edit_file",
+        "write_file",
+        "execute",
+        "bash",
+        "shell",
+    }
+)
+_SENSITIVE_ABS_PATH_RE = re.compile(
+    r"(?<![\w.-])("
+    r"/Users/[^\s'\"`]+|"
+    r"/home/[^\s'\"`]+|"
+    r"/var/folders/[^\s'\"`]+|"
+    r"/private/var/[^\s'\"`]+|"
+    r"[A-Za-z]:\\\\Users\\\\[^\s'\"`]+"
+    r")"
 )
 
 _ITEM_ID_PATTERNS: dict[str, re.Pattern[str]] = {
@@ -209,8 +245,13 @@ Store facts that are:
 Do NOT store:
 - temporary runtime states, one-off errors, ephemeral paths/tokens/secrets
 - short-lived plans/todos, volatile metrics/status
-- information already derivable from code or git history
+- low-value obvious facts trivially derivable from code or git history
 - reasoning steps, intermediate conclusions, session narration
+
+Project-scope exception:
+- if a project convention is stable, reusable, and costly to repeatedly
+  infer from raw tool output (for example lint/test workflow rules,
+  architecture boundaries, or enforced repo conventions), you may store it.
 
 ====================================================================
 OPERATION DISCIPLINE
@@ -529,6 +570,33 @@ def _normalize_text(value: Any, *, max_chars: int) -> str:
     if not isinstance(value, str):
         return ""
     return re.sub(r"\s+", " ", value.strip())[:max_chars]
+
+
+def _redact_sensitive_paths(text: str) -> str:
+    if not text:
+        return text
+    return _SENSITIVE_ABS_PATH_RE.sub("<ABS_PATH>", text)
+
+
+def _extract_tool_evidence(message: Any) -> str:
+    """Extract a compact, durable snippet from a tool result."""
+    tool_name = str(getattr(message, "name", "")).strip().lower()
+    if tool_name not in _PROJECT_MEMORY_TOOL_WHITELIST:
+        return ""
+    content = getattr(message, "content", "")
+    if isinstance(content, list):
+        text_parts = [
+            p.get("text", "") if isinstance(p, dict) else str(p)
+            for p in content
+            if not (isinstance(p, dict) and p.get("type") in ("tool_use", "tool_result"))
+        ]
+        content = " ".join(filter(None, text_parts))
+    text = _normalize_text(_redact_sensitive_paths(str(content)), max_chars=_MAX_TOOL_EVIDENCE_CHARS)
+    if len(text) < 20:
+        return ""
+    if not _PROJECT_MEMORY_EVIDENCE_RE.search(text):
+        return ""
+    return f"tool[{tool_name}]: {text}"
 
 
 def _normalize_hash(section: str, content: str) -> str:
@@ -1569,12 +1637,24 @@ class MemoryAgentMiddleware(AgentMiddleware):
     @staticmethod
     def _format_messages(messages: list[Any]) -> str:
         lines: list[str] = []
+        tool_evidence: list[str] = []
+        tool_evidence_chars = 0
         for msg in messages:
             role = getattr(msg, "type", "unknown")
-            # Tool messages carry raw execution output (file contents, command
-            # results, etc.) — not memory signal. The AI's interpretation of
-            # those results is already in its own text reply, so skip tool msgs.
             if role == "tool":
+                if len(tool_evidence) >= _MAX_TOOL_EVIDENCE_ITEMS:
+                    continue
+                evidence = _extract_tool_evidence(msg)
+                if not evidence:
+                    continue
+                remaining = _MAX_TOTAL_TOOL_EVIDENCE_CHARS - tool_evidence_chars
+                if remaining <= 0:
+                    continue
+                clipped = evidence[:remaining].strip()
+                if not clipped:
+                    continue
+                tool_evidence.append(clipped)
+                tool_evidence_chars += len(clipped) + 1
                 continue
             content = getattr(msg, "content", "")
             if isinstance(content, list):
@@ -1589,6 +1669,9 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 content = " ".join(filter(None, text_parts))
             if content:
                 lines.append(f"{role}: {str(content)[:_MAX_CONVERSATION_CHARS]}")
+        if tool_evidence:
+            lines.append("tool_evidence:")
+            lines.extend(f"- {item}" for item in tool_evidence)
         return "\n".join(lines)
 
     def _load_or_recover_store(
