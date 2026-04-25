@@ -74,7 +74,10 @@ def _normalize_item_score(raw: Any) -> int:
     return max(0, min(100, score))
 
 
-def _select_items_for_injection(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _select_items_for_injection(
+    items: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return (hot_items, warm_items) sorted by score descending, cold excluded."""
     normalized: list[dict[str, Any]] = []
     for raw in items:
         if not _is_valid_store_item(raw):
@@ -103,15 +106,15 @@ def _select_items_for_injection(items: list[dict[str, Any]]) -> list[dict[str, A
         (item for item in normalized if item["tier"] == "warm"),
         key=lambda item: (-int(item["score"]), str(item["id"])),
     )[:_MAX_WARM_ITEMS_PER_SCOPE]
-    return hot_items + warm_items
+    return hot_items, warm_items
 
 
 def _render_store_content(store: dict[str, Any], *, max_chars: int = _MAX_SCOPE_RENDER_CHARS) -> str:
     items = store.get("items", [])
     if not isinstance(items, list):
         return ""
-    selected = _select_items_for_injection(items)
-    if not selected:
+    hot_items, warm_items = _select_items_for_injection(items)
+    if not hot_items and not warm_items:
         return ""
 
     lines: list[str] = []
@@ -126,13 +129,20 @@ def _render_store_content(store: dict[str, Any], *, max_chars: int = _MAX_SCOPE_
         used_chars += line_len
         return True
 
-    for item in selected:
-        line = (
-            f"- [{item['tier']}:{item['score']}] "
-            f"{item['section']}: {item['content']}"
-        )
-        if not _try_append(line):
-            break
+    if hot_items:
+        _try_append("### Always Apply")
+        for item in hot_items:
+            if not _try_append(f"- {item['section']}: {item['content']}"):
+                break
+
+    if warm_items:
+        if hot_items:
+            _try_append("")
+        _try_append("### When Relevant")
+        for item in warm_items:
+            if not _try_append(f"- {item['section']}: {item['content']}"):
+                break
+
     return "\n".join(lines).strip()
 
 
@@ -190,7 +200,7 @@ class RefreshableMemoryMiddleware(AgentMiddleware):
             is_valid_store, rendered = _store_content_if_valid(Path(store_path))
             if not is_valid_store:
                 continue
-            key = f"{scope}::{store_path}"
+            key = "User Memory" if scope == "user" else "Project Memory"
             if rendered:
                 remaining = _MAX_TOTAL_INJECTION_CHARS - total_chars
                 if remaining <= 0:

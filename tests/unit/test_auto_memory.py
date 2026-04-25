@@ -63,8 +63,8 @@ def test_before_agent_loads_rendered_store_content(tmp_path: Path) -> None:
     update = mw.before_agent({"memory_contents": None}, runtime=object())
     assert isinstance(update, dict)
     contents = update["memory_contents"]
-    assert "user::" + str(user_store.resolve()) in contents
-    assert "project::" + str(project_store.resolve()) in contents
+    assert "User Memory" in contents
+    assert "Project Memory" in contents
     assert "Prefer concise Chinese responses." in "\n".join(contents.values())
     assert "Use uv for dependencies." in "\n".join(contents.values())
 

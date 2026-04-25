@@ -50,10 +50,13 @@ DEFAULT_TIER = "warm"
 DEFAULT_SCORE = 50
 HOT_THRESHOLD = 70
 COLD_THRESHOLD = 30
-MAX_RESCORING_CANDIDATES_PER_SCOPE = 12
+MAX_RESCORING_CANDIDATES_PER_SCOPE = 16
+_RELEVANT_RESCORE_COUNT = 8   # conversation-relevant items
+_REVIEW_RESCORE_COUNT = 8     # oldest-unconfirmed items for proactive review
 MAX_HOT_ITEMS_PER_SCOPE = 8
 MAX_WARM_ITEMS_PER_SCOPE = 6
 MAX_SNAPSHOT_ITEMS_PER_SCOPE = 80
+MAX_ARCHIVED_ITEMS_PER_SCOPE = 50
 
 _MEMORY_SIGNAL_RE = re.compile(
     r"\b("
@@ -122,7 +125,7 @@ uncertain, emit noop.
 INPUT
 ====================================================================
 The user message contains two sections:
-1) recent_conversation — latest turns between user and assistant.
+1) conversation — full message history between user and assistant.
 2) memory_snapshot — JSON shaped as:
    {
      "user":    {"items": [...], "rescore_candidates": [...]},
@@ -218,12 +221,21 @@ OPERATION DISCIPLINE
                 refinement, or new evidence strengthens it. If the
                 new evidence changes what the memory says, include the
                 corrected content in the update.
-    * delete  — the fact is contradicted by current facts, superseded,
-                or would mislead future turns. Prefer delete over
-                lowering score for factually wrong memory.
-    * archive — the fact is no longer valid, has been contradicted,
-                or its context no longer applies, but should be kept
-                for audit/history instead of being physically removed.
+                Targets active items by default. Applying update to an
+                archived item will reactivate it — only do this
+                deliberately when the fact is still valid.
+    * delete  — the fact is actively wrong: directly contradicted by
+                evidence in the current conversation, superseded by a
+                newer explicit statement, or would mislead future
+                turns. Use delete only when you have clear evidence
+                of falsity. Prefer archive when uncertain.
+    * archive — confidence retirement: use when a rescore_candidate
+                has a low score and an old last_scored_at with no
+                new supporting evidence this turn. You do NOT need
+                an explicit contradiction — persistent low confidence
+                with no reinforcement is sufficient. Archive is
+                reversible; always prefer it over delete when the
+                fact is uncertain rather than provably wrong.
 - rescore/retier require clear new evidence this turn and must target
   only IDs listed in rescore_candidates.
 - rescore/retier only change priority metadata. They do not change
@@ -231,6 +243,14 @@ OPERATION DISCIPLINE
   migration, replacement, or correction. If the existing content would
   remain false or misleading after the operation, use update with
   corrected content, or delete the old item and create the replacement.
+- rescore_candidates contains two groups:
+  1. Items relevant to the current conversation — evaluate whether
+     this turn supports, contradicts, or refines them.
+  2. Items with the oldest last_scored_at — long-unconfirmed memories
+     that need active review. For these: rescore upward if the
+     conversation confirms them; archive if there is no new evidence
+     and their score is already low (below 40). Do not force an
+     operation — noop if the item seems fine and unrelated.
 
 ====================================================================
 FIELD GUIDANCE
@@ -329,7 +349,7 @@ Example E — Chinese conversation (language must match):
 """
 
 _USER_TEMPLATE = """\
-recent_conversation:
+conversation:
 {conversation}
 
 memory_snapshot:
@@ -488,9 +508,9 @@ def _align_score_to_tier(score: int, tier: str) -> int:
         return max(HOT_THRESHOLD, normalized_score)
     if normalized_tier == "cold":
         return min(COLD_THRESHOLD - 1, normalized_score)
-    # warm band: [30, 69]
+    # warm band: [30, 69] — clamp rather than reset to preserve relative strength
     if normalized_score < COLD_THRESHOLD or normalized_score >= HOT_THRESHOLD:
-        return DEFAULT_SCORE
+        return max(COLD_THRESHOLD, min(HOT_THRESHOLD - 1, normalized_score))
     return normalized_score
 
 
@@ -542,8 +562,12 @@ def _select_rescoring_candidates(
     if not items:
         return []
 
+    relevant_cap = max(1, max_items // 2)
+    review_cap = max(0, max_items - relevant_cap)
+
+    # Group 1: conversation-relevant items (hot-first, then by token overlap)
     terms = _extract_terms(conversation)
-    ranked = sorted(
+    relevant = sorted(
         items,
         key=lambda item: (
             1
@@ -558,10 +582,30 @@ def _select_rescoring_candidates(
             str(item.get("id", "")).casefold(),
         ),
         reverse=True,
-    )
-    selected = ranked[: max(0, max_items)]
-    return [
-        {
+    )[:relevant_cap]
+    relevant_ids = {item.get("id") for item in relevant}
+
+    # Group 2: oldest-unconfirmed warm/cold items not already in group 1
+    # (hot items are rarely stale enough to need proactive review)
+    review = sorted(
+        [
+            item
+            for item in items
+            if item.get("id") not in relevant_ids
+            and _normalize_tier(
+                item.get("tier"),
+                default=_derive_tier_from_score(_normalize_score(item.get("score"))),
+            )
+            != "hot"
+        ],
+        key=lambda item: (
+            str(item.get("last_scored_at", "")),
+            str(item.get("id", "")),
+        ),
+    )[:review_cap]
+
+    def _format(item: dict[str, Any]) -> dict[str, Any]:
+        return {
             "id": item.get("id"),
             "section": item.get("section"),
             "content": item.get("content"),
@@ -570,10 +614,12 @@ def _select_rescoring_candidates(
                 default=_derive_tier_from_score(_normalize_score(item.get("score"))),
             ),
             "score": _normalize_score(item.get("score")),
-            "updated_at": item.get("updated_at"),
+            "created_at": item.get("created_at"),
+            "last_scored_at": item.get("last_scored_at"),
         }
-        for item in selected
-        if isinstance(item.get("id"), str)
+
+    return [
+        _format(item) for item in relevant + review if isinstance(item.get("id"), str)
     ]
 
 
@@ -721,6 +767,7 @@ def _build_memory_snapshot(
                     "tier": tier,
                     "score": score,
                     "score_reason": _normalize_score_reason(item.get("score_reason")),
+                    "created_at": item.get("created_at"),
                     "last_scored_at": item.get("last_scored_at"),
                 }
             )
@@ -1009,6 +1056,51 @@ def _build_invalid_fact_cleanup_operations(
     return operations
 
 
+def _build_archived_overflow_operations(
+    user_store: dict[str, Any] | None,
+    project_store: dict[str, Any] | None,
+    *,
+    max_archived: int = MAX_ARCHIVED_ITEMS_PER_SCOPE,
+) -> list[dict[str, Any]]:
+    """Physically delete oldest archived items when the archived cap is exceeded.
+
+    Active items are never touched here — this only manages archived capacity so
+    the store doesn't grow unboundedly from proactive archival over time.
+    """
+    operations: list[dict[str, Any]] = []
+    for scope, store in (("user", user_store), ("project", project_store)):
+        if store is None:
+            continue
+        archived = [
+            item
+            for item in store.get("items", [])
+            if isinstance(item, dict) and item.get("status") == "archived"
+        ]
+        if len(archived) <= max_archived:
+            continue
+        overflow = len(archived) - max_archived
+        oldest = sorted(
+            archived,
+            key=lambda item: (
+                str(item.get("archived_at") or item.get("updated_at", "")),
+                str(item.get("id", "")),
+            ),
+        )[:overflow]
+        for item in oldest:
+            item_id = item.get("id")
+            if isinstance(item_id, str) and item_id.strip():
+                operations.append(
+                    {
+                        "op": "delete",
+                        "scope": scope,
+                        "id": item_id.strip(),
+                        "reason": "Archived item removed: archived capacity exceeded.",
+                        "_cleanup": True,
+                    }
+                )
+    return operations
+
+
 def _cleanup_deletes_all_active(
     store: dict[str, Any] | None,
     operations: list[dict[str, Any]],
@@ -1053,14 +1145,13 @@ def _apply_operations(
             id_touch_count[item_id] = id_touch_count.get(item_id, 0) + 1
     conflicted_ids = {item_id for item_id, count in id_touch_count.items() if count > 1}
 
-    # Removal ratio guard (per-scope). Applies to archive and physical delete.
-    # Ops that explicitly cite a contradiction/invalid-fact reason are exempt
-    # (same as _cleanup ops) — blocking them causes the paired `create` to
-    # still execute, leaving both the contradicted and the replacement memory
-    # in the store simultaneously.
-    removal_target_count: dict[str, int] = {"user": 0, "project": 0}
+    # Delete ratio guard (per-scope). Applies to physical delete only — archive
+    # is reversible and is intentionally exempt so proactive confidence-retirement
+    # isn't blocked. Ops that cite a contradiction/invalid-fact reason are also
+    # exempt: blocking them leaves the contradicted memory alongside its replacement.
+    delete_target_count: dict[str, int] = {"user": 0, "project": 0}
     for op in operations:
-        if op.get("op") not in {"archive", "delete"}:
+        if op.get("op") != "delete":
             continue
         if op.get("_cleanup") is True:
             continue
@@ -1075,17 +1166,17 @@ def _apply_operations(
         store = user_store if scope == "user" else project_store
         item = _find_item(store, item_id)
         if item is not None and item.get("status") == "active":
-            removal_target_count[scope] += 1
+            delete_target_count[scope] += 1
 
-    removal_blocked_scope: set[str] = set()
+    delete_blocked_scope: set[str] = set()
     for scope in ("user", "project"):
         store = user_store if scope == "user" else project_store
         active_total = len(_active_items(store))
         if active_total <= 0:
             continue
         allowed = max(1, math.floor(active_total * 0.2))
-        if removal_target_count[scope] > allowed:
-            removal_blocked_scope.add(scope)
+        if delete_target_count[scope] > allowed:
+            delete_blocked_scope.add(scope)
 
     def _get_or_create_store(scope: str) -> dict[str, Any]:
         nonlocal user_store, project_store
@@ -1105,8 +1196,8 @@ def _apply_operations(
         if not isinstance(scope, str) or scope not in _ALLOWED_SCOPE:
             continue
         if (
-            op_name in {"archive", "delete"}
-            and scope in removal_blocked_scope
+            op_name == "delete"
+            and scope in delete_blocked_scope
             and not op.get("_cleanup")
             and not _score_reason_implies_invalid_fact(str(op.get("reason") or ""))
         ):
@@ -1173,11 +1264,23 @@ def _apply_operations(
                 )
             has_score = "score" in op
             has_tier = "tier" in op
-            if has_score:
+            if has_score and has_tier:
+                # Both provided: tier is authoritative; score is clamped into its band.
+                tier = _normalize_tier(
+                    op.get("tier"),
+                    default=_normalize_tier(
+                        item.get("tier"),
+                        default=_derive_tier_from_score(_normalize_score(item.get("score"))),
+                    ),
+                )
+                score = _normalize_score(op.get("score"), default=_normalize_score(item.get("score")))
+                item["tier"] = tier
+                item["score"] = _align_score_to_tier(score, tier)
+            elif has_score:
                 score = _normalize_score(op.get("score"), default=_normalize_score(item.get("score")))
                 item["score"] = score
                 item["tier"] = _derive_tier_from_score(score)
-            if has_tier:
+            elif has_tier:
                 default_tier = _normalize_tier(
                     item.get("tier"),
                     default=_derive_tier_from_score(_normalize_score(item.get("score"))),
@@ -1189,7 +1292,8 @@ def _apply_operations(
                 )
             if "score_reason" in op:
                 item["score_reason"] = _normalize_score_reason(op.get("score_reason"))
-            item["last_scored_at"] = now_iso
+            if has_score or has_tier:
+                item["last_scored_at"] = now_iso
             if item.get("status") == "archived":
                 item["status"] = "active"
                 item["archived_at"] = None
@@ -1456,6 +1560,11 @@ class MemoryAgentMiddleware(AgentMiddleware):
         lines: list[str] = []
         for msg in messages:
             role = getattr(msg, "type", "unknown")
+            # Tool messages carry raw execution output (file contents, command
+            # results, etc.) — not memory signal. The AI's interpretation of
+            # those results is already in its own text reply, so skip tool msgs.
+            if role == "tool":
+                continue
             content = getattr(msg, "content", "")
             if isinstance(content, list):
                 text_parts = [
@@ -1559,8 +1668,18 @@ class MemoryAgentMiddleware(AgentMiddleware):
         *,
         thread_id: str,
         source_anchor: str,
-    ) -> list[str] | None:
-        """Delete active memories already marked as factually invalid."""
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, list[str]]:
+        """Run all deterministic cleanup passes and return the post-cleanup stores.
+
+        Two passes run in sequence:
+        1. Invalid-fact cleanup: deletes active items whose score_reason already
+           marks them as factually wrong (written by the model in a prior turn).
+        2. Archived overflow: physically deletes the oldest archived items when the
+           archived cap is exceeded, preventing unbounded store growth from proactive
+           archival.
+
+        Returns stores forwarded to _extract_and_write to skip a redundant load pass.
+        """
         user_store = await asyncio.to_thread(
             self._load_or_recover_store, "user", thread_id, source_anchor
         )
@@ -1577,26 +1696,29 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 "Memory agent: skip cleanup because store is unreadable (scopes=%s)",
                 ",".join(unreadable_scopes),
             )
-            return []
+            return user_store, project_store, []
 
-        cleanup_operations = _build_invalid_fact_cleanup_operations(
+        all_cleanup = _build_invalid_fact_cleanup_operations(
+            user_store,
+            project_store,
+        ) + _build_archived_overflow_operations(
             user_store,
             project_store,
         )
-        if not cleanup_operations:
-            return []
+        if not all_cleanup:
+            return user_store, project_store, []
 
-        _, _, written = await self._apply_and_write_memory_operations(
+        new_user, new_project, written = await self._apply_and_write_memory_operations(
             user_store,
             project_store,
             deepcopy(user_store),
             deepcopy(project_store),
-            cleanup_operations,
+            all_cleanup,
             thread_id=thread_id,
             source_anchor=source_anchor,
             now_iso=_iso_now(),
         )
-        return written
+        return new_user, new_project, written
 
     async def _extract_and_write(
         self,
@@ -1605,18 +1727,26 @@ class MemoryAgentMiddleware(AgentMiddleware):
         *,
         thread_id: str,
         source_anchor: str,
+        preloaded_stores: tuple[dict[str, Any] | None, dict[str, Any] | None] | None = None,
     ) -> list[str] | None:
         written_store_paths: list[str] = []
         try:
             conversation = self._format_messages(messages)
             last_human = self._last_human_text(messages)
             explicit_memory_request = _is_explicit_memory_request(last_human)
-            user_store = await asyncio.to_thread(
-                self._load_or_recover_store, "user", thread_id, source_anchor
-            )
-            project_store = await asyncio.to_thread(
-                self._load_or_recover_store, "project", thread_id, source_anchor
-            )
+
+            if preloaded_stores is not None:
+                # Caller (aafter_agent) already loaded and cleaned the stores — skip both
+                # the file read and the redundant cleanup pass.
+                user_store, project_store = preloaded_stores
+            else:
+                user_store = await asyncio.to_thread(
+                    self._load_or_recover_store, "user", thread_id, source_anchor
+                )
+                project_store = await asyncio.to_thread(
+                    self._load_or_recover_store, "project", thread_id, source_anchor
+                )
+
             unreadable_scopes: list[str] = []
             if isinstance(user_store, dict) and user_store.get("__read_error__"):
                 unreadable_scopes.append("user")
@@ -1630,27 +1760,30 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 return []
             user_before = deepcopy(user_store)
             project_before = deepcopy(project_store)
-            cleanup_operations = _build_invalid_fact_cleanup_operations(
-                user_store,
-                project_store,
-            )
-            if cleanup_operations:
-                user_store, project_store, cleanup_written = (
-                    await self._apply_and_write_memory_operations(
-                        user_store,
-                        project_store,
-                        user_before,
-                        project_before,
-                        cleanup_operations,
-                        thread_id=thread_id,
-                        source_anchor=source_anchor,
-                        now_iso=_iso_now(),
-                    )
+
+            if preloaded_stores is None:
+                # Only run cleanup when stores were freshly loaded (no prior cleanup pass).
+                cleanup_operations = _build_invalid_fact_cleanup_operations(
+                    user_store,
+                    project_store,
                 )
-                written_store_paths.extend(cleanup_written)
-                if cleanup_written:
-                    user_before = deepcopy(user_store)
-                    project_before = deepcopy(project_store)
+                if cleanup_operations:
+                    user_store, project_store, cleanup_written = (
+                        await self._apply_and_write_memory_operations(
+                            user_store,
+                            project_store,
+                            user_before,
+                            project_before,
+                            cleanup_operations,
+                            thread_id=thread_id,
+                            source_anchor=source_anchor,
+                            now_iso=_iso_now(),
+                        )
+                    )
+                    written_store_paths.extend(cleanup_written)
+                    if cleanup_written:
+                        user_before = deepcopy(user_store)
+                        project_before = deepcopy(project_store)
 
             snapshot = _build_memory_snapshot(
                 user_store,
@@ -1788,11 +1921,13 @@ class MemoryAgentMiddleware(AgentMiddleware):
 
             thread_id = self._resolve_thread_id()
             cleanup_source_anchor = self._message_anchor(messages[-1])
-            cleanup_written = await self._cleanup_invalid_fact_stores(
-                thread_id=thread_id,
-                source_anchor=cleanup_source_anchor,
+            cleaned_user, cleaned_project, cleanup_written = (
+                await self._cleanup_invalid_fact_stores(
+                    thread_id=thread_id,
+                    source_anchor=cleanup_source_anchor,
+                )
             )
-            cleanup_written = list(dict.fromkeys(cleanup_written or []))
+            cleanup_written = list(dict.fromkeys(cleanup_written))
 
             if _is_trivial_turn(messages):
                 logger.debug("Memory agent: skipping trivial turn")
@@ -1824,8 +1959,6 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 recent = incremental
             else:
                 recent = incremental[-self._context_messages :]
-
-            if self._context_messages > 0:
                 human_indices = [
                     i for i, m in enumerate(messages) if getattr(m, "type", "") == "human"
                 ]
@@ -1843,6 +1976,7 @@ class MemoryAgentMiddleware(AgentMiddleware):
                     recent,
                     thread_id=thread_id,
                     source_anchor=source_anchor,
+                    preloaded_stores=(cleaned_user, cleaned_project),
                 )
             finally:
                 self._emit_memory_status(runtime, "done")
@@ -1875,6 +2009,7 @@ class MemoryAgentMiddleware(AgentMiddleware):
         *,
         thread_id: str,
         source_anchor: str,
+        preloaded_stores: tuple[dict[str, Any] | None, dict[str, Any] | None] | None = None,
     ) -> list[str] | None:
         try:
             return await self._extract_and_write(
@@ -1882,6 +2017,7 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 messages,
                 thread_id=thread_id,
                 source_anchor=source_anchor,
+                preloaded_stores=preloaded_stores,
             )
         except asyncio.CancelledError:
             logger.debug(

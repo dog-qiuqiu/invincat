@@ -230,8 +230,8 @@ def test_conflicting_operations_on_same_id_rejected() -> None:
     assert new_project["items"][0]["content"] == "Use snake_case."
 
 
-def test_removal_ratio_guard_blocks_excessive_archives_and_deletes() -> None:
-    # Ratio guard fires when ops have no contradiction reason (arbitrary removals).
+def test_removal_ratio_guard_blocks_excessive_deletes() -> None:
+    # Ratio guard fires for delete ops without a contradiction reason.
     project_store = _new_store("project")
     for idx in range(5):
         project_store["items"].append(_item(f"mem_p_{idx+1:06d}", content=f"Rule {idx}"))
@@ -239,7 +239,7 @@ def test_removal_ratio_guard_blocks_excessive_archives_and_deletes() -> None:
         None,
         project_store,
         [
-            {"op": "archive", "scope": "project", "id": "mem_p_000001", "reason": ""},
+            {"op": "delete", "scope": "project", "id": "mem_p_000001", "reason": ""},
             {"op": "delete", "scope": "project", "id": "mem_p_000002", "reason": ""},
         ],
         thread_id="t1",
@@ -249,6 +249,31 @@ def test_removal_ratio_guard_blocks_excessive_archives_and_deletes() -> None:
     assert new_project is not None
     assert changed == []
     assert all(item["status"] == "active" for item in new_project["items"])
+
+
+def test_removal_ratio_guard_does_not_block_archive() -> None:
+    # Archive is reversible — it is intentionally exempt from the ratio guard so
+    # proactive confidence-retirement is never blocked.
+    project_store = _new_store("project")
+    for idx in range(5):
+        project_store["items"].append(_item(f"mem_p_{idx+1:06d}", content=f"Rule {idx}"))
+    _, new_project, changed = _apply_operations(
+        None,
+        project_store,
+        [
+            {"op": "archive", "scope": "project", "id": "mem_p_000001", "reason": ""},
+            {"op": "archive", "scope": "project", "id": "mem_p_000002", "reason": ""},
+        ],
+        thread_id="t1",
+        source_anchor="a1",
+        now_iso="2026-04-22T10:10:00Z",
+    )
+    assert new_project is not None
+    assert changed == ["project"]
+    statuses = {item["id"]: item["status"] for item in new_project["items"]}
+    assert statuses["mem_p_000001"] == "archived"
+    assert statuses["mem_p_000002"] == "archived"
+    assert statuses["mem_p_000003"] == "active"
 
 
 def test_removal_ratio_guard_allows_contradiction_deletes() -> None:
