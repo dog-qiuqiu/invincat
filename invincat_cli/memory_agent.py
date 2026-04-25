@@ -61,9 +61,12 @@ MAX_ARCHIVED_ITEMS_PER_SCOPE = 50
 _MEMORY_SIGNAL_RE = re.compile(
     r"\b("
     r"always|never|prefer|preference|style|convention|rule|guideline|"
-    r"remember|remember this|best practice|pattern|decision|constraint"
+    r"remember|remember this|best practice|pattern|decision|constraint|"
+    r"architecture|workflow|tooling|framework|stack|pipeline|structure|"
+    r"we use|we always|our convention|by convention|standard|policy"
     r")\b|"
-    r"(记住|偏好|规范|约定|规则|风格|最佳实践|约束|决策)",
+    r"(记住|偏好|规范|约定|规则|风格|最佳实践|约束|决策|"
+    r"架构|工作流|工具链|框架|技术栈|我们用|统一用|约定好的|标准做法)",
     re.IGNORECASE,
 )
 
@@ -363,8 +366,16 @@ turn_policy:
   create with confidence "high" and score >= 70 if the evidence is
   explicit. Still avoid near-duplicates — prefer update when an
   existing item already matches.
-- When false, be conservative: prefer update over create, and prefer
-  noop when the signal is ambiguous or transient.
+- When false:
+  * user scope — be conservative: prefer update over create, and prefer
+    noop when the signal is ambiguous or transient.
+  * project scope — be proactive: if the conversation reveals a clear,
+    stable project fact (tooling, architecture, conventions, workflow
+    rules) that is not already in the store, create it. Project facts
+    are worth capturing even without an explicit memory request because
+    they are inherently reusable across sessions and hard to re-derive
+    from context alone. Still avoid near-duplicates and transient
+    runtime details.
 """
 
 
