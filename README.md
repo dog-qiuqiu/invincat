@@ -1,10 +1,16 @@
 # Invincat CLI
 
-[中文文档](README_CN.md)
+[中文文档](doc/README_CN.md) | [Documentation Index](doc/README.md)
 
 A Python-based terminal AI programming assistant — collaborate with AI directly in your project directory: read/write files, execute commands, browse the web, and maintain memory across sessions.
 
 ![](data/cli_en.png)
+
+## Documentation
+
+- Chinese guide: [doc/README_CN.md](doc/README_CN.md)
+- Memory design (Chinese): [doc/MEMORY_DESIGN.md](doc/MEMORY_DESIGN.md)
+- Memory design (English): [doc/MEMORY_DESIGN_EN.md](doc/MEMORY_DESIGN_EN.md)
 
 ---
 
@@ -240,8 +246,8 @@ if the extraction cost becomes a concern.
 
 ### Memory Design Docs
 
-- [Memory Design (Chinese)](./MEMORY_DESIGN.md)
-- [Memory Design (English)](./MEMORY_DESIGN_EN.md)
+- [Memory Design (Chinese)](doc/MEMORY_DESIGN.md)
+- [Memory Design (English)](doc/MEMORY_DESIGN_EN.md)
 
 ### Memory Manager UI
 
