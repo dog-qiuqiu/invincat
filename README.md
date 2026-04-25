@@ -6,6 +6,45 @@ A Python-based terminal AI programming assistant — collaborate with AI directl
 
 ![](data/cli_en.png)
 
+## Why Invincat
+
+Invincat is designed for real engineering work in local repositories, not demo-only chat.
+
+- Terminal-native workflow: stay in your project directory and use AI without switching IDEs or browser tabs.
+- Execution with guardrails: shell/file/network actions are approval-gated by default, with optional auto-approve for trusted flows.
+- Plan-first delivery mode: `/plan` lets teams review and approve checklists before execution, reducing risky one-shot edits.
+- Long-context durability: micro compression + offload keep long sessions usable without losing operational history.
+- Practical memory model: user/project memory stores persist conventions across sessions and are inspectable via `/memory`.
+- Extensible architecture: MCP tools, skills, and subagents allow adapting the assistant to team-specific workflows.
+
+## Agent Architecture
+
+Invincat uses a multi-agent runtime with clear role boundaries.
+
+### Execution Flow
+
+1. `User Input` enters the session router.
+2. If `/plan` mode is active, input is routed to the `Planner Agent`; otherwise to the `Main Agent`.
+3. `Main Agent` executes tools (file/shell/web/MCP) under approval and middleware guardrails.
+4. After a non-trivial turn completes, `Memory Agent` runs asynchronously to extract durable user/project memory updates.
+5. When needed, `Main Agent` delegates bounded subtasks to local or async subagents.
+
+### Agent Roles and Responsibilities
+
+| Agent | Primary Responsibility | Allowed/Expected Behavior | Hard Boundary |
+|------|-------------------------|---------------------------|---------------|
+| Main Agent | Execute user tasks end-to-end | Read/write files, run commands, use MCP/tools, coordinate subtasks | Must not directly read/write `memory_user.json` or `memory_project.json` |
+| Planner Agent (`/plan`) | Produce and refine executable plans | Read-only context gathering, `write_todos`, `approve_plan`, optional clarification via `ask_user` | No implementation actions (no file edits, no command execution) |
+| Memory Agent | Curate durable memory after each completed turn | Score and apply memory ops (`create/update/rescore/retier/archive/delete/noop`) to user/project stores | Conservative extraction; skips low-confidence or ephemeral facts |
+| Local Subagents | Parallelize bounded in-process subtasks | Handle scoped tasks delegated by main agent with explicit instructions | Operate only within delegated scope; main agent remains final integrator |
+| Async Subagents | Offload long/remote tasks | Launch/update/cancel remote subagent jobs via async tools | Treated as delegated workers, not primary conversation owner |
+
+### Runtime Guardrails
+
+- Planner mode uses both visible-tool filtering and runtime allow-list enforcement.
+- Memory store files are protected by middleware and updated only through the memory pipeline.
+- Memory extraction runs in post-turn async middleware (`aafter_agent`) so it does not block user-visible responses.
+
 ## Documentation
 
 - Chinese guide: [doc/README_CN.md](doc/README_CN.md)
