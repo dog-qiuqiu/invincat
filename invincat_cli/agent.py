@@ -189,6 +189,78 @@ class ShellAllowListMiddleware(AgentMiddleware):
         return await handler(request)
 
 
+_MEMORY_FILE_NAMES: frozenset[str] = frozenset({"memory_user.json", "memory_project.json"})
+# Tools that accept a file path as their first argument.
+_FILE_PATH_TOOLS: frozenset[str] = frozenset({"read_file", "write_file", "edit_file"})
+# Shell tools whose command string might reference memory files.
+_SHELL_TOOLS: frozenset[str] = frozenset({"bash", "execute", "shell"})
+
+
+def _path_targets_memory_file(path_str: str) -> bool:
+    """Return True when *path_str* resolves to a memory store file."""
+    from pathlib import PurePosixPath
+
+    name = PurePosixPath(path_str.strip()).name
+    return name in _MEMORY_FILE_NAMES
+
+
+class MemoryFileGuardMiddleware(AgentMiddleware):
+    """Block the main agent from directly reading or writing memory store files.
+
+    Memory is injected exclusively through ``RefreshableMemoryMiddleware`` and
+    updated through ``MemoryAgentMiddleware``. Any attempt by the main agent to
+    touch ``memory_user.json`` / ``memory_project.json`` via a file or shell
+    tool is rejected with an explanatory error message.
+    """
+
+    def _check(self, request: "ToolCallRequest") -> "ToolMessage | None":
+        from langchain_core.messages import ToolMessage as LCToolMessage
+
+        tool_name: str = request.tool_call.get("name", "")
+        args: dict = request.tool_call.get("args") or {}
+
+        reject = False
+        if tool_name in _FILE_PATH_TOOLS:
+            path = args.get("path") or args.get("file_path") or ""
+            reject = _path_targets_memory_file(str(path))
+        elif tool_name in _SHELL_TOOLS:
+            command = str(args.get("command", ""))
+            reject = any(name in command for name in _MEMORY_FILE_NAMES)
+
+        if not reject:
+            return None
+
+        logger.warning("MemoryFileGuard: blocked %r targeting memory store", tool_name)
+        return LCToolMessage(
+            content=(
+                "Access denied: memory store files (memory_user.json / memory_project.json) "
+                "are managed exclusively by the memory subsystem. "
+                "Do not read or write them directly."
+            ),
+            name=tool_name,
+            tool_call_id=request.tool_call["id"],
+            status="error",
+        )
+
+    def wrap_tool_call(
+        self,
+        request: "ToolCallRequest",
+        handler: "Callable[[ToolCallRequest], ToolMessage | Command[Any]]",
+    ) -> "ToolMessage | Command[Any]":
+        if (rejection := self._check(request)) is not None:
+            return rejection
+        return handler(request)
+
+    async def awrap_tool_call(
+        self,
+        request: "ToolCallRequest",
+        handler: "Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]]",
+    ) -> "ToolMessage | Command[Any]":
+        if (rejection := self._check(request)) is not None:
+            return rejection
+        return await handler(request)
+
+
 def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]:
     """Load async subagent definitions from `config.toml`.
 
@@ -1059,6 +1131,9 @@ def create_cli_agent(
 
     # Add memory middleware
     if enable_memory:
+        # Guard must be registered before any memory middleware so it runs first.
+        agent_middleware.append(MemoryFileGuardMiddleware())
+
         project_expected_path = (
             project_context.project_root / ".invincat" / "AGENTS.md"
             if project_context is not None and project_context.project_root
