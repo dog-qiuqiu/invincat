@@ -2085,6 +2085,36 @@ def _create_model_via_init(
         raise ModelConfigError(msg) from e
 
 
+def _is_deepseek_openai_compatible_path(provider: str, kwargs: dict[str, Any]) -> bool:
+    """Return True when OpenAI provider is pointed at DeepSeek's compatible API."""
+    if provider != "openai":
+        return False
+    base_url = kwargs.get("base_url")
+    if not isinstance(base_url, str):
+        return False
+    normalized = base_url.lower().rstrip("/")
+    return "api.deepseek.com" in normalized
+
+
+def _apply_deepseek_thinking_defaults(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Explicitly enable DeepSeek thinking mode unless caller already set it.
+
+    Caller-provided values (for example from `--model-params`) always win.
+    """
+    patched = dict(kwargs)
+
+    # DeepSeek sample recommends explicitly enabling thinking mode.
+    extra_body = dict(patched.get("extra_body") or {})
+    thinking = dict(extra_body.get("thinking") or {})
+    thinking.setdefault("type", "enabled")
+    extra_body["thinking"] = thinking
+    patched["extra_body"] = extra_body
+
+    # Keep explicit and deterministic default; user-provided override wins.
+    patched.setdefault("reasoning_effort", "high")
+    return patched
+
+
 @dataclass(frozen=True)
 class ModelResult:
     """Result of creating a chat model, bundling the model with its metadata.
@@ -2249,6 +2279,12 @@ def create_model(
 
     if class_path:
         model = _create_model_from_class(class_path, model_name, provider, kwargs)
+    elif _is_deepseek_openai_compatible_path(provider, kwargs):
+        from invincat_cli.deepseek_chat_openai import DeepSeekChatOpenAICompat
+
+        model = DeepSeekChatOpenAICompat(
+            model=model_name, **_apply_deepseek_thinking_defaults(kwargs)
+        )
     else:
         model = _create_model_via_init(model_name, provider, kwargs)
 

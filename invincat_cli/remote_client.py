@@ -375,6 +375,7 @@ def _convert_ai_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
     content = data.get("content", "")
     tool_call_chunks = data.get("tool_call_chunks", [])
     tool_calls = data.get("tool_calls", [])
+    additional_kwargs = data.get("additional_kwargs", {})
     usage_metadata = data.get("usage_metadata")
     response_metadata = data.get("response_metadata", {})
 
@@ -383,6 +384,15 @@ def _convert_ai_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
         "id": data.get("id"),
         "response_metadata": response_metadata,
     }
+    if isinstance(additional_kwargs, dict) and additional_kwargs:
+        kwargs["additional_kwargs"] = dict(additional_kwargs)
+    # Some OpenAI-compatible providers place reasoning payload directly on
+    # message objects. Preserve it so downstream UIs can render reasoning.
+    reasoning_content = data.get("reasoning_content")
+    if isinstance(reasoning_content, str) and reasoning_content:
+        ak = kwargs.setdefault("additional_kwargs", {})
+        if isinstance(ak, dict):
+            ak.setdefault("reasoning_content", reasoning_content)
 
     if tool_call_chunks:
         kwargs["tool_call_chunks"] = [

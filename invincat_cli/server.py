@@ -369,6 +369,22 @@ class ServerProcess:
             )
             return ""
 
+    def read_log_tail(self, max_chars: int = 3000) -> str:
+        """Read the tail of the server log file.
+
+        Args:
+            max_chars: Maximum characters from the end of the log.
+
+        Returns:
+            Tail string, or empty string when logs are unavailable.
+        """
+        if max_chars <= 0:
+            return ""
+        content = self._read_log_file()
+        if not content:
+            return ""
+        return content[-max_chars:]
+
     async def start(
         self,
         *,

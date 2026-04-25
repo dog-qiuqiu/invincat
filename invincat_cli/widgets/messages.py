@@ -590,6 +590,13 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
         padding: 0;
         margin: 0;
     }
+
+    AssistantMessage .assistant-reasoning {
+        padding: 0;
+        margin: 1 0 0 0;
+        color: $text-muted;
+        display: none;
+    }
     """
 
     def __init__(self, content: str = "", **kwargs: Any) -> None:
@@ -601,7 +608,9 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
         """
         super().__init__(**kwargs)
         self._content = content
+        self._reasoning_content = ""
         self._markdown: Markdown | None = None
+        self._reasoning_widget: Static | None = None
         self._stream: MarkdownStream | None = None
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual widget method convention
@@ -613,12 +622,14 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
         from textual.widgets import Markdown
 
         yield Markdown("", id="assistant-content")
+        yield Static("", id="assistant-reasoning", classes="assistant-reasoning")
 
     def on_mount(self) -> None:
         """Store reference to markdown widget."""
         from textual.widgets import Markdown
 
         self._markdown = self.query_one("#assistant-content", Markdown)
+        self._reasoning_widget = self.query_one("#assistant-reasoning", Static)
 
     def _get_markdown(self) -> Markdown:
         """Get the markdown widget, querying if not cached.
@@ -658,6 +669,20 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
         self._content += text
         stream = self._ensure_stream()
         await stream.write(text)
+
+    async def append_reasoning(self, text: str) -> None:
+        """Append reasoning text in a muted, separate display area.
+
+        Args:
+            text: Reasoning text chunk to append.
+        """
+        if not text:
+            return
+        self._reasoning_content += text
+        if self._reasoning_widget is None:
+            self._reasoning_widget = self.query_one("#assistant-reasoning", Static)
+        self._reasoning_widget.display = True
+        self._reasoning_widget.update(self._reasoning_content)
 
     async def write_initial_content(self) -> None:
         """Write initial content if provided at construction time."""

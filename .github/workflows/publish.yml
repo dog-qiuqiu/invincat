@@ -23,20 +23,23 @@ jobs:
       - name: Get version from tag
         id: get_version
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
+          RAW_TAG=${GITHUB_REF#refs/tags/}
+          VERSION=${RAW_TAG#v}
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Version: $VERSION"
 
       - name: Update version in _version.py
         run: |
           VERSION=${{ steps.get_version.outputs.version }}
-          sed -i "s/__version__ = \".*\"/__version__ = \"$VERSION\"  # x-release-please-version/" invincat_cli/_version.py
+          VERSION_ESCAPED=$(printf '%s' "$VERSION" | sed 's/[&\\]/\\&/g')
+          sed -i "s#__version__ = \".*\"#__version__ = \"$VERSION_ESCAPED\"  # x-release-please-version#" invincat_cli/_version.py
           cat invincat_cli/_version.py
 
       - name: Update version in pyproject.toml
         run: |
           VERSION=${{ steps.get_version.outputs.version }}
-          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" pyproject.toml
+          VERSION_ESCAPED=$(printf '%s' "$VERSION" | sed 's/[&\\]/\\&/g')
+          sed -i "s#^version = \".*\"#version = \"$VERSION_ESCAPED\"#" pyproject.toml
           grep "^version" pyproject.toml
 
       - name: Install build dependencies

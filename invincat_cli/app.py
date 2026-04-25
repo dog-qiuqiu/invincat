@@ -181,6 +181,55 @@ def _write_iterm_escape(sequence: str) -> None:
         pass
 
 
+def _format_exception_details(exc: BaseException) -> str:
+    """Render exception details for UI without flattening structured payloads.
+
+    Prefers dict payloads carried by remote exceptions (for example
+    `RemoteException({'error': ..., 'message': ..., ...})`) so users can see
+    the original error fields directly.
+    """
+    payload: dict[str, Any] | None = None
+
+    # Most remote exceptions store raw payload as first arg.
+    if exc.args and isinstance(exc.args[0], dict):
+        payload = exc.args[0]
+    # Some implementations expose payload via `.data`.
+    elif isinstance(getattr(exc, "data", None), dict):
+        payload = getattr(exc, "data")
+
+    if payload is not None:
+        try:
+            return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError):
+            return str(payload)
+
+    text = str(exc).strip()
+    if not text:
+        return type(exc).__name__
+    if type(exc).__name__ in text:
+        return text
+    return f"{type(exc).__name__}: {text}"
+
+
+def _extract_exception_payload(exc: BaseException) -> dict[str, Any] | None:
+    """Extract structured payload from wrapped remote exceptions."""
+    if exc.args and isinstance(exc.args[0], dict):
+        return exc.args[0]
+    data_attr = getattr(exc, "data", None)
+    if isinstance(data_attr, dict):
+        return data_attr
+    return None
+
+
+def _looks_like_masked_internal_error(exc: BaseException) -> bool:
+    """Detect generic upstream internal errors with low diagnostic value."""
+    payload = _extract_exception_payload(exc)
+    if payload is not None:
+        message = str(payload.get("message", "")).strip().lower()
+        return message == "an internal error occurred"
+    return "an internal error occurred" in str(exc).lower()
+
+
 # Disable cursor guide at module load (before Textual takes over)
 _write_iterm_escape(_ITERM_CURSOR_GUIDE_OFF)
 
@@ -4500,15 +4549,26 @@ class DeepAgentsApp(App):
                 await post_turn_hook()
         except Exception as e:  # Resilient tool rendering
             logger.exception("Agent execution failed")
+            error_detail = _format_exception_details(e)
+            if _looks_like_masked_internal_error(e) and self._server_proc is not None:
+                try:
+                    server_log_tail = self._server_proc.read_log_tail(max_chars=4000)
+                except Exception:
+                    logger.debug("Failed to read server log tail", exc_info=True)
+                    server_log_tail = ""
+                if server_log_tail:
+                    error_detail = (
+                        f"{error_detail}\n\n[server log tail]\n{server_log_tail}"
+                    )
             # Ensure any in-flight tool calls don't remain stuck in "Running..."
             # when streaming aborts before tool results arrive.
             if self._ui_adapter:
                 self._ui_adapter.finalize_pending_tools_with_error(
-                    t("agent.error").format(error=str(e))
+                    t("agent.error").format(error=error_detail)
                 )
             try:
                 await self._mount_message(
-                    ErrorMessage(t("agent.error").format(error=str(e)))
+                    ErrorMessage(t("agent.error").format(error=error_detail))
                 )
             except Exception:
                 logger.debug(

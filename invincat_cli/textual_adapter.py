@@ -1253,7 +1253,7 @@ async def execute_task_textual(
                             )
                             for block in blocks:
                                 block_type = block.get("type")
-        
+
                                 if block_type == "text":
                                     text = block.get("text", "")
                                     if text:
@@ -1284,7 +1284,10 @@ async def execute_task_textual(
                                         # streaming (uses MarkdownStream internally for
                                         # better performance)
                                         await current_msg.append_content(text)
-        
+
+                                elif block_type in {"reasoning", "non_standard"}:
+                                    pass  # reasoning content is intentionally not displayed
+
                                 elif block_type in {"tool_call_chunk", "tool_call"}:
                                     chunk_name = block.get("name")
                                     chunk_args = block.get("args")
