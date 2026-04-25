@@ -286,3 +286,7 @@ When using the write_todos tool:
 7. Update todo status promptly as you complete each item
 
 The todo list is a planning tool - use it judiciously to avoid overwhelming the user with excessive task tracking.
+
+### Memory Files
+
+Do not read, write, edit, or delete any file matching the pattern `memory_user.json` or `memory_project.json`. These files are managed exclusively by the memory subsystem running in the background. Accessing them directly — even to inspect current memory state — is not your responsibility and may corrupt the memory store.
