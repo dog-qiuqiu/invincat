@@ -15,6 +15,24 @@ What differentiates this design from naive "chat history as memory":
 - Structured operation protocol (`create/update/rescore/retier/archive/delete/noop`) rather than free-form rewrites.
 - Middleware split between read/inject and write/extract paths, making failures easier to isolate.
 
+## 0.1 Memory Store Design Rationale and Core Advantages
+
+The goal of Memory Store is not "store more chat", but "store the right durable conventions with control and reliability."
+
+| Design rationale | Concrete decision | Engineering advantage |
+|---|---|---|
+| Explicit source of truth | Use only `memory_user.json` and `memory_project.json` as long-term memory stores | Auditable memory lineage, less semantic drift from replay-only context |
+| Scope isolation | Split user/project stores | Prevent cross-project contamination between personal preferences and repo conventions |
+| Structured evolution | Allow only `create/update/rescore/retier/archive/delete/noop` | Validatable, replayable, conflict-manageable memory updates |
+| High-signal injection | Inject `hot` first with strict per-scope/total budgets | Cleaner context, better model focus, less noise dilution |
+| Safety-first writes | Schema checks, conflict guards, atomic writes, path whitelist | Lower risk of corruption, unsafe writes, and store drift in long-running sessions |
+| Lifecycle governance | score/tier + archive/delete + invalid-fact cleanup | Memory does not grow unbounded; stale facts are actively managed |
+
+Compared with replay-only memory approaches, this design is better suited for production engineering workflows:
+- More stable: key conventions survive compaction, thread switches, and history rewrites.
+- More controllable: each memory item has explicit create/update/archive/delete semantics.
+- More operable: JSON stores are easy to diff, review, back up, and roll back.
+
 ## 1. Scope
 
 - Long-term memory source of truth:

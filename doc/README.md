@@ -15,6 +15,18 @@ This directory contains project documentation moved out of the repository root.
 - Chinese readers: use [README_CN.md](./README_CN.md) for full localized usage documentation.
 - Memory internals and architecture: read [MEMORY_DESIGN_EN.md](./MEMORY_DESIGN_EN.md) or [MEMORY_DESIGN.md](./MEMORY_DESIGN.md).
 
+## Role-Based Reading Path
+
+- End users (daily usage):
+  - [../README.md](../README.md) or [README_CN.md](./README_CN.md)
+  - focus on installation, slash commands, plan mode, memory manager UI
+- Team admins / maintainers:
+  - [../README.md](../README.md) or [README_CN.md](./README_CN.md)
+  - then [MEMORY_DESIGN_EN.md](./MEMORY_DESIGN_EN.md) or [MEMORY_DESIGN.md](./MEMORY_DESIGN.md) for policy tuning and guardrails
+- Contributors (memory/agent internals):
+  - start with [MEMORY_DESIGN_EN.md](./MEMORY_DESIGN_EN.md) or [MEMORY_DESIGN.md](./MEMORY_DESIGN.md)
+  - then inspect implementation files referenced in the component tables
+
 ## Memory Design
 
 - Chinese memory design: [MEMORY_DESIGN.md](./MEMORY_DESIGN.md)
