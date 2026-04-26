@@ -25,3 +25,12 @@ class CLIContext(TypedDict, total=False):
     model_params: dict[str, Any]
     """Invocation params (e.g. `temperature`, `max_tokens`) to merge
     into `model_settings`."""
+
+    memory_model: str | None
+    """Optional dedicated model spec for the memory agent.
+
+    When unset, memory extraction uses the active primary model.
+    """
+
+    memory_model_params: dict[str, Any]
+    """Invocation params for the dedicated memory model."""

@@ -99,7 +99,6 @@ Screen {
 #status-bar {
     height: 1;
     dock: bottom;
-    margin-bottom: 1;
 }
 
 /* Tool approval widgets */

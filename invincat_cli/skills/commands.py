@@ -154,7 +154,7 @@ def _list(
     from rich.markup import escape as escape_markup
 
     from invincat_cli.config import Settings, console, get_glyphs
-    from invincat_cli.skills.load import list_skills
+    from invincat_cli.skills.load import list_skills, load_skill_content
 
     settings = Settings.from_environment()
     user_skills_dir = settings.get_user_skills_dir(agent)
@@ -587,9 +587,39 @@ def _info(
         write_json("skills info", dict(skill))
         return
 
-    # Read the full SKILL.md file
+    # Read the full SKILL.md file with containment checks
     skill_path = Path(skill["path"])
-    skill_content = skill_path.read_text(encoding="utf-8")
+    allowed_roots = [
+        d.resolve()
+        for d in (
+            settings.get_built_in_skills_dir(),
+            user_skills_dir,
+            project_skills_dir,
+            user_agent_skills_dir,
+            project_agent_skills_dir,
+            settings.get_user_claude_skills_dir(),
+            settings.get_project_claude_skills_dir(),
+        )
+        if d is not None
+    ]
+    allowed_roots.extend(d.resolve() for d in settings.get_extra_skills_dirs())
+    try:
+        skill_content = load_skill_content(str(skill_path), allowed_roots=allowed_roots)
+    except PermissionError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise SystemExit(1) from e
+    except OSError as e:
+        console.print(
+            f"[bold red]Error:[/bold red] Could not read SKILL.md for "
+            f"'{skill_name}': {e}"
+        )
+        raise SystemExit(1) from e
+    if skill_content is None:
+        console.print(
+            f"[bold red]Error:[/bold red] Could not read SKILL.md for '{skill_name}'. "
+            "Check file encoding and permissions."
+        )
+        raise SystemExit(1)
 
     # Determine source label
     source_labels = {
@@ -644,7 +674,10 @@ def _info(
 
     # List supporting files
     skill_dir = skill_path.parent
-    supporting_files = [f for f in skill_dir.iterdir() if f.name != "SKILL.md"]
+    try:
+        supporting_files = [f for f in skill_dir.iterdir() if f.name != "SKILL.md"]
+    except OSError:
+        supporting_files = []
 
     if supporting_files:
         console.print("[bold]Supporting Files:[/bold]", style=theme.MUTED)

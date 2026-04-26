@@ -792,6 +792,9 @@ class ModelConfig:
     recent_model: str | None = None
     """The most recently switched-to model (from config file `[models].recent`)."""
 
+    memory_default_model: str | None = None
+    """Dedicated default for memory agent (from `[models].memory_default`)."""
+
     providers: Mapping[str, ProviderConfig] = field(default_factory=dict)
     """Read-only mapping of provider names to their configurations."""
 
@@ -854,6 +857,7 @@ class ModelConfig:
         config = cls(
             default_model=models_section.get("default"),
             recent_model=models_section.get("recent"),
+            memory_default_model=models_section.get("memory_default"),
             providers=models_section.get("providers", {}),
         )
 
@@ -885,6 +889,14 @@ class ModelConfig:
                 "recent_model '%s' should use provider:model format "
                 "(e.g., 'anthropic:claude-sonnet-4-5')",
                 self.recent_model,
+            )
+
+        # Warn if memory_default_model is set but doesn't use provider:model format
+        if self.memory_default_model and ":" not in self.memory_default_model:
+            logger.warning(
+                "memory_default_model '%s' should use provider:model format "
+                "(e.g., 'openai:gpt-5.2')",
+                self.memory_default_model,
             )
 
         # Validate enabled field type and class_path format / params references
@@ -1173,6 +1185,26 @@ def clear_default_model(config_path: Path | None = None) -> bool:
     Returns:
         True if the key was removed (or was already absent), False on I/O error.
     """
+    return _clear_model_field("default", config_path)
+
+
+def save_memory_default_model(
+    model_spec: str, config_path: Path | None = None
+) -> bool:
+    """Update the dedicated memory default model in config file.
+
+    Writes to `[models].memory_default`.
+    """
+    return _save_model_field("memory_default", model_spec, config_path)
+
+
+def clear_memory_default_model(config_path: Path | None = None) -> bool:
+    """Remove the dedicated memory default model from the config file."""
+    return _clear_model_field("memory_default", config_path)
+
+
+def _clear_model_field(field: str, config_path: Path | None = None) -> bool:
+    """Remove a single key from `[models]` in the config file."""
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
 
@@ -1184,10 +1216,10 @@ def clear_default_model(config_path: Path | None = None) -> bool:
             data = tomllib.load(f)
 
         models_section = data.get("models")
-        if not isinstance(models_section, dict) or "default" not in models_section:
+        if not isinstance(models_section, dict) or field not in models_section:
             return True  # Already absent
 
-        del models_section["default"]
+        del models_section[field]
 
         fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
         try:
@@ -1199,7 +1231,7 @@ def clear_default_model(config_path: Path | None = None) -> bool:
                 Path(tmp_path).unlink()
             raise
     except (OSError, tomllib.TOMLDecodeError):
-        logger.exception("Could not clear default model preference")
+        logger.exception("Could not clear %s model preference", field)
         return False
     else:
         global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement

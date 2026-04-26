@@ -7,6 +7,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from rich.cells import cell_len, get_character_cell_size
 from textual.containers import Horizontal
 from textual.content import Content
 from textual.css.query import NoMatches
@@ -14,6 +15,7 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Static
 
+from invincat_cli import theme
 from invincat_cli.config import get_glyphs
 from invincat_cli.i18n import t
 
@@ -23,6 +25,21 @@ if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult, RenderResult
     from textual.geometry import Size
+
+
+def _take_right_cells(text: str, max_cells: int) -> str:
+    """Return the right-most substring whose rendered width <= max_cells."""
+    if max_cells <= 0 or not text:
+        return ""
+    kept: list[str] = []
+    used = 0
+    for ch in reversed(text):
+        ch_cells = get_character_cell_size(ch)
+        if used + ch_cells > max_cells:
+            break
+        kept.append(ch)
+        used += ch_cells
+    return "".join(reversed(kept))
 
 
 class ModelLabel(Widget):
@@ -35,6 +52,7 @@ class ModelLabel(Widget):
 
     provider: reactive[str] = reactive("", layout=True)
     model: reactive[str] = reactive("", layout=True)
+    prefix: reactive[str] = reactive("", layout=True)
 
     def get_content_width(self, container: Size, viewport: Size) -> int:  # noqa: ARG002
         """Return the intrinsic width so `width: auto` works.
@@ -48,8 +66,8 @@ class ModelLabel(Widget):
         """
         if not self.model:
             return 0
-        full = f"{self.provider}:{self.model}" if self.provider else self.model
-        return len(full)
+        full = f"{self.prefix}{self.model}"
+        return cell_len(full)
 
     def render(self) -> RenderResult:
         """Render the model label with width-aware truncation.
@@ -60,18 +78,29 @@ class ModelLabel(Widget):
         width = self.content_size.width
         if not self.model or width <= 0:
             return ""
-        full = f"{self.provider}:{self.model}" if self.provider else self.model
-        if len(full) <= width:
+        full = f"{self.prefix}{self.model}"
+        colors = theme.get_theme_colors(self)
+        if cell_len(full) <= width:
+            if self.prefix:
+                return Content.assemble(
+                    (self.prefix, colors.primary),
+                    (self.model, ""),
+                )
             return Content(full)
-        if len(self.model) <= width:
-            return Content(self.model)
         if width > 1:
-            return Content("\u2026" + self.model[-(width - 1) :])
+            tail = _take_right_cells(full, width - 1)
+            text = "\u2026" + tail
+            if self.prefix and text.startswith(self.prefix):
+                return Content.assemble(
+                    (self.prefix, colors.primary),
+                    (text[len(self.prefix) :], ""),
+                )
+            return Content(text)
         return Content("\u2026")
 
 
 class StatusBar(Horizontal):
-    """Status bar showing mode, auto-approve, cwd, git branch, tokens, and model."""
+    """Status bar showing mode, auto-approve, cwd, git branch, tokens, and models."""
 
     DEFAULT_CSS = """
     StatusBar {
@@ -164,7 +193,7 @@ class StatusBar(Horizontal):
 
     StatusBar .status-tokens {
         width: auto;
-        padding: 0 1;
+        padding: 0 0 0 1;
         color: $text-muted;
     }
 
@@ -178,15 +207,19 @@ class StatusBar(Horizontal):
 
     StatusBar .status-message-count {
         width: auto;
-        padding: 0 1;
+        padding: 0 0 0 1;
         color: $text-muted;
     }
 
     StatusBar ModelLabel {
         width: auto;
-        padding: 0 2;
+        padding: 0 0 0 1;
         color: $text-muted;
         text-align: right;
+    }
+
+    StatusBar #memory-model-display {
+        color: $text-muted;
     }
     """
     """Mode badges and auto-approve pills use distinct colors for at-a-glance status."""
@@ -210,6 +243,7 @@ class StatusBar(Horizontal):
         super().__init__(**kwargs)
         # Store initial cwd - will be used in compose()
         self._initial_cwd = str(cwd) if cwd else str(Path.cwd())
+        self._memory_follows_primary = True
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301 — Textual widget method
         """Compose the status bar layout.
@@ -236,6 +270,7 @@ class StatusBar(Horizontal):
         yield Static("", classes="status-message-count", id="message-count-display")
         yield Static("", classes="status-tokens", id="tokens-display")
         yield ModelLabel(id="model-display")
+        yield ModelLabel(id="memory-model-display")
 
     _BRANCH_WIDTH_THRESHOLD = 100
     """Hide git branch display below this terminal width."""
@@ -263,9 +298,23 @@ class StatusBar(Horizontal):
 
         self.cwd = self._initial_cwd
         # Set initial model display
-        label = self.query_one("#model-display", ModelLabel)
-        label.provider = settings.model_provider or ""
-        label.model = settings.model_name or ""
+        primary = self.query_one("#model-display", ModelLabel)
+        primary.provider = settings.model_provider or ""
+        primary.model = settings.model_name or ""
+        primary.prefix = self._primary_model_prefix()
+
+        memory = self.query_one("#memory-model-display", ModelLabel)
+        memory.provider = settings.model_provider or ""
+        memory.model = settings.model_name or ""
+        memory.prefix = self._memory_model_prefix()
+
+    @staticmethod
+    def _primary_model_prefix() -> str:
+        return f"{t('model.target_primary')}:"
+
+    @staticmethod
+    def _memory_model_prefix() -> str:
+        return f"{t('model.target_memory')}:"
 
     def watch_mode(self, mode: str) -> None:
         """Update mode indicator when mode changes."""
@@ -413,7 +462,13 @@ class StatusBar(Horizontal):
             return
 
         if new_value > 0:
-            display.update(f"messages: {new_value}")
+            colors = theme.get_theme_colors(self)
+            display.update(
+                Content.assemble(
+                    ("messages:", colors.primary),
+                    (f" {new_value}", ""),
+                )
+            )
         else:
             display.update("")
 
@@ -455,15 +510,21 @@ class StatusBar(Horizontal):
         if context_limit and context_limit > 0:
             ratio = count / context_limit
             pct = int(ratio * 100)
-            label = f"tokens: {prefix}{formatted} ({pct}%)"
+            label = f"{prefix}{formatted} ({pct}%)"
             if ratio >= 0.9:  # noqa: PLR2004
                 display.add_class("danger")
             elif ratio >= 0.7:  # noqa: PLR2004
                 display.add_class("warn")
         else:
-            label = f"tokens: {prefix}{formatted}"
+            label = f"{prefix}{formatted}"
 
-        display.update(label)
+        colors = theme.get_theme_colors(self)
+        display.update(
+            Content.assemble(
+                ("tokens:", colors.primary),
+                (f" {label}", ""),
+            )
+        )
 
     def set_tokens(self, count: int, *, approximate: bool = False) -> None:
         """Set the token count.
@@ -502,6 +563,33 @@ class StatusBar(Horizontal):
         label = self.query_one("#model-display", ModelLabel)
         label.provider = provider
         label.model = model
+        label.prefix = self._primary_model_prefix()
+        if self._memory_follows_primary:
+            memory = self.query_one("#memory-model-display", ModelLabel)
+            memory.provider = provider
+            memory.model = model
+            memory.prefix = self._memory_model_prefix()
+
+    def set_memory_model(
+        self,
+        *,
+        provider: str,
+        model: str,
+        follow_primary: bool = False,
+    ) -> None:
+        """Update the dedicated memory-model display.
+
+        Args:
+            provider: Memory model provider.
+            model: Memory model name.
+            follow_primary: If True, keep memory label synced with future
+                `set_model()` updates.
+        """
+        self._memory_follows_primary = follow_primary
+        memory = self.query_one("#memory-model-display", ModelLabel)
+        memory.provider = provider
+        memory.model = model
+        memory.prefix = self._memory_model_prefix()
 
     def set_message_count(self, count: int) -> None:
         """Set the message count display.

@@ -1517,6 +1517,8 @@ class MemoryAgentMiddleware(AgentMiddleware):
         self._allowed_paths: frozenset[str] = frozenset(self._memory_store_paths.values())
 
         self._captured_model: Any = None
+        self._memory_model_cache_key: tuple[str, str] | None = None
+        self._memory_model_cache_obj: Any = None
         self._turn_index = 0
         self._last_run_turn = 0
         self._last_run_at = 0.0
@@ -1982,6 +1984,44 @@ class MemoryAgentMiddleware(AgentMiddleware):
         except Exception:
             logger.debug("Memory agent: failed to emit status=%s", status, exc_info=True)
 
+    def _resolve_memory_model(self, runtime: Any, fallback_model: Any) -> Any:
+        """Resolve dedicated memory model override from runtime context."""
+        ctx = getattr(runtime, "context", None)
+        if not isinstance(ctx, dict):
+            return fallback_model
+
+        raw_spec = ctx.get("memory_model")
+        if not isinstance(raw_spec, str) or not raw_spec.strip():
+            return fallback_model
+        memory_spec = raw_spec.strip()
+
+        raw_params = ctx.get("memory_model_params", {})
+        memory_params = raw_params if isinstance(raw_params, dict) else {}
+        try:
+            params_key = json.dumps(memory_params, sort_keys=True, ensure_ascii=True)
+        except (TypeError, ValueError):
+            params_key = "{}"
+        cache_key = (memory_spec, params_key)
+
+        if cache_key == self._memory_model_cache_key and self._memory_model_cache_obj is not None:
+            return self._memory_model_cache_obj
+
+        try:
+            from invincat_cli.config import create_model
+
+            model_result = create_model(memory_spec, extra_kwargs=memory_params)
+            self._memory_model_cache_key = cache_key
+            self._memory_model_cache_obj = model_result.model
+            return model_result.model
+        except Exception:
+            logger.warning(
+                "Memory agent: failed to resolve dedicated memory model '%s'; "
+                "falling back to primary model",
+                memory_spec,
+                exc_info=True,
+            )
+            return fallback_model
+
     def wrap_model_call(
         self, request: ModelRequest, handler: Any
     ) -> ModelResponse:
@@ -1999,9 +2039,10 @@ class MemoryAgentMiddleware(AgentMiddleware):
     ) -> dict[str, Any] | None:
         try:
             logger.debug("Memory agent: aafter_agent called")
-            model = self._captured_model
-            if model is None:
+            primary_model = self._captured_model
+            if primary_model is None:
                 return None
+            model = self._resolve_memory_model(runtime, primary_model)
             if state.get("__interrupt__"):
                 logger.debug("Memory agent: skipping extraction — pending interrupts")
                 return None

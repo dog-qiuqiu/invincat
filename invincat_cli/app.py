@@ -420,6 +420,34 @@ def _extract_model_params_flag(raw_arg: str) -> tuple[str, dict[str, Any] | None
     return remaining, params
 
 
+ModelTarget = Literal["primary", "memory"]
+
+
+def _parse_model_target(raw_arg: str) -> tuple[ModelTarget, str]:
+    """Parse optional model-target prefix from `/model` args."""
+    stripped = raw_arg.strip()
+    if not stripped:
+        return "primary", ""
+
+    first, *rest = stripped.split(maxsplit=1)
+    first_norm = first.strip().lower()
+    if first_norm in {"1", "primary", "main"}:
+        return "primary", rest[0].strip() if rest else ""
+    if first_norm in {"2", "memory", "secondary"}:
+        return "memory", rest[0].strip() if rest else ""
+    return "primary", stripped
+
+
+def _split_model_spec(spec: str | None) -> tuple[str, str]:
+    """Split `provider:model` spec for status display fallback logic."""
+    if not spec:
+        return "", ""
+    if ":" in spec:
+        provider, model = spec.split(":", 1)
+        return provider.strip(), model.strip()
+    return "", spec.strip()
+
+
 InputMode = Literal["normal", "shell", "command"]
 
 INTERACTIVE_COMMANDS: frozenset[str] = frozenset({
@@ -763,6 +791,10 @@ class DeepAgentsApp(App):
 
         self._model_params_override: dict[str, Any] | None = None
 
+        self._memory_model_override: str | None = None
+
+        self._memory_model_params_override: dict[str, Any] | None = None
+
         self._model: BaseChatModel | None = None
 
         self._mcp_tool_count = sum(len(s.tools) for s in (mcp_server_info or []))
@@ -973,8 +1005,29 @@ class DeepAgentsApp(App):
         if is_ascii_mode():
             chat.styles.scrollbar_size_vertical = 0
 
+        from invincat_cli.config import _get_default_memory_model_spec, settings
+
+        if self._memory_model_override is None:
+            memory_default_spec = _get_default_memory_model_spec()
+            if memory_default_spec:
+                self._memory_model_override = memory_default_spec
+
         self._status_bar = self.query_one("#status-bar", StatusBar)
         self._chat_input = self.query_one("#input-area", ChatInput)
+        if self._status_bar:
+            if self._memory_model_override:
+                mem_provider, mem_model = _split_model_spec(self._memory_model_override)
+                self._status_bar.set_memory_model(
+                    provider=mem_provider,
+                    model=mem_model,
+                    follow_primary=False,
+                )
+            else:
+                self._status_bar.set_memory_model(
+                    provider=settings.model_provider or "",
+                    model=settings.model_name or "",
+                    follow_primary=True,
+                )
 
         # Apply slash commands with current language
         from invincat_cli.command_registry import COMMANDS, build_skill_commands
@@ -1220,17 +1273,6 @@ class DeepAgentsApp(App):
             skills, roots = await asyncio.to_thread(self._discover_skills_and_roots)
             self._discovered_skills = skills
             self._skill_allowed_roots = roots
-            if skills:
-                skill_commands = build_skill_commands(skills)
-                if self._chat_input:
-                    merged = list(SLASH_COMMANDS) + skill_commands
-                    self._chat_input.update_slash_commands(merged)
-                else:
-                    logger.debug(
-                        "Skill discovery completed (%d skills) but chat input "
-                        "not yet mounted; autocomplete deferred",
-                        len(skills),
-                    )
         except OSError:
             # Clear stale cache so /reload failures don't silently
             # leave old data in place.
@@ -1255,6 +1297,16 @@ class DeepAgentsApp(App):
                 severity="warning",
                 timeout=8,
                 markup=False,
+            )
+        if self._chat_input:
+            skill_commands = build_skill_commands(self._discovered_skills)
+            merged = list(SLASH_COMMANDS) + skill_commands
+            self._chat_input.update_slash_commands(merged)
+        else:
+            logger.debug(
+                "Skill discovery completed (%d skills) but chat input "
+                "not yet mounted; autocomplete deferred",
+                len(self._discovered_skills),
             )
 
     def _discover_skills_and_roots(
@@ -3663,7 +3715,7 @@ class DeepAgentsApp(App):
 
             help_body = (
                 f"{t('help.title')}: {', '.join(command_names)}\n"
-                "/model [--model-params JSON] [--default]\n\n"
+                "/model [1|2] [--model-params JSON] [--default]\n\n"
                 f"{t('help.interactive_features')}:\n"
                 f"  Enter           {t('help.submit')}\n"
                 f"  {newline_shortcut():<15} {t('help.insert_newline')}\n"
@@ -3820,6 +3872,7 @@ class DeepAgentsApp(App):
             model_arg = None
             set_default = False
             extra_kwargs: dict[str, Any] | None = None
+            target: ModelTarget = "primary"
             if cmd.startswith("/model "):
                 raw_arg = command.strip()[len("/model ") :].strip()
                 try:
@@ -3828,6 +3881,7 @@ class DeepAgentsApp(App):
                     await self._mount_message(UserMessage(command))
                     await self._mount_message(ErrorMessage(str(exc)))
                     return
+                target, raw_arg = _parse_model_target(raw_arg)
                 if raw_arg.startswith("--default"):
                     set_default = True
                     model_arg = raw_arg[len("--default") :].strip() or None
@@ -3845,22 +3899,29 @@ class DeepAgentsApp(App):
                         )
                     )
                 elif model_arg == "--clear":
-                    await self._clear_default_model()
+                    await self._clear_default_model(target=target)
                 elif model_arg:
-                    await self._set_default_model(model_arg)
+                    await self._set_default_model(model_arg, target=target)
                 else:
                     await self._mount_message(
                         AppMessage(
-                            "Usage: /model --default provider:model\n"
-                            "       /model --default --clear"
+                            "Usage: /model [1|2] --default provider:model\n"
+                            "       /model [1|2] --default --clear"
                         )
                     )
             elif model_arg:
                 # Direct switch: /model claude-sonnet-4-5
                 await self._mount_message(UserMessage(command))
-                await self._switch_model(model_arg, extra_kwargs=extra_kwargs)
+                await self._switch_model(
+                    model_arg,
+                    target=target,
+                    extra_kwargs=extra_kwargs,
+                )
             else:
-                await self._show_model_selector(extra_kwargs=extra_kwargs)
+                await self._show_model_selector(
+                    target=target,
+                    extra_kwargs=extra_kwargs,
+                )
         elif cmd == "/reload":
             await self._mount_message(UserMessage(command))
             try:
@@ -4008,7 +4069,14 @@ class DeepAgentsApp(App):
                 "Containment check failed for skill %r", skill_name, exc_info=True
             )
             await self._mount_message(UserMessage(command))
-            await self._mount_message(AppMessage(str(exc)))
+            await self._mount_message(
+                AppMessage(
+                    t("skill.load_permission_error").format(
+                        skill=skill_name,
+                        error=str(exc),
+                    )
+                )
+            )
             return
         except OSError as exc:
             logger.warning(
@@ -4017,7 +4085,10 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             await self._mount_message(
                 AppMessage(
-                    f"Could not load skill: {skill_name}. Filesystem error: {exc}"
+                    t("skill.load_filesystem_error").format(
+                        skill=skill_name,
+                        error=str(exc),
+                    )
                 )
             )
             return
@@ -4026,8 +4097,10 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             await self._mount_message(
                 AppMessage(
-                    f"Error loading skill: {skill_name}. "
-                    f"Unexpected error: {type(exc).__name__}: {exc}"
+                    t("skill.load_unexpected_error").format(
+                        skill=skill_name,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
                 )
             )
             return
@@ -4036,9 +4109,7 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             await self._mount_message(
                 AppMessage(
-                    f"Could not read content for skill: {skill_name}. "
-                    "Check that the SKILL.md file exists, is readable, "
-                    "and is saved as UTF-8."
+                    t("skill.content_unreadable").format(skill=skill_name)
                 )
             )
             return
@@ -4047,8 +4118,7 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             await self._mount_message(
                 AppMessage(
-                    f"Skill '{skill_name}' has an empty SKILL.md file. "
-                    "Add instructions to the file before invoking."
+                    t("skill.content_empty").format(skill=skill_name)
                 )
             )
             return
@@ -4542,6 +4612,8 @@ class DeepAgentsApp(App):
                 context=CLIContext(
                     model=self._model_override,
                     model_params=self._model_params_override or {},
+                    memory_model=self._memory_model_override,
+                    memory_model_params=self._memory_model_params_override or {},
                 ),
                 turn_stats=turn_stats,
             )
@@ -5868,30 +5940,54 @@ class DeepAgentsApp(App):
     async def _show_model_selector(
         self,
         *,
+        target: ModelTarget = "primary",
         extra_kwargs: dict[str, Any] | None = None,
     ) -> None:
         """Show interactive model selector as a modal screen.
 
         Args:
+            target: Selection target (`'primary'` or `'memory'`).
             extra_kwargs: Extra constructor kwargs from `--model-params`.
         """
         from functools import partial
 
         from invincat_cli.config import settings
+        from invincat_cli.model_config import ModelSpec
         from invincat_cli.widgets.model_selector import ModelSelectorScreen
 
-        def handle_result(result: tuple[str, str] | None) -> None:
+        current_primary_spec = None
+        if settings.model_provider and settings.model_name:
+            current_primary_spec = f"{settings.model_provider}:{settings.model_name}"
+
+        current_memory_spec = self._memory_model_override
+        if current_memory_spec is None:
+            current_memory_spec = current_primary_spec
+
+        def _parse_spec(spec: str | None) -> tuple[str | None, str | None]:
+            if not spec:
+                return None, None
+            parsed = ModelSpec.try_parse(spec)
+            if parsed:
+                return parsed.provider, parsed.model
+            return None, spec
+
+        current_provider, current_model = _parse_spec(current_primary_spec)
+        memory_provider, memory_model = _parse_spec(current_memory_spec)
+
+        def handle_result(result: tuple[str, str, ModelTarget] | None) -> None:
             """Handle the model selector result."""
             if result is not None:
-                model_spec, _ = result
+                model_spec, _, selected_target = result
                 if self._agent_running or self._shell_running or self._connecting:
                     self._defer_action(
                         DeferredAction(
-                            kind="model_switch",
+                            kind=f"model_switch_{selected_target}",
                             execute=partial(
                                 self._switch_model,
                                 model_spec,
+                                target=selected_target,
                                 extra_kwargs=extra_kwargs,
+                                persist_as_default=True,
                             ),
                         )
                     )
@@ -5903,7 +5999,9 @@ class DeepAgentsApp(App):
                         partial(
                             self._switch_model,
                             model_spec,
+                            target=selected_target,
                             extra_kwargs=extra_kwargs,
+                            persist_as_default=True,
                         )
                     )
             # Refocus input after modal closes
@@ -5911,8 +6009,11 @@ class DeepAgentsApp(App):
                 self._chat_input.focus_input()
 
         screen = ModelSelectorScreen(
-            current_model=settings.model_name,
-            current_provider=settings.model_provider,
+            current_model=current_model,
+            current_provider=current_provider,
+            current_memory_model=memory_model,
+            current_memory_provider=memory_provider,
+            initial_target=target,
             cli_profile_override=self._profile_override,
         )
         self.push_screen(screen, handle_result)
@@ -6282,7 +6383,9 @@ class DeepAgentsApp(App):
         self,
         model_spec: str,
         *,
+        target: ModelTarget = "primary",
         extra_kwargs: dict[str, Any] | None = None,
+        persist_as_default: bool = False,
     ) -> None:
         """Switch to a new model, preserving conversation history.
 
@@ -6297,7 +6400,11 @@ class DeepAgentsApp(App):
                 Can be in `provider:model` format
                 (e.g., `'anthropic:claude-sonnet-4-5'`) or just the model name
                 for auto-detection.
+            target: Switch target (`'primary'` for main/planner, `'memory'`
+                for memory agent extraction model).
             extra_kwargs: Extra constructor kwargs from `--model-params`.
+            persist_as_default: Whether to persist this selected model as the
+                target's default preference.
         """
         from invincat_cli.config import create_model, detect_provider, settings
         from invincat_cli.model_config import (
@@ -6308,7 +6415,7 @@ class DeepAgentsApp(App):
             save_recent_model,
         )
 
-        logger.info("Switching model to %s", model_spec)
+        logger.info("Switching %s model to %s", target, model_spec)
 
         if self._model_switching:
             await self._mount_message(AppMessage(t("model.switch_in_progress")))
@@ -6360,19 +6467,29 @@ class DeepAgentsApp(App):
                     provider,
                 )
 
-            if model_name == current_model_name and (
-                not provider or provider == current_model_provider
-            ):
-                current = f"{current_model_provider}:{current_model_name}"
-                await self._mount_message(
-                    AppMessage(t("model.already_using").format(model=current))
-                )
-                return
-
             # Build the provider:model spec for the configurable middleware.
             display = model_spec
             if provider and not parsed:
                 display = f"{provider}:{model_name}"
+
+            if target == "primary":
+                if model_name == current_model_name and (
+                    not provider or provider == current_model_provider
+                ):
+                    current = f"{current_model_provider}:{current_model_name}"
+                    await self._mount_message(
+                        AppMessage(t("model.already_using").format(model=current))
+                    )
+                    return
+            else:
+                current_memory = self._memory_model_override
+                if current_memory is None and current_model_name and current_model_provider:
+                    current_memory = f"{current_model_provider}:{current_model_name}"
+                if display == current_memory:
+                    await self._mount_message(
+                        AppMessage(t("model.already_using").format(model=display))
+                    )
+                    return
 
             try:
                 model_result = create_model(
@@ -6380,7 +6497,6 @@ class DeepAgentsApp(App):
                     extra_kwargs=extra_kwargs,
                     profile_overrides=self._profile_override,
                 )
-                model_result.apply_to_settings()
             except Exception as exc:
                 logger.exception("Failed to resolve model metadata for %s", display)
                 await self._mount_message(
@@ -6388,27 +6504,55 @@ class DeepAgentsApp(App):
                 )
                 return
 
-            self._model_override = display
-            self._model_params_override = extra_kwargs
-            self._invalidate_planner_agent_cache()
+            if target == "primary":
+                model_result.apply_to_settings()
+                self._model_override = display
+                self._model_params_override = extra_kwargs
+                self._invalidate_planner_agent_cache()
 
-            if self._status_bar:
-                self._status_bar.set_model(
-                    provider=model_result.provider or "",
-                    model=model_result.model_name or "",
-                )
-
-            if not await asyncio.to_thread(save_recent_model, display):
-                await self._mount_message(
-                    ErrorMessage(
-                        t("model.preference_save_failed")
+                if self._status_bar:
+                    self._status_bar.set_model(
+                        provider=model_result.provider or "",
+                        model=model_result.model_name or "",
                     )
-                )
+                    if self._memory_model_override is None:
+                        self._status_bar.set_memory_model(
+                            provider=model_result.provider or "",
+                            model=model_result.model_name or "",
+                            follow_primary=True,
+                        )
+
+                if not await asyncio.to_thread(save_recent_model, display):
+                    await self._mount_message(
+                        ErrorMessage(
+                            t("model.preference_save_failed")
+                        )
+                    )
+                else:
+                    await self._mount_message(
+                        AppMessage(t("model.switched_to").format(model=display))
+                    )
+                logger.info("Primary model switched to %s", display)
             else:
+                self._memory_model_override = display
+                self._memory_model_params_override = extra_kwargs
+                if self._status_bar:
+                    self._status_bar.set_memory_model(
+                        provider=model_result.provider or "",
+                        model=model_result.model_name or "",
+                        follow_primary=False,
+                    )
                 await self._mount_message(
-                    AppMessage(t("model.switched_to").format(model=display))
+                    AppMessage(t("model.memory_switched_to").format(model=display))
                 )
-            logger.info("Model switched to %s (via configurable middleware)", display)
+                logger.info("Memory model switched to %s", display)
+
+            if persist_as_default:
+                await self._set_default_model(
+                    display,
+                    target=target,
+                    announce=False,
+                )
 
             # Anchor to bottom so the confirmation message is visible
             with suppress(NoMatches, ScreenStackError):
@@ -6416,17 +6560,29 @@ class DeepAgentsApp(App):
         finally:
             self._model_switching = False
 
-    async def _set_default_model(self, model_spec: str) -> None:
-        """Set the default model in config without switching the current session.
+    async def _set_default_model(
+        self,
+        model_spec: str,
+        *,
+        target: ModelTarget = "primary",
+        announce: bool = True,
+    ) -> bool:
+        """Set the default model target in config without switching session.
 
-        Updates `[models].default` in `~/.invincat/config.toml` so that
-        future CLI launches use this model. Does not affect the running session.
+        Updates `[models].default` (primary) or `[models].memory_default`
+        (memory) in `~/.invincat/config.toml`.
 
         Args:
             model_spec: The model specification (e.g., `'anthropic:claude-opus-4-6'`).
+            target: Which target default to persist (`'primary'` / `'memory'`).
+            announce: Whether to emit user-facing success/failure messages.
         """
         from invincat_cli.config import detect_provider
-        from invincat_cli.model_config import ModelSpec, save_default_model
+        from invincat_cli.model_config import (
+            ModelSpec,
+            save_default_model,
+            save_memory_default_model,
+        )
 
         model_spec = model_spec.removeprefix(":")
 
@@ -6436,37 +6592,64 @@ class DeepAgentsApp(App):
             if provider:
                 model_spec = f"{provider}:{model_spec}"
 
-        if await asyncio.to_thread(save_default_model, model_spec):
-            await self._mount_message(
-                AppMessage(t("model.default_set_to").format(spec=model_spec))
-            )
-        else:
-            await self._mount_message(
-                ErrorMessage(
-                    "Could not save default model. Check permissions for ~/.invincat/"
+        save_fn = (
+            save_memory_default_model if target == "memory" else save_default_model
+        )
+        target_label = (
+            t("model.target_memory")
+            if target == "memory"
+            else t("model.target_primary")
+        )
+
+        if await asyncio.to_thread(save_fn, model_spec):
+            if announce:
+                await self._mount_message(
+                    AppMessage(
+                        t("model.default_target_set_to").format(
+                            target=target_label, spec=model_spec
+                        )
+                    )
                 )
-            )
+            return True
+        else:
+            if announce:
+                await self._mount_message(
+                    ErrorMessage(
+                        t("model.failed_target_save").format(target=target_label)
+                    )
+                )
+            return False
 
-    async def _clear_default_model(self) -> None:
-        """Remove the default model from config.
+    async def _clear_default_model(self, *, target: ModelTarget = "primary") -> None:
+        """Remove default model target from config.
 
-        After clearing, future launches fall back to `[models].recent` or
-        environment auto-detection.
+        For primary model, launches fall back to `[models].recent` or
+        environment auto-detection. For memory model, launches follow primary.
         """
-        from invincat_cli.model_config import clear_default_model
+        from invincat_cli.model_config import (
+            clear_default_model,
+            clear_memory_default_model,
+        )
 
-        if await asyncio.to_thread(clear_default_model):
+        clear_fn = (
+            clear_memory_default_model if target == "memory" else clear_default_model
+        )
+        target_label = (
+            t("model.target_memory")
+            if target == "memory"
+            else t("model.target_primary")
+        )
+
+        if await asyncio.to_thread(clear_fn):
             await self._mount_message(
                 AppMessage(
-                    "Default model cleared. "
-                    "Future launches will use recent model or auto-detect."
+                    t("model.default_target_cleared").format(target=target_label)
                 )
             )
         else:
             await self._mount_message(
                 ErrorMessage(
-                    "Could not clear default model. "
-                    "Check permissions for ~/.invincat/"
+                    t("model.failed_target_clear").format(target=target_label)
                 )
             )
 

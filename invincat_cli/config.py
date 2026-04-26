@@ -1850,6 +1850,21 @@ def _get_default_model_spec() -> str:
     raise ModelConfigError(msg)
 
 
+def _get_default_memory_model_spec() -> str | None:
+    """Get the dedicated default model specification for memory agent.
+
+    Returns:
+        Model specification in provider:model format if configured in
+        `[models].memory_default`, otherwise `None`.
+    """
+    from invincat_cli.model_config import ModelConfig
+
+    config = ModelConfig.load()
+    if config.memory_default_model:
+        return config.memory_default_model
+    return None
+
+
 _OPENROUTER_APP_URL = "https://pypi.org/project/deepagents-cli/"
 """Default `app_url` (maps to `HTTP-Referer`) for OpenRouter attribution.
 

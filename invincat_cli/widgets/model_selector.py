@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
@@ -26,18 +26,17 @@ from invincat_cli import theme
 from invincat_cli.config import Glyphs, get_glyphs, is_ascii_mode
 from invincat_cli.i18n import t
 from invincat_cli.model_config import (
-    ModelConfig,
     ModelProfileEntry,
     PROVIDER_API_KEY_ENV,
-    clear_default_model,
     get_available_models,
     get_model_profiles,
     has_provider_credentials,
     register_provider_model,
-    save_default_model,
 )
 
 logger = logging.getLogger(__name__)
+
+ModelTarget = Literal["primary", "memory"]
 
 
 class ModelOption(Static):
@@ -97,13 +96,13 @@ class ModelOption(Static):
         self.post_message(self.Clicked(self.model_spec, self.provider, self.index))
 
 
-class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
+class ModelSelectorScreen(ModalScreen[tuple[str, str, ModelTarget] | None]):
     """Full-screen modal for model selection.
 
     Displays available models grouped by provider with keyboard navigation
     and search filtering. Current model is highlighted.
 
-    Returns (model_spec, provider) tuple on selection, or None on cancel.
+    Returns `(model_spec, provider, target)` on selection, or None on cancel.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -114,8 +113,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Binding("tab", "tab_complete", "Tab complete", show=False, priority=True),
         Binding("pageup", "page_up", "Page up", show=False, priority=True),
         Binding("pagedown", "page_down", "Page down", show=False, priority=True),
+        Binding("1", "target_primary", "Primary target", show=False, priority=True),
+        Binding("2", "target_memory", "Memory target", show=False, priority=True),
         Binding("enter", "select", "Select", show=False, priority=True),
-        Binding("ctrl+s", "set_default", "Set default", show=False, priority=True),
         Binding("ctrl+n", "register_model", "Register model", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
     ]
@@ -212,6 +212,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self,
         current_model: str | None = None,
         current_provider: str | None = None,
+        current_memory_model: str | None = None,
+        current_memory_provider: str | None = None,
+        initial_target: ModelTarget = "primary",
         cli_profile_override: dict[str, Any] | None = None,
     ) -> None:
         """Initialize the ModelSelectorScreen.
@@ -222,6 +225,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Args:
             current_model: The currently active model name (to highlight).
             current_provider: The provider of the current model.
+            current_memory_model: Current dedicated memory model name.
+            current_memory_provider: Provider for memory model.
+            initial_target: Initial selection target (`primary`/`memory`).
             cli_profile_override: Extra profile fields from `--profile-override`.
 
                 Merged on top of upstream + config.toml profiles so that CLI
@@ -230,6 +236,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         super().__init__()
         self._current_model = current_model
         self._current_provider = current_provider
+        self._current_memory_model = current_memory_model
+        self._current_memory_provider = current_memory_provider
+        self._target: ModelTarget = initial_target
         self._cli_profile_override = cli_profile_override
 
         # Model data — populated asynchronously in on_mount via _load_model_data
@@ -242,7 +251,13 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._current_spec: str | None = None
         if current_model and current_provider:
             self._current_spec = f"{current_provider}:{current_model}"
-        self._default_spec: str | None = None
+        elif current_model:
+            self._current_spec = current_model
+        self._current_memory_spec: str | None = None
+        if current_memory_model and current_memory_provider:
+            self._current_memory_spec = f"{current_memory_provider}:{current_memory_model}"
+        elif current_memory_model:
+            self._current_memory_spec = current_memory_model
         self._profiles: Mapping[str, ModelProfileEntry] = {}
         self._loaded = False
 
@@ -252,14 +267,53 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Returns:
             Index of the current model, or 0 if not found.
         """
-        if not self._current_model or not self._current_provider:
+        current_spec = self._active_current_spec()
+        if not current_spec:
             return 0
 
-        current_spec = f"{self._current_provider}:{self._current_model}"
         for i, (model_spec, _) in enumerate(self._filtered_models):
             if model_spec == current_spec:
                 return i
         return 0
+
+    def _active_current_spec(self) -> str | None:
+        if self._target == "memory":
+            return self._current_memory_spec
+        return self._current_spec
+
+    def _target_label(self) -> str:
+        return (
+            t("model.target_memory")
+            if self._target == "memory"
+            else t("model.target_primary")
+        )
+
+    def _help_text(self) -> str:
+        glyphs = get_glyphs()
+        return (
+            f"1 {t('model.target_primary')}"
+            f" {glyphs.bullet} 2 {t('model.target_memory')}"
+            f" {glyphs.bullet} {glyphs.arrow_up}/{glyphs.arrow_down} {t('model.navigate')}"
+            f" {glyphs.bullet} Enter {t('model.select_action')}"
+            f" {glyphs.bullet} Ctrl+N {t('model.register_action')}"
+            f" {glyphs.bullet} Esc {t('model.cancel_action')}"
+        )
+
+    def _refresh_title(self) -> None:
+        try:
+            title_widget = self.query_one("#model-selector-title", Static)
+        except Exception:
+            return
+        current_spec = self._active_current_spec()
+        if current_spec:
+            title = (
+                f"{t('model.title')} "
+                f"[{t('model.target_short', target=self._target_label())}] "
+                f"({t('model.current_model', model=current_spec)})"
+            )
+        else:
+            title = f"{t('model.title')} [{t('model.target_short', target=self._target_label())}]"
+        title_widget.update(title)
 
     def compose(self) -> ComposeResult:
         """Compose the screen layout.
@@ -267,18 +321,21 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Yields:
             Widgets for the model selector UI.
         """
-        glyphs = get_glyphs()
-
         with Vertical():
             # Title with current model in provider:model format
-            if self._current_model and self._current_provider:
-                current_spec = f"{self._current_provider}:{self._current_model}"
-                title = f"{t('model.title')} ({t('model.current_model', model=current_spec)})"
-            elif self._current_model:
-                title = f"{t('model.title')} ({t('model.current_model', model=self._current_model)})"
+            current_spec = self._active_current_spec()
+            if current_spec:
+                title = (
+                    f"{t('model.title')} "
+                    f"[{t('model.target_short', target=self._target_label())}] "
+                    f"({t('model.current_model', model=current_spec)})"
+                )
             else:
-                title = t("model.title")
-            yield Static(title, classes="model-selector-title")
+                title = (
+                    f"{t('model.title')} "
+                    f"[{t('model.target_short', target=self._target_label())}]"
+                )
+            yield Static(title, classes="model-selector-title", id="model-selector-title")
 
             # Search input
             yield Input(
@@ -295,13 +352,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             yield Static("", classes="model-detail-footer", id="model-detail-footer")
 
             # Help text
-            help_text = (
-                f"{glyphs.arrow_up}/{glyphs.arrow_down} {t('model.navigate')}"
-                f" {glyphs.bullet} Enter {t('model.select_action')}"
-                f" {glyphs.bullet} Ctrl+S {t('model.set_default_action')}"
-                f" {glyphs.bullet} Ctrl+N {t('model.register_action')}"
-                f" {glyphs.bullet} Esc {t('model.cancel_action')}"
-            )
+            help_text = self._help_text()
             yield Static(help_text, classes="model-selector-help")
 
     @staticmethod
@@ -309,7 +360,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         cli_override: dict[str, Any] | None,
     ) -> tuple[
         list[tuple[str, str]],
-        str | None,
         Mapping[str, ModelProfileEntry],
     ]:
         """Gather model discovery data synchronously.
@@ -318,10 +368,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         `get_available_models` does not block the event loop.
 
         Returns:
-            Tuple of (all_models, default_spec, profiles) where
-                `all_models` is a list of `(provider:model spec, provider)`
-                pairs, `default_spec` is the configured default model or
-                `None`, and `profiles` maps spec strings to profile entries.
+            Tuple of (all_models, profiles) where `all_models` is a list of
+                `(provider:model spec, provider)` pairs and `profiles` maps
+                spec strings to profile entries.
         """
         all_models: list[tuple[str, str]] = [
             (f"{provider}:{model}", provider)
@@ -329,9 +378,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             for model in models
         ]
 
-        config = ModelConfig.load()
         profiles = get_model_profiles(cli_override=cli_override)
-        return all_models, config.default_model, profiles
+        return all_models, profiles
 
     async def on_mount(self) -> None:
         """Set up the screen on mount.
@@ -348,10 +396,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         # while model data loads.
         filter_input = self.query_one("#model-filter", Input)
         filter_input.focus()
+        self._refresh_title()
 
         # Offload to thread because get_available_models does filesystem I/O
         try:
-            all_models, default_spec, profiles = await asyncio.to_thread(
+            all_models, profiles = await asyncio.to_thread(
                 self._load_model_data, self._cli_profile_override
             )
         except Exception:
@@ -373,7 +422,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             return
 
         self._all_models = all_models
-        self._default_spec = default_spec
         self._profiles = profiles
         self._filtered_models = list(self._all_models)
         self._selected_index = self._find_current_model_index()
@@ -392,11 +440,33 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Args:
             event: The input changed event.
         """
+        if self._maybe_consume_target_shortcut(event.value):
+            return
         self._filter_text = event.value
         if not self._loaded:
             return  # on_mount will re-apply filter after data loads
         self._update_filtered_list()
         self.call_after_refresh(self._update_display)
+
+    def _maybe_consume_target_shortcut(self, value: str) -> bool:
+        """Consume single-key target shortcuts typed into the filter box."""
+        raw = value.strip()
+        if raw not in {"1", "2"}:
+            return False
+
+        if raw == "1":
+            self._switch_target("primary")
+        else:
+            self._switch_target("memory")
+
+        self._filter_text = ""
+        try:
+            filter_input = self.query_one("#model-filter", Input)
+            if filter_input.value.strip() in {"1", "2"}:
+                filter_input.value = ""
+        except Exception:
+            logger.debug("Failed to clear model filter after target shortcut", exc_info=True)
+        return True
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle Enter key when filter input is focused.
@@ -412,16 +482,20 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         Textual's Input captures Ctrl+key combinations when focused,
         preventing screen-level BINDINGS from firing. This handler
-        intercepts Ctrl+N and Ctrl+S before Input can consume them.
+        intercepts Ctrl+N and target-toggle shortcuts.
         """
         if event.key == "ctrl+n":
             event.prevent_default()
             event.stop()
             await self.action_register_model()
-        elif event.key == "ctrl+s":
+        elif event.key == "1" and not self._filter_text.strip():
             event.prevent_default()
             event.stop()
-            await self.action_set_default()
+            self.action_target_primary()
+        elif event.key == "2" and not self._filter_text.strip():
+            event.prevent_default()
+            event.stop()
+            self.action_target_memory()
 
     def on_model_option_clicked(self, event: ModelOption.Clicked) -> None:
         """Handle click on a model option.
@@ -430,7 +504,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             event: The click event with model info.
         """
         self._selected_index = event.index
-        self.dismiss((event.model_spec, event.provider))
+        self.dismiss((event.model_spec, event.provider, self._target))
 
     def _update_filtered_list(self) -> None:
         """Update the filtered models based on search text using fuzzy matching.
@@ -525,9 +599,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         selected_widget: ModelOption | None = None
 
         # Build current model spec for comparison
-        current_spec = None
-        if self._current_model and self._current_provider:
-            current_spec = f"{self._current_provider}:{self._current_model}"
+        current_spec = self._active_current_spec()
 
         # Resolve credentials upfront so the widget-building loop
         # stays focused on layout
@@ -572,7 +644,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     selected=is_selected,
                     current=is_current,
                     has_creds=has_creds,
-                    is_default=model_spec == self._default_spec,
                     status=self._get_model_status(model_spec),
                 )
                 widget = ModelOption(
@@ -612,7 +683,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         selected: bool,
         current: bool,
         has_creds: bool | None,
-        is_default: bool = False,
         status: str | None = None,
     ) -> Content:
         """Build the display label for a model option.
@@ -622,7 +692,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             selected: Whether this option is currently highlighted.
             current: Whether this is the active model.
             has_creds: Credential status (True/False/None).
-            is_default: Whether this is the configured default model.
             status: Model status from profile (e.g., `'deprecated'`,
                 `'beta'`, `'alpha'`). `'deprecated'` renders in red;
                 other non-None values render in yellow.
@@ -635,21 +704,16 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         cursor = f"{glyphs.cursor} " if selected else "  "
         if not has_creds:
             spec = Content.styled(model_spec, colors.warning)
-        elif is_default:
-            spec = Content.styled(model_spec, colors.primary)
         else:
             spec = Content(model_spec)
         suffix = Content.styled(f" ({t('model.current')})", "dim") if current else Content("")
-        default_suffix = (
-            Content.styled(f" ({t('model.default')})", colors.primary) if is_default else Content("")
-        )
         if status == "deprecated":
             status_suffix = Content.styled(" (deprecated)", colors.error)
         elif status:
             status_suffix = Content.styled(f" ({status})", colors.warning)
         else:
             status_suffix = Content("")
-        return Content.assemble(cursor, spec, suffix, default_suffix, status_suffix)
+        return Content.assemble(cursor, spec, suffix, status_suffix)
 
     @staticmethod
     def _format_footer(
@@ -762,9 +826,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             self._format_option_label(
                 old_widget.model_spec,
                 selected=False,
-                current=old_widget.model_spec == self._current_spec,
+                current=old_widget.model_spec == self._active_current_spec(),
                 has_creds=old_widget.has_creds,
-                is_default=old_widget.model_spec == self._default_spec,
                 status=self._get_model_status(old_widget.model_spec),
             )
         )
@@ -776,9 +839,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             self._format_option_label(
                 new_widget.model_spec,
                 selected=True,
-                current=new_widget.model_spec == self._current_spec,
+                current=new_widget.model_spec == self._active_current_spec(),
                 has_creds=new_widget.has_creds,
-                is_default=new_widget.model_spec == self._default_spec,
                 status=self._get_model_status(new_widget.model_spec),
             )
         )
@@ -799,6 +861,24 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     def action_move_down(self) -> None:
         """Move selection down."""
         self._move_selection(1)
+
+    def _switch_target(self, target: ModelTarget) -> None:
+        if self._target == target:
+            return
+        self._target = target
+        if self._filtered_models:
+            self._selected_index = self._find_current_model_index()
+        self.call_after_refresh(self._update_display)
+        self._refresh_title()
+        self._restore_help_text()
+
+    def action_target_primary(self) -> None:
+        """Switch selector target to primary model config."""
+        self._switch_target("primary")
+
+    def action_target_memory(self) -> None:
+        """Switch selector target to memory-model config."""
+        self._switch_target("memory")
 
     def action_tab_complete(self) -> None:
         """Replace search text with the currently selected model spec."""
@@ -860,7 +940,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         # If there are filtered results, always select the highlighted model
         if self._filtered_models:
             model_spec, provider = self._filtered_models[self._selected_index]
-            self.dismiss((model_spec, provider))
+            self.dismiss((model_spec, provider, self._target))
             return
 
         # No matches - check if user typed a custom provider:model spec
@@ -869,40 +949,13 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         if custom_input and ":" in custom_input:
             provider = custom_input.split(":", 1)[0]
-            self.dismiss((custom_input, provider))
+            self.dismiss((custom_input, provider, self._target))
         elif custom_input:
-            self.dismiss((custom_input, ""))
-
-    async def action_set_default(self) -> None:
-        """Toggle the highlighted model as the default.
-
-        If the highlighted model is already the default, clears it.
-        Otherwise sets it as the new default.
-        """
-        if not self._filtered_models or not self._option_widgets:
-            return
-
-        model_spec, _provider = self._filtered_models[self._selected_index]
-        help_widget = self.query_one(".model-selector-help", Static)
-
-        if model_spec == self._default_spec:
-            # Already default — clear it
-            if await asyncio.to_thread(clear_default_model):
-                self._default_spec = None
-                self.call_after_refresh(self._update_display)
-                help_widget.update(Content.styled(t("model.default_cleared"), "bold"))
-                self.set_timer(3.0, self._restore_help_text)
+            self.dismiss((custom_input, "", self._target))
 
     def _restore_help_text(self) -> None:
         """Restore the help text to its default content."""
-        glyphs = get_glyphs()
-        help_text = (
-            f"{glyphs.arrow_up}/{glyphs.arrow_down} {t('model.navigate')}"
-            f" {glyphs.bullet} Enter {t('model.select_action')}"
-            f" {glyphs.bullet} Ctrl+S {t('model.set_default_action')}"
-            f" {glyphs.bullet} Ctrl+N {t('model.register_action')}"
-            f" {glyphs.bullet} Esc {t('model.cancel_action')}"
-        )
+        help_text = self._help_text()
         try:
             help_widget = self.query_one(".model-selector-help", Static)
             help_widget.update(help_text)
@@ -935,7 +988,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             for p, models in get_available_models().items()
             for m in models
         ]
-        self._default_spec = ModelConfig.load().default_model
         self._profiles = get_model_profiles(
             cli_override=self._cli_profile_override
         )
