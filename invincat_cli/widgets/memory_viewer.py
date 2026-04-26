@@ -1,8 +1,10 @@
-"""Read-only memory management viewer modal."""
+"""Memory management viewer modal with item deletion support."""
 
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -222,6 +224,36 @@ def load_memory_snapshot(memory_store_paths: dict[str, str]) -> dict[str, Memory
     return snapshots
 
 
+def _delete_memory_item(store_path: str, item_id: str) -> None:
+    """Remove item with ``item_id`` from the store at ``store_path`` atomically."""
+    path = Path(store_path)
+    raw = path.read_text(encoding="utf-8")
+    payload = json.loads(raw)
+    items = payload.get("items")
+    if not isinstance(items, list):
+        msg = "invalid store schema: items is not a list"
+        raise ValueError(msg)
+    payload["items"] = [
+        item for item in items
+        if not (isinstance(item, dict) and item.get("id") == item_id)
+    ]
+    content = json.dumps(payload, ensure_ascii=False, indent=2)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=str(path.parent),
+        delete=False,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    ) as tmp:
+        tmp.write(content)
+        tmp.flush()
+        os.fsync(tmp.fileno())
+        tmp_name = tmp.name
+    os.replace(tmp_name, path)
+
+
 def _apply_sort(items: list[MemoryItemView], sort_mode: str) -> list[MemoryItemView]:
     """Sort items keeping active before archived, then apply the chosen sort mode."""
     active = [i for i in items if i.status == "active"]
@@ -252,12 +284,15 @@ class MemoryViewerScreen(ModalScreen[None]):
     """Modal memory viewer with periodic refresh."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("up", "move_up", "Up", show=False, priority=True),
+        Binding("down", "move_down", "Down", show=False, priority=True),
         Binding("r", "refresh", "Refresh", show=False, priority=True),
         Binding("a", "toggle_archived", "Toggle archived", show=False, priority=True),
         Binding("s", "cycle_sort", "Cycle sort", show=False, priority=True),
         Binding("1", "show_user_scope", "User scope", show=False, priority=True),
         Binding("2", "show_project_scope", "Project scope", show=False, priority=True),
         Binding("tab", "next_scope", "Next scope", show=False, priority=True),
+        Binding("d", "delete_item", "Delete", show=False, priority=True),
         Binding("escape", "cancel", "Close", show=False, priority=True),
     ]
 
@@ -310,6 +345,10 @@ class MemoryViewerScreen(ModalScreen[None]):
         self._current_scope = "user"
         self._sort_mode: str = _SORT_MODES[0]
         self._refresh_timer: Timer | None = None
+        self._selected_index: int = 0
+        self._visible_items: list[MemoryItemView] = []
+        self._pending_delete_id: str | None = None
+        self._status_message: str = ""
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -364,6 +403,7 @@ class MemoryViewerScreen(ModalScreen[None]):
                 )
             )
             lines.append(t("memory.viewer.no_scope_configured"))
+            self._visible_items = []
         else:
             latest = _iso_to_local(view.latest_updated_at) or "-"
             summary.update(
@@ -390,55 +430,77 @@ class MemoryViewerScreen(ModalScreen[None]):
                     f"[bold #F5B041]{escape(t('memory.viewer.label.status'))}[/bold #F5B041]: "
                     f"{escape(t('memory.viewer.status.missing'))}"
                 )
+                self._visible_items = []
             elif not view.valid:
                 err = escape(view.error or "unknown error")
                 lines.append(
                     f"[bold #EC7063]{escape(t('memory.viewer.label.status'))}[/bold #EC7063]: "
                     f"{escape(t('memory.viewer.status.invalid').format(error=err))}"
                 )
+                self._visible_items = []
             else:
                 lines.append(
                     f"[bold #58D68D]{escape(t('memory.viewer.label.status'))}[/bold #58D68D]: "
                     f"{escape(t('memory.viewer.status.ok'))}"
                 )
-                rendered_items = 0
                 sorted_items = _apply_sort(view.items, self._sort_mode)
-                for item in sorted_items:
-                    if item.status == "archived" and not self._show_archived:
-                        continue
-                    rendered_items += 1
-                    lines.append(
-                        f"  [bold #AF7AC5]{escape(t('memory.viewer.label.status'))}[/bold #AF7AC5]="
-                        f"{escape(item.status)}  "
-                        f"[bold #AF7AC5]{escape(t('memory.viewer.label.id'))}[/bold #AF7AC5]="
-                        f"{escape(item.item_id)}  "
-                        f"[bold #AF7AC5]{escape(t('memory.viewer.label.section'))}[/bold #AF7AC5]="
-                        f"{escape(item.section)}  "
-                        f"[bold #AF7AC5]{escape(t('memory.viewer.label.tier'))}[/bold #AF7AC5]="
-                        f"{escape(item.tier)}  "
-                        f"[bold #AF7AC5]{escape(t('memory.viewer.label.score'))}[/bold #AF7AC5]="
-                        f"{item.score}"
-                    )
-                    lines.append(
-                        f"    [bold #AF7AC5]{escape(t('memory.viewer.label.content'))}[/bold #AF7AC5]="
-                        f"{escape(item.content)}"
-                    )
-                    if item.score_reason:
-                        lines.append(
-                            f"    [bold #AF7AC5]{escape(t('memory.viewer.label.score_reason'))}[/bold #AF7AC5]="
-                            f"{escape(item.score_reason)}"
-                        )
-                    lines.append(
-                        f"    [bold #AF7AC5]{escape(t('memory.viewer.label.last_scored_at'))}[/bold #AF7AC5]="
-                        f"{escape(item.last_scored_at or '-')}"
-                    )
-                if rendered_items == 0:
+                visible: list[MemoryItemView] = [
+                    item for item in sorted_items
+                    if item.status == "active" or self._show_archived
+                ]
+                self._visible_items = visible
+                if self._selected_index >= len(visible):
+                    self._selected_index = max(0, len(visible) - 1)
+
+                if not visible:
                     lines.append(f"  - {t('memory.viewer.no_visible_items')}")
+                else:
+                    for idx, item in enumerate(visible):
+                        is_selected = idx == self._selected_index
+                        cursor = "▶ " if is_selected else "  "
+                        sel_open = "[reverse]" if is_selected else ""
+                        sel_close = "[/reverse]" if is_selected else ""
+                        lines.append(
+                            f"{cursor}{sel_open}"
+                            f"[bold #AF7AC5]{escape(t('memory.viewer.label.status'))}[/bold #AF7AC5]="
+                            f"{escape(item.status)}  "
+                            f"[bold #AF7AC5]{escape(t('memory.viewer.label.id'))}[/bold #AF7AC5]="
+                            f"{escape(item.item_id)}  "
+                            f"[bold #AF7AC5]{escape(t('memory.viewer.label.section'))}[/bold #AF7AC5]="
+                            f"{escape(item.section)}  "
+                            f"[bold #AF7AC5]{escape(t('memory.viewer.label.tier'))}[/bold #AF7AC5]="
+                            f"{escape(item.tier)}  "
+                            f"[bold #AF7AC5]{escape(t('memory.viewer.label.score'))}[/bold #AF7AC5]="
+                            f"{item.score}{sel_close}"
+                        )
+                        lines.append(
+                            f"    [bold #AF7AC5]{escape(t('memory.viewer.label.content'))}[/bold #AF7AC5]="
+                            f"{escape(item.content)}"
+                        )
+                        if item.score_reason:
+                            lines.append(
+                                f"    [bold #AF7AC5]{escape(t('memory.viewer.label.score_reason'))}[/bold #AF7AC5]="
+                                f"{escape(item.score_reason)}"
+                            )
+                        lines.append(
+                            f"    [bold #AF7AC5]{escape(t('memory.viewer.label.last_scored_at'))}[/bold #AF7AC5]="
+                            f"{escape(item.last_scored_at or '-')}"
+                        )
 
         content = "\n".join(lines).strip() if lines else t("memory.viewer.no_stores_configured")
         children = list(container.children)
         if children and isinstance(children[0], Static):
             children[0].update(_markup_text([content]))
+
+        help_widget = self.query_one(".memory-help", Static)
+        if self._status_message:
+            help_widget.update(self._status_message)
+        elif self._pending_delete_id:
+            help_widget.update(
+                t("memory.viewer.delete.confirm").format(item_id=self._pending_delete_id)
+            )
+        else:
+            help_widget.update(t("memory.viewer.help"))
 
     def action_refresh(self) -> None:
         self._render_snapshot()
@@ -452,11 +514,56 @@ class MemoryViewerScreen(ModalScreen[None]):
         self._sort_mode = _SORT_MODES[(idx + 1) % len(_SORT_MODES)]
         self._render_snapshot()
 
+    def action_move_up(self) -> None:
+        self._pending_delete_id = None
+        self._status_message = ""
+        if self._visible_items:
+            self._selected_index = max(0, self._selected_index - 1)
+        self._render_snapshot()
+
+    def action_move_down(self) -> None:
+        self._pending_delete_id = None
+        self._status_message = ""
+        if self._visible_items:
+            self._selected_index = min(len(self._visible_items) - 1, self._selected_index + 1)
+        self._render_snapshot()
+
+    def action_delete_item(self) -> None:
+        if not self._visible_items:
+            self._status_message = t("memory.viewer.delete.no_selection")
+            self._render_snapshot()
+            return
+
+        item = self._visible_items[self._selected_index]
+
+        if self._pending_delete_id == item.item_id:
+            store_path = self._memory_store_paths.get(item.scope, "")
+            try:
+                _delete_memory_item(store_path, item.item_id)
+                self._status_message = t("memory.viewer.delete.success").format(
+                    item_id=item.item_id
+                )
+                # Adjust selection so it doesn't go out of bounds after delete.
+                self._selected_index = max(0, self._selected_index - 1)
+            except Exception as exc:  # noqa: BLE001
+                self._status_message = t("memory.viewer.delete.error").format(error=exc)
+            finally:
+                self._pending_delete_id = None
+        else:
+            self._pending_delete_id = item.item_id
+            self._status_message = ""
+
+        self._render_snapshot()
+
     def action_show_user_scope(self) -> None:
+        self._pending_delete_id = None
+        self._status_message = ""
         self._current_scope = "user"
         self._render_snapshot()
 
     def action_show_project_scope(self) -> None:
+        self._pending_delete_id = None
+        self._status_message = ""
         self._current_scope = "project"
         self._render_snapshot()
 
@@ -466,6 +573,8 @@ class MemoryViewerScreen(ModalScreen[None]):
         ]
         if not ordered_scopes:
             return
+        self._pending_delete_id = None
+        self._status_message = ""
         if self._current_scope not in ordered_scopes:
             self._current_scope = ordered_scopes[0]
         else:
