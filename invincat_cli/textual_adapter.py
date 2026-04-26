@@ -2105,9 +2105,67 @@ async def _persist_context_tokens(
         config: Runnable config with `thread_id`.
         tokens: Total context tokens to persist.
     """
-    try:
-        await agent.aupdate_state(config, {"_context_tokens": tokens})
-    except Exception:  # non-critical; stale count on resume is acceptable
+    def _is_connectivity_error(exc: Exception) -> bool:
+        names = {cls.__name__ for cls in type(exc).__mro__}
+        if names & {
+            "ConnectError",
+            "ConnectTimeout",
+            "ReadTimeout",
+            "WriteTimeout",
+            "PoolTimeout",
+            "NetworkError",
+            "RemoteProtocolError",
+            "TransportError",
+        }:
+            return True
+        text = str(exc).lower()
+        return "connection attempts failed" in text or "connection refused" in text
+
+    max_attempts = 3
+    delay = 0.2
+    ensured_thread = False
+    last_exc: Exception | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            await agent.aupdate_state(config, {"_context_tokens": tokens})
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # non-critical; stale count on resume is acceptable
+            last_exc = exc
+
+            ensure_thread = getattr(agent, "aensure_thread", None)
+            if not ensured_thread and callable(ensure_thread):
+                try:
+                    await ensure_thread(config)
+                    ensured_thread = True
+                    continue
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.debug(
+                        "aensure_thread failed while persisting _context_tokens",
+                        exc_info=True,
+                    )
+
+            if attempt < max_attempts and _is_connectivity_error(exc):
+                await asyncio.sleep(delay)
+                delay *= 2
+                continue
+            break
+
+    if last_exc is None:
+        return
+
+    if _is_connectivity_error(last_exc):
+        logger.warning(
+            "Failed to persist _context_tokens=%d due to temporary connection issue; "
+            "token count may be stale on resume (%s)",
+            tokens,
+            last_exc,
+        )
+    else:
         logger.warning(
             "Failed to persist _context_tokens=%d; token count may be stale on resume",
             tokens,

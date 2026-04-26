@@ -3901,7 +3901,11 @@ class DeepAgentsApp(App):
                 elif model_arg == "--clear":
                     await self._clear_default_model(target=target)
                 elif model_arg:
-                    await self._set_default_model(model_arg, target=target)
+                    await self._set_default_model(
+                        model_arg,
+                        target=target,
+                        apply_to_session=(target == "memory"),
+                    )
                 else:
                     await self._mount_message(
                         AppMessage(
@@ -6566,6 +6570,7 @@ class DeepAgentsApp(App):
         *,
         target: ModelTarget = "primary",
         announce: bool = True,
+        apply_to_session: bool = False,
     ) -> bool:
         """Set the default model target in config without switching session.
 
@@ -6576,6 +6581,8 @@ class DeepAgentsApp(App):
             model_spec: The model specification (e.g., `'anthropic:claude-opus-4-6'`).
             target: Which target default to persist (`'primary'` / `'memory'`).
             announce: Whether to emit user-facing success/failure messages.
+            apply_to_session: Whether to also apply this default immediately
+                to current in-memory session state for the target.
         """
         from invincat_cli.config import detect_provider
         from invincat_cli.model_config import (
@@ -6602,6 +6609,16 @@ class DeepAgentsApp(App):
         )
 
         if await asyncio.to_thread(save_fn, model_spec):
+            if apply_to_session and target == "memory":
+                self._memory_model_override = model_spec
+                self._memory_model_params_override = None
+                if self._status_bar:
+                    mem_provider, mem_model = _split_model_spec(model_spec)
+                    self._status_bar.set_memory_model(
+                        provider=mem_provider,
+                        model=mem_model,
+                        follow_primary=False,
+                    )
             if announce:
                 await self._mount_message(
                     AppMessage(
