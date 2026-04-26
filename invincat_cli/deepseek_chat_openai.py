@@ -55,6 +55,7 @@ def _iter_messages(input_: LanguageModelInput) -> list[BaseMessage] | None:
     return None
 
 
+
 class DeepSeekChatOpenAICompat(ChatOpenAI):
     """Compatibility wrapper for DeepSeek through OpenAI-compatible APIs."""
 
@@ -75,10 +76,16 @@ class DeepSeekChatOpenAICompat(ChatOpenAI):
             if not (isinstance(src, AIMessage) and isinstance(dst, dict)):
                 continue
             reasoning_content = src.additional_kwargs.get("reasoning_content")
-            if isinstance(reasoning_content, str) and reasoning_content:
-                # DeepSeek expects assistant.reasoning_content in follow-up rounds
-                # for thinking-mode tool-call loops.
-                dst["reasoning_content"] = reasoning_content
+            # Always set reasoning_content on assistant messages when thinking
+            # mode is active: use the stored value when available, otherwise
+            # fall back to "" so DeepSeek does not reject the request with
+            # "reasoning_content must be passed back" (happens when the model
+            # chose not to reason on a particular turn).
+            dst["reasoning_content"] = (
+                reasoning_content
+                if isinstance(reasoning_content, str)
+                else ""
+            )
 
         return payload
 
