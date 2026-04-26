@@ -497,7 +497,9 @@ class MemoryViewerScreen(ModalScreen[None]):
             help_widget.update(self._status_message)
         elif self._pending_delete_id:
             help_widget.update(
-                t("memory.viewer.delete.confirm").format(item_id=self._pending_delete_id)
+                t("memory.viewer.delete.confirm").format(
+                    item_id=escape(self._pending_delete_id)
+                )
             )
         else:
             help_widget.update(t("memory.viewer.help"))
