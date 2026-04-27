@@ -32,7 +32,7 @@ jobs:
         run: |
           VERSION=${{ steps.get_version.outputs.version }}
           VERSION_ESCAPED=$(printf '%s' "$VERSION" | sed 's/[&\\]/\\&/g')
-          sed -i "s#__version__ = \".*\"#__version__ = \"$VERSION_ESCAPED\"  # x-release-please-version#" invincat_cli/_version.py
+          sed -i "s/__version__ = \".*\"/__version__ = \"$VERSION_ESCAPED\"  # x-release-please-version/" invincat_cli/_version.py
           cat invincat_cli/_version.py
 
       - name: Update version in pyproject.toml
