@@ -96,6 +96,15 @@ Run `/model` command to open the model management interface:
 2. Fill in the provider, model name, and API Key
 3. Select from the list and press `Enter` to activate
 
+### Primary/Memory Model Mechanism
+
+Invincat uses two model targets:
+
+- `Primary` model: handles normal conversation execution and planner-mode execution handoff.
+- `Memory` model: used only by the post-turn memory extraction pipeline.
+- If no dedicated memory model is configured, memory extraction follows the current primary model.
+- If the dedicated memory model fails to initialize at runtime, memory extraction automatically falls back to the primary model for that turn.
+
 ### Supported Providers
 
 | Provider | Example Models |
@@ -434,7 +443,7 @@ Type `/` in the input box and press `Tab` to view and autocomplete all commands.
 
 | Command | Description |
 |---------|-------------|
-| `/model` | Switch or manage model configurations |
+| `/model` | Switch/manage model config (`1` primary, `2` memory), and set defaults |
 | `/theme` | Switch color theme |
 | `/language` | Switch interface language (Chinese / English) |
 | `/tokens` | View token usage details |
@@ -472,6 +481,9 @@ Type `/` in the input box and press `Tab` to view and autocomplete all commands.
 
 **Q: No response on first launch?**
 You need to configure the model first. Run `/model` → Press `Ctrl+N` to register a model → Fill in the API Key.
+
+**Q: What are the main/sub models?**
+`/model 1` is the primary model for normal task execution. `/model 2` is the dedicated memory model for post-turn memory extraction. If memory default is not set (or fails), it falls back to primary.
 
 **Q: How to interrupt a running task?**
 Press `Esc` to interrupt the current AI response; if AI is waiting for tool approval, `Esc` acts as a rejection.
