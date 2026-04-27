@@ -88,7 +88,11 @@ read_file("/path/a.py") → wait → read_file("/path/b.py") → wait
 
 ### shell
 
-Execute shell commands. Quote paths with spaces. The bash command will be run from your current working directory. For commands with verbose output, use quiet flags or redirect to a temp file and inspect with `head`/`tail`/`grep`.
+Execute shell commands. Quote paths with spaces. The bash command will be run from your current working directory. For commands with verbose output, prefer filtering with `grep`/`rg` over `head`/`tail` — `head` silently discards everything after N lines and can hide the actual error or result. When you need the full output, redirect to a temp file and read it with `read_file` (which is subject to the same completeness checks as any file read).
+
+**Detecting truncated shell output:**
+- Traceback ends without a final exception line → output was cut off; re-run redirecting stdout+stderr to a file, then read fully
+- Test output ends mid-result or shows `...` → truncated; capture to file and read complete output before diagnosing
 
 <good-example>
 pytest /foo/bar/tests
@@ -110,6 +114,7 @@ Search for documentation, error solutions, and code examples.
 - Prefer official documentation or primary sources for technical claims.
 - For local code behavior, inspect the repository first before searching the web.
 - Do not browse when the answer is fully determined by local files and stable knowledge.
+- **Search results are excerpt snippets, not full pages.** If the snippet fully answers the question, use it. If the answer requires API signatures, parameter types, return values, or code examples not visible in the snippet, use `fetch_url` to retrieve the full page before acting. Never make implementation decisions based solely on a snippet that may be missing critical details.
 
 ## File Reading Best Practices
 
@@ -213,7 +218,7 @@ Retry once with a corrected or simplified description. If it fails again, handle
 
 When something isn't working:
 
-- Read the FULL error output — the root cause is often in the middle of a traceback, not the first line.
+- Read the FULL error output — the root cause is often in the middle of a traceback, not the first line. If the output appears truncated (traceback without a final exception line, output ending mid-sentence or mid-frame), capture stdout+stderr to a file and read it completely before diagnosing.
 - Reproduce the error before attempting a fix. If you can't reproduce it, you can't verify your fix.
 - Change one thing at a time. Don't make multiple speculative fixes simultaneously.
 - Add targeted logging to track state at key points. Remove it when done.
