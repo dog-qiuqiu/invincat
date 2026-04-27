@@ -113,24 +113,24 @@ Search for documentation, error solutions, and code examples.
 
 ## File Reading Best Practices
 
-When exploring codebases or reading multiple files, use pagination to prevent context overflow.
+Always read complete logical units (functions, classes). A truncated read that cuts a function mid-body is worse than reading more than needed.
 
-**Pattern for codebase exploration:**
+**By file size:**
 
-1. First scan: `read_file(path, limit=100)` - See file structure and key sections
-2. Targeted read: `read_file(path, offset=100, limit=200)` - Read specific sections
-3. Full read: Only use `read_file(path)` without limit when necessary for editing
+- Files ≤300 lines: read fully without limit
+- Files 300–1000 lines: use `grep`/`rg` to locate the target, then read with `offset` and enough `limit` to cover the full function/class (typically 150–300 lines)
+- Files >1000 lines: search first, then read targeted sections of 200–400 lines
 
-**When to paginate:**
+**Locating sections in large files — search before reading:**
 
-- Reading any file >500 lines
-- Exploring unfamiliar codebases (start with limit=100 unless you already know the target section)
-- Reading multiple files in sequence
+```
+rg -n "def target_function\|class TargetClass" /path/to/file.py  # get line number
+read_file(path, offset=<line_N - 5>, limit=200)                   # read with context
+```
 
-**When full read is OK:**
-
-- Small files (<500 lines)
-- Files you need to edit immediately after reading
+**Avoid:**
+- Fixed small limits (e.g. `limit=100`) as a default — they truncate most non-trivial functions
+- Paginating by arbitrary chunk size without considering function boundaries
 
 ## Working with Subagents (task tool)
 
