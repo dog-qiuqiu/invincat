@@ -2,6 +2,8 @@
 
 [English README](../README.md) | [文档索引](./README.md)
 
+![](../data/banner_cn.png)
+
 基于python实现的终端 AI 编程助手 — 在你的项目目录里直接与 AI 协作：读写文件、执行命令、浏览网页，跨会话保持记忆。
 
 ![](../data/cli.png)
