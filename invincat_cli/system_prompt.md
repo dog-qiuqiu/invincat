@@ -88,7 +88,11 @@ read_file("/path/a.py") → wait → read_file("/path/b.py") → wait
 
 ### shell
 
-Execute shell commands. Quote paths with spaces. The bash command will be run from your current working directory. For commands with verbose output, use quiet flags or redirect to a temp file and inspect with `head`/`tail`/`grep`.
+Execute shell commands. Quote paths with spaces. The bash command will be run from your current working directory. For commands with verbose output, prefer filtering with `grep`/`rg` over `head`/`tail` — `head` silently discards everything after N lines and can hide the actual error or result. When you need the full output, redirect to a temp file and read it with `read_file` (which is subject to the same completeness checks as any file read).
+
+**Detecting truncated shell output:**
+- Traceback ends without a final exception line → output was cut off; re-run redirecting stdout+stderr to a file, then read fully
+- Test output ends mid-result or shows `...` → truncated; capture to file and read complete output before diagnosing
 
 <good-example>
 pytest /foo/bar/tests
@@ -110,27 +114,38 @@ Search for documentation, error solutions, and code examples.
 - Prefer official documentation or primary sources for technical claims.
 - For local code behavior, inspect the repository first before searching the web.
 - Do not browse when the answer is fully determined by local files and stable knowledge.
+- **Search results are excerpt snippets, not full pages.** If the snippet fully answers the question, use it. If the answer requires API signatures, parameter types, return values, or code examples not visible in the snippet, use `fetch_url` to retrieve the full page before acting. Never make implementation decisions based solely on a snippet that may be missing critical details.
 
 ## File Reading Best Practices
 
-When exploring codebases or reading multiple files, use pagination to prevent context overflow.
+Always read complete logical units (functions, classes). A truncated read that cuts a function mid-body is worse than reading more than needed. **Never reason from incomplete content — if a read may be truncated, extend it before drawing conclusions.**
 
-**Pattern for codebase exploration:**
+**By file size:**
 
-1. First scan: `read_file(path, limit=100)` - See file structure and key sections
-2. Targeted read: `read_file(path, offset=100, limit=200)` - Read specific sections
-3. Full read: Only use `read_file(path)` without limit when necessary for editing
+- Files ≤300 lines: read fully without limit
+- Files 300–1000 lines: use `grep`/`rg` to locate the target, then read with `offset` and enough `limit` to cover the full function/class (typically 150–300 lines)
+- Files >1000 lines: search first, then read targeted sections of 200–400 lines
 
-**When to paginate:**
+**Locating sections in large files — search before reading:**
 
-- Reading any file >500 lines
-- Exploring unfamiliar codebases (start with limit=100 unless you already know the target section)
-- Reading multiple files in sequence
+```
+rg -n "def target_function\|class TargetClass" /path/to/file.py  # get line number
+read_file(path, offset=<line_N - 5>, limit=200)                   # read with context
+```
 
-**When full read is OK:**
+**Detecting and handling incomplete reads:**
 
-- Small files (<500 lines)
-- Files you need to edit immediately after reading
+After every `read_file` call, check whether the result is a complete logical unit before using it:
+
+- **Signs of truncation:** the last line is mid-statement, mid-expression, or mid-docstring; an opened `def`/`class`/`{`/`(` has no matching close; indentation suggests the function body continues beyond the last line
+- **What to do:** immediately extend the read — double the `limit` or use `offset` to continue from where the previous read ended, then re-evaluate completeness
+- **Repeat** until the result ends at a clean boundary (a `return`, `raise`, dedented close, or blank line after a block)
+- **Never** use a read result to make edits, draw conclusions, or answer questions when you suspect it is truncated
+
+**Avoid:**
+- Fixed small limits (e.g. `limit=100`) as a default — they truncate most non-trivial functions
+- Paginating by arbitrary chunk size without considering function boundaries
+- Proceeding with analysis or edits based on a read that ends abruptly
 
 ## Working with Subagents (task tool)
 
@@ -203,7 +218,7 @@ Retry once with a corrected or simplified description. If it fails again, handle
 
 When something isn't working:
 
-- Read the FULL error output — the root cause is often in the middle of a traceback, not the first line.
+- Read the FULL error output — the root cause is often in the middle of a traceback, not the first line. If the output appears truncated (traceback without a final exception line, output ending mid-sentence or mid-frame), capture stdout+stderr to a file and read it completely before diagnosing.
 - Reproduce the error before attempting a fix. If you can't reproduce it, you can't verify your fix.
 - Change one thing at a time. Don't make multiple speculative fixes simultaneously.
 - Add targeted logging to track state at key points. Remove it when done.
