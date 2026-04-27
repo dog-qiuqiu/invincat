@@ -2215,6 +2215,7 @@ def create_model(
     *,
     extra_kwargs: dict[str, Any] | None = None,
     profile_overrides: dict[str, Any] | None = None,
+    enable_thinking_default: bool = True,
 ) -> ModelResult:
     """Create a chat model.
 
@@ -2236,6 +2237,11 @@ def create_model(
         profile_overrides: Extra profile fields from `--profile-override`.
 
             Merged on top of config file profile overrides (CLI wins).
+        enable_thinking_default: Whether to apply DeepSeek thinking-mode defaults
+            when a DeepSeek model is detected. Set to `False` for lightweight
+            secondary models (e.g. memory agent) that do not benefit from
+            chain-of-thought reasoning. Caller-supplied ``extra_body.thinking``
+            values always win regardless of this flag.
 
     Returns:
         A `ModelResult` containing the model and its metadata.
@@ -2297,9 +2303,10 @@ def create_model(
     elif _is_deepseek_openai_compatible_path(provider, kwargs):
         from invincat_cli.deepseek_chat_openai import DeepSeekChatOpenAICompat
 
-        model = DeepSeekChatOpenAICompat(
-            model=model_name, **_apply_deepseek_thinking_defaults(kwargs)
+        model_kwargs = (
+            _apply_deepseek_thinking_defaults(kwargs) if enable_thinking_default else kwargs
         )
+        model = DeepSeekChatOpenAICompat(model=model_name, **model_kwargs)
     else:
         model = _create_model_via_init(model_name, provider, kwargs)
 
