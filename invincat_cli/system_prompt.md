@@ -113,7 +113,7 @@ Search for documentation, error solutions, and code examples.
 
 ## File Reading Best Practices
 
-Always read complete logical units (functions, classes). A truncated read that cuts a function mid-body is worse than reading more than needed.
+Always read complete logical units (functions, classes). A truncated read that cuts a function mid-body is worse than reading more than needed. **Never reason from incomplete content — if a read may be truncated, extend it before drawing conclusions.**
 
 **By file size:**
 
@@ -128,9 +128,19 @@ rg -n "def target_function\|class TargetClass" /path/to/file.py  # get line numb
 read_file(path, offset=<line_N - 5>, limit=200)                   # read with context
 ```
 
+**Detecting and handling incomplete reads:**
+
+After every `read_file` call, check whether the result is a complete logical unit before using it:
+
+- **Signs of truncation:** the last line is mid-statement, mid-expression, or mid-docstring; an opened `def`/`class`/`{`/`(` has no matching close; indentation suggests the function body continues beyond the last line
+- **What to do:** immediately extend the read — double the `limit` or use `offset` to continue from where the previous read ended, then re-evaluate completeness
+- **Repeat** until the result ends at a clean boundary (a `return`, `raise`, dedented close, or blank line after a block)
+- **Never** use a read result to make edits, draw conclusions, or answer questions when you suspect it is truncated
+
 **Avoid:**
 - Fixed small limits (e.g. `limit=100`) as a default — they truncate most non-trivial functions
 - Paginating by arbitrary chunk size without considering function boundaries
+- Proceeding with analysis or edits based on a read that ends abruptly
 
 ## Working with Subagents (task tool)
 
