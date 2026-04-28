@@ -5,14 +5,17 @@ from __future__ import annotations
 import json
 import logging
 import asyncio
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, NotRequired
 
 from deepagents.middleware.memory import append_to_system_message
 from langchain.agents.middleware.types import (
     AgentMiddleware,
+    AgentState,
     ModelRequest,
     ModelResponse,
+    PrivateStateAttr,
 )
 from langchain_core.messages import SystemMessage
 from invincat_cli.memory_agent import (
@@ -32,6 +35,12 @@ _MAX_SCOPE_RENDER_CHARS = 4000
 _MAX_TOTAL_INJECTION_CHARS = 8000
 _ALLOWED_ITEM_STATUS = {"active", "archived"}
 _ALLOWED_ITEM_TIER = {"hot", "warm", "cold"}
+
+
+class RefreshableMemoryState(AgentState):
+    """Private state fields used by RefreshableMemoryMiddleware."""
+
+    memory_contents: Annotated[NotRequired[dict[str, str]], PrivateStateAttr]
 
 
 def _normalize_text(value: Any, *, max_chars: int) -> str:
@@ -176,6 +185,8 @@ class RefreshableMemoryMiddleware(AgentMiddleware):
     Reloads when `memory_contents` is absent or None.
     """
 
+    state_schema = RefreshableMemoryState
+
     def __init__(
         self,
         *,
@@ -189,6 +200,28 @@ class RefreshableMemoryMiddleware(AgentMiddleware):
             raw = (memory_store_paths or {}).get(scope)
             if isinstance(raw, str) and raw.strip():
                 self._memory_store_paths[scope] = str(Path(raw).expanduser().resolve())
+        self._last_store_signatures: dict[str, tuple[bool, int, int]] | None = None
+        self._cached_contents: dict[str, str] = {}
+
+    def _snapshot_store_signatures(self) -> dict[str, tuple[bool, int, int]]:
+        signatures: dict[str, tuple[bool, int, int]] = {}
+        for scope, store_path in self._memory_store_paths.items():
+            path = Path(store_path)
+            try:
+                stat = path.stat()
+                signatures[scope] = (True, int(stat.st_mtime_ns), int(stat.st_size))
+            except OSError:
+                signatures[scope] = (False, 0, 0)
+        return signatures
+
+    def _load_memory_contents_if_needed(self, *, force: bool = False) -> dict[str, str]:
+        signatures = self._snapshot_store_signatures()
+        if not force and self._last_store_signatures == signatures:
+            return dict(self._cached_contents)
+        contents = self._load_memory_contents()
+        self._last_store_signatures = signatures
+        self._cached_contents = dict(contents)
+        return contents
 
     def _load_memory_contents(self) -> dict[str, str]:
         contents: dict[str, str] = {}
@@ -222,29 +255,35 @@ class RefreshableMemoryMiddleware(AgentMiddleware):
         return _MEMORY_INJECTION_TEMPLATE.format(agent_memory="\n\n".join(sections))
 
     def before_agent(self, state: dict[str, Any], runtime: Any) -> dict[str, Any] | None:
-        if state.get("memory_contents") is None:
-            logger.debug("Refreshing memory contents")
-            return {"memory_contents": self._load_memory_contents()}
-        return None
+        logger.debug("Refreshing memory contents")
+        return {"memory_contents": self._load_memory_contents_if_needed(force=True)}
 
     async def abefore_agent(self, state: dict[str, Any], runtime: Any) -> dict[str, Any] | None:
-        if state.get("memory_contents") is None:
-            logger.debug("Refreshing memory contents (async)")
-            contents = await asyncio.to_thread(self._load_memory_contents)
-            return {"memory_contents": contents}
-        return None
+        logger.debug("Refreshing memory contents (async)")
+        contents = await asyncio.to_thread(self._load_memory_contents_if_needed, force=True)
+        return {"memory_contents": contents}
 
     def wrap_model_call(self, request: ModelRequest, handler: Any) -> ModelResponse:
-        contents = request.state.get("memory_contents", {})
-        if not isinstance(contents, dict):
-            contents = {}
+        contents = self._load_memory_contents_if_needed(force=False)
         memory_block = self._format_agent_memory(contents)
         new_system: SystemMessage = append_to_system_message(request.system_message, memory_block)
         return handler(request.override(system_message=new_system))
 
     async def awrap_model_call(self, request: ModelRequest, handler: Any) -> ModelResponse:
-        contents = request.state.get("memory_contents", {})
-        if not isinstance(contents, dict):
+        raw_state = request.state
+        has_state_memory = False
+        contents: Any = None
+        if isinstance(raw_state, Mapping):
+            has_state_memory = "memory_contents" in raw_state
+            contents = raw_state.get("memory_contents") if has_state_memory else None
+        elif hasattr(raw_state, "get"):
+            try:
+                contents = raw_state.get("memory_contents")
+                has_state_memory = contents is not None
+            except Exception:
+                has_state_memory = False
+                contents = None
+        if not has_state_memory or not isinstance(contents, dict):
             contents = {}
         memory_block = self._format_agent_memory(contents)
         new_system: SystemMessage = append_to_system_message(request.system_message, memory_block)
