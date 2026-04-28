@@ -365,6 +365,27 @@ INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5
 
 技能是预定义的工作流模板，可复用复杂任务步骤。
 
+### 技能如何生效
+
+Invincat 有两条技能调用路径：
+
+- 显式调用：`/skill:<name> [args]`，读取对应 `SKILL.md` 并注入当前回合。
+- 中间件调用：`SkillsMiddleware` 可在常规执行中自动匹配并应用技能。
+
+系统会在启动/重载时扫描技能并缓存元数据，用于命令补全和更快查找。
+
+### 技能优先级（重名覆盖）
+
+重名技能按以下顺序“后者覆盖前者”：
+
+1. `<package>/built_in_skills/`
+2. `~/.invincat/<agent>/skills/`
+3. `~/.agents/skills/`
+4. `<project>/.invincat/skills/`
+5. `<project>/.agents/skills/`
+6. `~/.claude/skills/`（实验）
+7. `<project>/.claude/skills/`（实验）
+
 ### 使用技能
 
 ```
@@ -377,8 +398,16 @@ INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5
 | 位置 | 路径 | 说明 |
 |------|------|------|
 | 内置技能 | 随包安装 | `skill-creator` |
-| 全局自定义 | `~/.invincat/agent/skills/` | 跨项目可用 |
-| 项目级 | `.invincat/skills/` | 仅当前项目可用 |
+| 用户级（Invincat 别名） | `~/.invincat/agent/skills/` | 跨项目可用 |
+| 用户级（共享别名） | `~/.agents/skills/` | 可与其他 agent 工具共享 |
+| 项目级（Invincat 别名） | `.invincat/skills/` | 仅当前项目可用 |
+| 项目级（共享别名） | `.agents/skills/` | 当前项目内跨工具共享 |
+
+目录行为说明：
+
+- `~/.invincat/agent/skills/` 和 `~/.agents/skills/` 会按需自动创建。
+- 项目级技能目录只会在检测到项目根目录时参与加载。
+- 读取 `SKILL.md` 时会做路径边界校验（符号链接目标可通过额外 allow-list 放行）。
 
 ### 创建自定义技能
 
@@ -480,4 +509,4 @@ INVINCAT_MEMORY_FILE_COOLDOWN_SECONDS=5
 直接告诉 AI，例如"记住：我的项目使用 4 空格缩进，不加分号"，AI 会在适当时机自动保存到记忆文件。
 
 **Q: 如何在不同项目间共享技能？**
-将技能文件放在 `~/.invincat/agent/skills/` 目录下即可全局生效；放在 `.invincat/skills/` 则仅当前项目可用。
+全局共享放 `~/.invincat/agent/skills/` 或 `~/.agents/skills/`；项目内共享放 `.invincat/skills/` 或 `.agents/skills/`。

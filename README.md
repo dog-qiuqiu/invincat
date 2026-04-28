@@ -382,6 +382,27 @@ Open the full-screen memory manager for live inspection of memory stores:
 
 Skills are predefined workflow templates for reusing complex task steps.
 
+### How Skills Work
+
+Invincat supports two skill invocation paths:
+
+- Explicit invocation: `/skill:<name> [args]` loads that skill's `SKILL.md` and injects it into the current turn.
+- Middleware invocation: `SkillsMiddleware` can auto-match and apply skills during normal agent execution.
+
+Discovery happens at startup/reload and skill metadata is cached for autocomplete and faster lookup.
+
+### Skill Precedence
+
+When duplicate names exist, higher-precedence directories override lower ones:
+
+1. `<package>/built_in_skills/`
+2. `~/.invincat/<agent>/skills/`
+3. `~/.agents/skills/`
+4. `<project>/.invincat/skills/`
+5. `<project>/.agents/skills/`
+6. `~/.claude/skills/` (experimental)
+7. `<project>/.claude/skills/` (experimental)
+
 ### Using Skills
 
 ```
@@ -394,8 +415,16 @@ Skills are predefined workflow templates for reusing complex task steps.
 | Location | Path | Description |
 |----------|------|-------------|
 | Built-in Skills | Installed with package | `skill-creator` |
-| Global Custom | `~/.invincat/agent/skills/` | Available across projects |
-| Project-level | `.invincat/skills/` | Only available in current project |
+| User (Invincat alias) | `~/.invincat/agent/skills/` | Available across projects |
+| User (shared alias) | `~/.agents/skills/` | Shared across agent tools |
+| Project (Invincat alias) | `.invincat/skills/` | Only available in current project |
+| Project (shared alias) | `.agents/skills/` | Shared across tools in current project |
+
+Directory behavior:
+
+- `~/.invincat/agent/skills/` and `~/.agents/skills/` are auto-created when needed.
+- Project skill directories are loaded only when a project root is detected.
+- Skill file reads enforce path containment (with extra allow-list support for symlink targets).
 
 ### Creating Custom Skills
 
@@ -497,4 +526,4 @@ Run `/offload` to manually compress history, or wait for automatic compression (
 Just tell AI directly, for example "Remember: my project uses 4-space indentation, no semicolons", and AI will automatically save it to memory files at the appropriate time.
 
 **Q: How to share skills across different projects?**
-Place skill files in the `~/.invincat/agent/skills/` directory for global availability; place in `.invincat/skills/` for current project only.
+Put global skills in `~/.invincat/agent/skills/` or `~/.agents/skills/`. Put project-only skills in `.invincat/skills/` or `.agents/skills/`.
