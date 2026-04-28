@@ -1021,7 +1021,7 @@ def create_cli_agent(
     project_agent_skills_dir = None
     if enable_skills:
         skills_dir = settings.ensure_user_skills_dir(assistant_id)
-        user_agent_skills_dir = settings.get_user_agent_skills_dir()
+        user_agent_skills_dir = settings.ensure_user_agent_skills_dir()
         project_skills_dir = (
             project_context.project_skills_dir()
             if project_context is not None

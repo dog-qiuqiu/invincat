@@ -1331,6 +1331,16 @@ class Settings:
         """
         return self.user_agents_dir / "skills"
 
+    def ensure_user_agent_skills_dir(self) -> Path:
+        """Ensure user-level `~/.agents/skills/` exists and return its path.
+
+        Returns:
+            Path to `~/.agents/skills/`
+        """
+        skills_dir = self.get_user_agent_skills_dir()
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        return skills_dir
+
     def get_project_agent_skills_dir(self) -> Path | None:
         """Get project-level `.agents/skills/` directory.
 
