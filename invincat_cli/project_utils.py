@@ -160,9 +160,13 @@ def find_project_root(start_path: str | Path | None = None) -> Path | None:
         Path to the project root if found, None otherwise.
     """
     current = Path(start_path or Path.cwd()).expanduser().resolve()
+    home = Path.home().resolve()
 
     for parent in [current, *list(current.parents)]:
         for marker in _PROJECT_ROOT_MARKERS:
+            # ~/.invincat is user-level storage, not a project root marker.
+            if marker == ".invincat" and parent == home:
+                continue
             if (parent / marker).exists():
                 return parent
 
