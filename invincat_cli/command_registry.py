@@ -90,6 +90,24 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="store status active archived",
     ),
     SlashCommand(
+        name="/wecombot-start",
+        description_key="wecombot_start",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="wecom wechat bot long connection run",
+    ),
+    SlashCommand(
+        name="/wecombot-status",
+        description_key="wecombot_status",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="wecom wechat bot long connection status",
+    ),
+    SlashCommand(
+        name="/wecombot-stop",
+        description_key="wecombot_stop",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="wecom wechat bot long connection stop",
+    ),
+    SlashCommand(
         name="/model",
         description_key="model",
         bypass_tier=BypassTier.IMMEDIATE_UI,

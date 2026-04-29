@@ -740,6 +740,7 @@ def _build_non_interactive_header(
 async def run_non_interactive(
     message: str,
     assistant_id: str = "agent",
+    thread_id: str | None = None,
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
     sandbox_type: str = "none",  # str (not None) to match argparse choices
@@ -773,6 +774,8 @@ async def run_non_interactive(
     Args:
         message: The task/message to execute.
         assistant_id: Agent identifier for memory storage.
+        thread_id: Optional existing thread ID to continue.
+            When omitted, a new thread ID is generated.
         model_name: Optional model name to use.
         model_params: Extra kwargs from `--model-params` to pass to the model.
 
@@ -817,7 +820,7 @@ async def run_non_interactive(
         return 1
 
     result.apply_to_settings()
-    thread_id = generate_thread_id()
+    thread_id = thread_id or generate_thread_id()
 
     from invincat_cli.config import build_stream_config
 

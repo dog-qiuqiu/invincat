@@ -508,6 +508,30 @@ Type `/` in the input box and press `Tab` to view and autocomplete all commands.
 
 ---
 
+## WeCom Integration
+
+You can bridge Enterprise WeCom messages into the current CLI session via `/wecombot-start`.
+
+1. Set environment variables:
+
+```bash
+export WECOM_BOT_ID="your_bot_id"
+export WECOM_BOT_SECRET="your_bot_secret"
+export WECOM_WS_URL="wss://openws.work.weixin.qq.com" # optional
+```
+
+2. Start inside CLI:
+
+```text
+/wecombot-start
+```
+
+3. Manage lifecycle:
+- `/wecombot-status`
+- `/wecombot-stop`
+
+---
+
 ## FAQ
 
 **Q: No response on first launch?**
