@@ -475,6 +475,9 @@ Invincat 有两条技能调用路径：
 |------|------|
 | `/mcp` | 查看已连接的 MCP 服务器和工具 |
 | `/editor` | 在外部编辑器中编辑当前输入 |
+| `/wecombot-start` | 启动当前 CLI 会话的企业微信机器人桥接 |
+| `/wecombot-status` | 查看企业微信机器人桥接状态 |
+| `/wecombot-stop` | 停止企业微信机器人桥接 |
 | `/skill-creator` | 创建新技能的交互向导 |
 | `/changelog` | 打开版本更新日志 |
 | `/feedback` | 查看反馈渠道信息 |
@@ -488,6 +491,51 @@ Invincat 有两条技能调用路径：
 | `/version` | 显示版本号 |
 | `/reload` | 重新加载配置文件 |
 | `/trace` | 在 LangSmith 中打开当前对话（需配置）|
+
+---
+
+## 企业微信集成
+
+Invincat 可以把企业微信机器人消息桥接到当前 CLI 会话。来自企业微信的消息会注入同一个活跃对话，因此会共享当前模型、记忆、工具、审批状态和工作目录。
+
+### 配置与启动
+
+启动前在同一个 shell 中配置机器人凭据：
+
+```bash
+export WECOM_BOT_ID="your_bot_id"
+export WECOM_BOT_SECRET="your_bot_secret"
+export WECOM_WS_URL="wss://openws.work.weixin.qq.com" # 可选
+```
+
+在 CLI 内启动桥接：
+
+```text
+/wecombot-start
+```
+
+生命周期命令：
+
+| 命令 | 说明 |
+|------|------|
+| `/wecombot-start` | 建立企业微信长连接并订阅机器人回调 |
+| `/wecombot-status` | 查看桥接任务是否运行中 |
+| `/wecombot-stop` | 停止桥接任务并关闭当前连接 |
+
+### 回复机制
+
+- 桥接使用企业微信 `msgtype=stream`，同一回合使用稳定的 `stream_id`，因此企业微信侧看到的是同一条消息持续更新，而不是多条气泡刷屏。
+- 模型开始输出正文前，会显示带动效的一行进度，例如 `处理中：正在分析问题...` 或 `处理中：正在执行工具 read_file...`。
+- 一旦模型产生真实文本 chunk，进度动效停止，同一条企业微信消息切换为累计正文流式更新。
+- 最后一帧会以 `finish=true` 收尾，内容为完整答案。
+
+### 注意事项
+
+- 当前只处理企业微信文本消息回调。
+- 企业微信消息会串行进入当前 CLI 会话，避免两个远端消息同时污染同一个 agent 回合。
+- 长连接断开后会自动重连，并保留一个小的待发送队列做尽力投递。
+- 是否真正 token 级流式取决于模型服务和 LangChain 驱动。如果上游只返回一个大 chunk，企业微信侧也只能收到一次大块内容更新。
+- 可开启 debug 日志，查看 `wecom text delta received chars=...`，确认模型是否真的在输出增量 chunk。
 
 ---
 

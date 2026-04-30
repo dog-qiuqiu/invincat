@@ -492,6 +492,9 @@ Type `/` in the input box and press `Tab` to view and autocomplete all commands.
 |---------|-------------|
 | `/mcp` | View connected MCP servers and tools |
 | `/editor` | Edit current input in external editor |
+| `/wecombot-start` | Start the WeCom bot bridge for the current CLI session |
+| `/wecombot-status` | Show WeCom bot bridge status |
+| `/wecombot-stop` | Stop the WeCom bot bridge |
 | `/skill-creator` | Interactive wizard for creating new skills |
 | `/changelog` | Open release notes/changelog |
 | `/feedback` | Show feedback channel information |
@@ -510,9 +513,14 @@ Type `/` in the input box and press `Tab` to view and autocomplete all commands.
 
 ## WeCom Integration
 
-You can bridge Enterprise WeCom messages into the current CLI session via `/wecombot-start`.
+Invincat can bridge Enterprise WeCom bot messages into the current CLI session.
+Messages received from WeCom are injected into the same active conversation, so
+they share the current model, memory, tools, approvals, and working directory.
 
-1. Set environment variables:
+### Setup
+
+Set the bot credentials before starting the CLI, or export them in the shell
+where the CLI is already running:
 
 ```bash
 export WECOM_BOT_ID="your_bot_id"
@@ -520,15 +528,44 @@ export WECOM_BOT_SECRET="your_bot_secret"
 export WECOM_WS_URL="wss://openws.work.weixin.qq.com" # optional
 ```
 
-2. Start inside CLI:
+Start the bridge inside the CLI:
 
 ```text
 /wecombot-start
 ```
 
-3. Manage lifecycle:
-- `/wecombot-status`
-- `/wecombot-stop`
+Manage lifecycle:
+
+| Command | Description |
+|---------|-------------|
+| `/wecombot-start` | Open the WeCom long-connection client and subscribe to bot callbacks |
+| `/wecombot-status` | Show whether the bridge task is running |
+| `/wecombot-stop` | Stop the bridge task and close the active connection |
+
+### Reply Behavior
+
+- The bridge uses WeCom `msgtype=stream` replies with a stable `stream_id`, so
+  one WeCom message is updated in place instead of sending many separate chat
+  bubbles.
+- Before the model starts producing answer text, the message shows an animated
+  one-line progress state such as `处理中：正在分析问题...` or
+  `处理中：正在执行工具 read_file...`.
+- Once the model emits real text chunks, progress animation stops and the same
+  WeCom message switches to streaming the accumulated answer text.
+- The final frame is sent with `finish=true` and contains the completed answer.
+
+### Notes and Limits
+
+- Only text callbacks are currently accepted from WeCom.
+- Incoming WeCom messages are processed serially against the current CLI session
+  to avoid mixing two remote messages into the same agent turn.
+- The bridge reconnects automatically and keeps a small outbound queue for
+  best-effort delivery while disconnected.
+- True token-level streaming depends on the model provider and LangChain driver.
+  If the upstream model returns one large chunk, WeCom will also receive one
+  large content update rather than token-by-token output.
+- Enable debug logging and look for `wecom text delta received chars=...` to
+  verify whether the provider is producing real incremental chunks.
 
 ---
 
