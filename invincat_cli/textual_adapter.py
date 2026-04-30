@@ -1088,8 +1088,16 @@ async def execute_task_textual(
                                             {"tool_names": [tool_msg._tool_name]},
                                         )
                                     if tool_msg.id and adapter._message_store:
-                                        adapter._update_tool_message_in_store(
-                                            tool_msg.id, tool_status, output_str
+                                        from invincat_cli.widgets.message_store import (
+                                            ToolStatus as _TS,
+                                        )
+                                        _final = (
+                                            _TS.SUCCESS
+                                            if tool_status == "success"
+                                            else _TS.ERROR
+                                        )
+                                        adapter._message_store.update_message(
+                                            tool_msg.id, tool_status=_final
                                         )
                                 elif tool_id:
                                     # Widget not in current tracking map — it was either

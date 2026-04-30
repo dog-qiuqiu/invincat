@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 _UPDATABLE_FIELDS: frozenset[str] = frozenset(
     {
         "content",
+        "tool_args",
         "tool_status",
         "tool_output",
         "tool_expanded",
