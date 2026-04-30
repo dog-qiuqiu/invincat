@@ -707,6 +707,9 @@ def _wecom_build_tool_notification_frame(
     inbound_body = inbound_frame.get("body") or {}
     chatid = inbound_body.get("chatid")
     content = _wecom_format_single_tool(tool_msg)
+    encoded = content.encode("utf-8")
+    if len(encoded) > 4096:  # noqa: PLR2004
+        content = encoded[:4096].decode("utf-8", errors="ignore") + "…"
     body: dict[str, Any] = {"msgtype": "markdown", "markdown": {"content": content}}
     if isinstance(chatid, str) and chatid:
         body["chatid"] = chatid
@@ -4330,7 +4333,10 @@ class DeepAgentsApp(App):
             self._wecom_outbox.append(
                 _wecom_build_tool_notification_frame(frame, tool_msg)
             )
-            await self._wecom_flush_outbox()
+            try:
+                await self._wecom_flush_outbox()
+            except Exception as push_exc:
+                logger.warning("wecom tool notification send failed: %s", push_exc)
 
         try:
             answer = await self._process_wecom_message_via_cli(text, on_tool=_push_tool)
@@ -4424,6 +4430,19 @@ class DeepAgentsApp(App):
                             await on_tool(m)
 
             after = self._message_store.get_all_messages()
+
+            # Final sweep: catch any TOOL messages that landed in the window between
+            # the last 0.1s poll and the agent finishing.
+            if on_tool:
+                for m in after:
+                    if (
+                        m.id not in before_ids
+                        and m.id not in sent_tool_ids
+                        and m.type == MessageType.TOOL
+                    ):
+                        sent_tool_ids.add(m.id)
+                        await on_tool(m)
+
             assistant_msgs = [m for m in after if m.type == MessageType.ASSISTANT]
             if len(assistant_msgs) > before_assistant_count:
                 return assistant_msgs[-1].content.strip() or "（空回复）"
