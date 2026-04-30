@@ -638,6 +638,7 @@ async def execute_task_textual(
 
     file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=backend)
     displayed_tool_ids: set[str] = set()
+    processed_wecom_file_tool_ids: set[str] = set()
     tool_call_buffers: dict[str | int, dict] = {}
 
     # Clear any zombie tool widgets left over from previous turns.
@@ -914,6 +915,8 @@ async def execute_task_textual(
                                 tool_name = getattr(message, "name", "")
                                 tool_status = getattr(message, "status", "success")
                                 tool_content = format_tool_message_content(message.content)
+                                raw_tool_id = getattr(message, "tool_call_id", None)
+                                tool_id = _normalize_tool_id(raw_tool_id)
                                 if (
                                     tool_name == "send_wecom_file"
                                     and on_wecom_file_request is not None
@@ -924,15 +927,27 @@ async def execute_task_textual(
 
                                     payload = parse_wecom_file_request(message.content)
                                     if payload is not None:
-                                        try:
-                                            await on_wecom_file_request(payload)
-                                        except Exception:
-                                            logger.warning(
-                                                "WeCom file request callback failed",
-                                                exc_info=True,
+                                        dedupe_id = (
+                                            _normalize_tool_id(payload.get("tool_call_id"))
+                                            or tool_id
+                                            or _normalize_tool_id(getattr(message, "id", None))
+                                        )
+                                        if dedupe_id in processed_wecom_file_tool_ids:
+                                            logger.debug(
+                                                "Skipping duplicate WeCom file request tool_call_id=%s",
+                                                dedupe_id,
                                             )
+                                        else:
+                                            if dedupe_id is not None:
+                                                processed_wecom_file_tool_ids.add(dedupe_id)
+                                            try:
+                                                await on_wecom_file_request(payload)
+                                            except Exception:
+                                                logger.warning(
+                                                    "WeCom file request callback failed",
+                                                    exc_info=True,
+                                                )
 
-                                raw_tool_id = getattr(message, "tool_call_id", None)
                                 logger.debug(
                                     "ToolMessage received: name=%s, status=%s, raw_tool_id=%s (type=%s), active_keys=%s",
                                     tool_name,
@@ -942,7 +957,6 @@ async def execute_task_textual(
                                     list(file_op_tracker.active.keys()),
                                 )
                                 
-                                tool_id = _normalize_tool_id(raw_tool_id)
                                 tool_msg = None
                                 tool_args_for_match: dict[str, Any] | None = None
         

@@ -4160,11 +4160,14 @@ class DeepAgentsApp(App):
             if self._wecom_task and not self._wecom_task.done():
                 await self._mount_message(AppMessage("WeCom bot is already running."))
                 return
+            auto_approve_was_enabled = self._auto_approve
+            self._on_auto_approve_enabled()
             self._wecom_active = True
             self._wecom_task = asyncio.create_task(self._run_wecombot_bridge())
-            await self._mount_message(
-                AppMessage("WeCom bot bridge started. Use /wecombot-stop to stop.")
-            )
+            message = "WeCom bot bridge started. Use /wecombot-stop to stop."
+            if not auto_approve_was_enabled:
+                message += "\nAuto-approve mode enabled to prevent remote WeCom turns from blocking on local approvals."
+            await self._mount_message(AppMessage(message))
             return
 
         if action == "stop":
@@ -4668,6 +4671,7 @@ class DeepAgentsApp(App):
             agent_waited = 0.0
             while self._agent_running or self._shell_running:
                 if agent_waited >= self._WECOM_AGENT_TIMEOUT:
+                    self._cancel_wecom_timed_out_turn()
                     return "处理超时，请稍后再试。"
                 await asyncio.sleep(0.1)
                 agent_waited += 0.1
@@ -6334,6 +6338,28 @@ class DeepAgentsApp(App):
         self._agent_running = False
         self._agent_worker = None
         self._active_turn_is_planner = False
+
+    def _cancel_wecom_timed_out_turn(self) -> None:
+        """Cancel a WeCom-injected turn after its bridge timeout.
+
+        Unlike user-triggered cancellation, this must not discard locally queued
+        messages. The remote user has already received a timeout, so continuing
+        the worker in the background risks later file sends or state writes
+        leaking into subsequent WeCom turns.
+        """
+        if self._shell_worker is not None:
+            self._shell_worker.cancel()
+        if self._agent_worker is not None:
+            self._agent_worker.cancel()
+        self._shell_running = False
+        self._shell_worker = None
+        self._agent_running = False
+        self._agent_worker = None
+        self._active_turn_is_planner = False
+        logger.warning(
+            "wecom turn timed out after %.1fs; cancelled active agent/shell worker",
+            self._WECOM_AGENT_TIMEOUT,
+        )
 
     def action_quit_or_interrupt(self) -> None:
         """Handle Ctrl+C - interrupt agent, reject approval, or quit on double press.
