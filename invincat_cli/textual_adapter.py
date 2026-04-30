@@ -504,6 +504,7 @@ async def execute_task_textual(
     is_planner_turn: bool = False,
     message_kwargs: dict[str, Any] | None = None,
     turn_stats: SessionStats | None = None,
+    on_text_delta: Callable[[str, str], Awaitable[None]] | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
 
@@ -533,6 +534,10 @@ async def execute_task_textual(
             available even if this coroutine is cancelled before it can return.
 
             If `None`, a new instance is created internally.
+        on_text_delta: Optional callback invoked for each real assistant text
+            chunk with `(delta_text, accumulated_text)`. Used by external
+            transports that need model-provider streaming rather than polling
+            the rendered message store.
 
     Returns:
         Stats accumulated over this turn (request count, token counts,
@@ -1273,7 +1278,15 @@ async def execute_task_textual(
                                         pending_text = pending_text_by_namespace.get(ns_key, "")
                                         pending_text += text
                                         pending_text_by_namespace[ns_key] = pending_text
-        
+                                        if on_text_delta is not None:
+                                            try:
+                                                await on_text_delta(text, pending_text)
+                                            except Exception:
+                                                logger.warning(
+                                                    "External text-delta callback failed",
+                                                    exc_info=True,
+                                                )
+
                                         # Get or create assistant message for this namespace
                                         current_msg = assistant_message_by_namespace.get(ns_key)
                                         if current_msg is None:
@@ -1296,6 +1309,13 @@ async def execute_task_textual(
                                         # streaming (uses MarkdownStream internally for
                                         # better performance)
                                         await current_msg.append_content(text)
+                                        # Keep the store's content field in sync so that
+                                        # consumers polling message_store (e.g. wecombot)
+                                        # can read partial content while streaming is live.
+                                        if adapter._message_store and current_msg.id:
+                                            adapter._message_store.update_message(
+                                                current_msg.id, content=current_msg._content
+                                            )
 
                                 elif block_type in {"reasoning", "non_standard"}:
                                     pass  # reasoning content is intentionally not displayed

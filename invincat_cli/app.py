@@ -619,101 +619,66 @@ def _wecom_build_ping_frame() -> dict[str, Any]:
     }
 
 
-def _wecom_build_thinking_frame(inbound_frame: dict[str, Any]) -> dict[str, Any]:
-    """Build an immediate ACK frame sent before the agent starts processing.
-
-    Uses the inbound req_id so WeChat Work can route it to the right session.
-    WeChat Work's aibot_respond_msg routing is req_id-based; a fresh req_id
-    results in silent drops because there is no matching pending request on
-    the server side.  msgid is intentionally omitted to prevent the server
-    from treating this as the single canonical reply and discarding the
-    subsequent final answer.
-    """
-    inbound_req_id = ((inbound_frame.get("headers") or {}).get("req_id")) or ""
-    inbound_body = inbound_frame.get("body") or {}
-    chatid = inbound_body.get("chatid")
-    body: dict[str, Any] = {"msgtype": "markdown", "markdown": {"content": "⏳ 正在处理，请稍候…"}}
-    if isinstance(chatid, str) and chatid:
-        body["chatid"] = chatid
-    return {"cmd": "aibot_respond_msg", "headers": {"req_id": inbound_req_id}, "body": body}
-
-
-def _wecom_build_reply_frame(inbound_frame: dict[str, Any], content: str) -> dict[str, Any]:
-    inbound_req_id = ((inbound_frame.get("headers") or {}).get("req_id")) or ""
-    inbound_body = inbound_frame.get("body") or {}
-    msgid = inbound_body.get("msgid")
-    chatid = inbound_body.get("chatid")
-    # Normalize to valid UTF-8 text and strip problematic control characters.
-    safe_content = content.encode("utf-8", errors="ignore").decode(
-        "utf-8", errors="ignore"
-    )
-    safe_content = "".join(ch for ch in safe_content if (ch >= " " or ch in "\n\t\r"))
-    # Keep payload bounded by bytes (not codepoints) — CJK chars are 3 bytes each.
-    max_bytes = 4096
-    encoded = safe_content.encode("utf-8")
+def _wecom_safe_content(content: str, max_bytes: int = 20480) -> str:
+    """Normalize content to valid UTF-8 and enforce the byte-size limit."""
+    safe = content.encode("utf-8", errors="ignore").decode("utf-8", errors="ignore")
+    safe = "".join(ch for ch in safe if (ch >= " " or ch in "\n\t\r"))
+    encoded = safe.encode("utf-8")
     if len(encoded) > max_bytes:
-        safe_content = encoded[:max_bytes].decode("utf-8", errors="ignore") + "\n\n(输出过长，已截断)"
-    if not safe_content.strip():
-        safe_content = "（空回复）"
-    body: dict[str, Any] = {
-        "msgtype": "markdown",
-        "markdown": {"content": safe_content},
-    }
-    if isinstance(msgid, str) and msgid:
-        body["msgid"] = msgid
-    if isinstance(chatid, str) and chatid:
-        body["chatid"] = chatid
-    return {
-        "cmd": "aibot_respond_msg",
-        "headers": {"req_id": inbound_req_id},
-        "body": body,
-    }
+        safe = encoded[:max_bytes].decode("utf-8", errors="ignore") + "\n\n(输出过长，已截断)"
+    return safe if safe.strip() else "（空回复）"
 
 
-_WECOM_TOOL_STATUS_ICON: dict[str, str] = {
-    "success": "✅",
-    "error": "❌",
-    "pending": "⏳",
-    "running": "🔄",
-    "rejected": "🚫",
-    "skipped": "⏭️",
-}
-_WECOM_ARG_VALUE_MAX = 80  # max chars per arg value shown in summary
-
-
-def _wecom_format_single_tool(m: Any) -> str:
-    """Format one TOOL MessageData into a single markdown line."""
-    icon = _WECOM_TOOL_STATUS_ICON.get(str(m.tool_status or ""), "❓")
-    args_parts: list[str] = []
-    if m.tool_args:
-        for k, v in m.tool_args.items():
-            v_str = json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v
-            if len(v_str) > _WECOM_ARG_VALUE_MAX:
-                v_str = v_str[:_WECOM_ARG_VALUE_MAX] + "…"
-            args_parts.append(f"{k}: {v_str}")
-    args_str = " | ".join(args_parts) if args_parts else "—"
-    return f"🔧 `{m.tool_name}` {icon} {args_str}"
-
-
-def _wecom_build_tool_notification_frame(
-    inbound_frame: dict[str, Any], tool_msg: Any
+def _wecom_build_stream_frame(
+    inbound_frame: dict[str, Any],
+    stream_id: str,
+    content: str,
+    *,
+    finish: bool,
 ) -> dict[str, Any]:
-    """Build a real-time tool-call notification frame (no msgid = non-canonical).
+    """Build a stream-type reply frame using the official WeCom streaming API.
 
-    Omitting msgid keeps this as an intermediate update so the subsequent
-    final reply with msgid is not discarded by the WeChat Work server.
+    Uses msgtype=stream with a stable stream_id so all updates (thinking,
+    tool notifications, final answer) are delivered as in-place edits of a
+    single message rather than separate chat bubbles.  finish=True marks the
+    message as complete; finish=False allows subsequent updates.
+
+    req_id is always transparently forwarded from the inbound callback frame
+    — WeCom routes replies by req_id, not by any field we generate.
     """
     inbound_req_id = ((inbound_frame.get("headers") or {}).get("req_id")) or ""
     inbound_body = inbound_frame.get("body") or {}
     chatid = inbound_body.get("chatid")
-    content = _wecom_format_single_tool(tool_msg)
-    encoded = content.encode("utf-8")
-    if len(encoded) > 4096:  # noqa: PLR2004
-        content = encoded[:4096].decode("utf-8", errors="ignore") + "…"
-    body: dict[str, Any] = {"msgtype": "markdown", "markdown": {"content": content}}
+    safe = _wecom_safe_content(content)
+    body: dict[str, Any] = {
+        "msgtype": "stream",
+        "stream": {"id": stream_id, "content": safe, "finish": finish},
+    }
     if isinstance(chatid, str) and chatid:
         body["chatid"] = chatid
     return {"cmd": "aibot_respond_msg", "headers": {"req_id": inbound_req_id}, "body": body}
+
+
+def _wecom_format_progress_line(
+    *,
+    running_tool: str | None,
+    completed_tools: int,
+    assistant_started: bool,
+    tick: int = 0,
+) -> str:
+    """Format the one-line in-place progress update shown before final output."""
+    dots = "." * (tick % 4)
+    if assistant_started:
+        if completed_tools:
+            return f"处理中：已完成 {completed_tools} 个工具调用，正在整理回复{dots}"
+        return f"处理中：正在整理回复{dots}"
+    if running_tool:
+        if completed_tools:
+            return f"处理中：正在执行工具 `{running_tool}`，已完成 {completed_tools} 个{dots}"
+        return f"处理中：正在执行工具 `{running_tool}`{dots}"
+    if completed_tools:
+        return f"处理中：已完成 {completed_tools} 个工具调用，正在继续分析{dots}"
+    return f"处理中：正在分析问题{dots}"
 
 
 """Slash-command to URL mapping for commands that just open a browser."""
@@ -4323,28 +4288,40 @@ class DeepAgentsApp(App):
         frame: dict[str, Any],
         text: str,
     ) -> None:
-        """Process one inbound WeCom message and enqueue/send its reply."""
-        # Immediately acknowledge receipt so the user isn't left waiting in silence.
-        self._wecom_outbox.append(_wecom_build_thinking_frame(frame))
-        ack_sent = await self._wecom_flush_outbox()
-        logger.debug("wecom thinking ACK sent=%s", ack_sent)
+        """Process one inbound WeCom message and deliver a true streaming reply.
 
-        async def _push_tool(tool_msg: Any) -> None:
+        A single stream_id covers the whole turn.  As the agent generates
+        tokens, on_content is called with the latest cumulative display string
+        and each call produces a finish=False stream frame that updates the
+        message in-place.  The final finish=True frame delivers the canonical
+        answer.
+        """
+        stream_id = uuid.uuid4().hex
+
+        self._wecom_outbox.append(
+            _wecom_build_stream_frame(frame, stream_id, "⏳ 正在处理，请稍候…", finish=False)
+        )
+        ack_sent = await self._wecom_flush_outbox()
+        logger.debug("wecom stream ACK sent=%s stream_id=%s", ack_sent, stream_id)
+
+        async def _on_content(content: str) -> None:
             self._wecom_outbox.append(
-                _wecom_build_tool_notification_frame(frame, tool_msg)
+                _wecom_build_stream_frame(frame, stream_id, content, finish=False)
             )
             try:
                 await self._wecom_flush_outbox()
-            except Exception as push_exc:
-                logger.warning("wecom tool notification send failed: %s", push_exc)
+            except Exception as exc:
+                logger.warning("wecom stream content update failed: %s", exc)
 
         try:
-            answer = await self._process_wecom_message_via_cli(text, on_tool=_push_tool)
+            answer = await self._process_wecom_message_via_cli(text, on_content=_on_content)
         except Exception as exc:
             logger.warning("wecom message process failed: %s", exc, exc_info=True)
             answer = "处理消息时发生异常，请稍后重试。"
-        reply = _wecom_build_reply_frame(frame, answer)
-        self._wecom_outbox.append(reply)
+
+        self._wecom_outbox.append(
+            _wecom_build_stream_frame(frame, stream_id, answer, finish=True)
+        )
         await self._wecom_flush_outbox()
 
     async def _wecom_flush_outbox(self) -> bool:
@@ -4361,12 +4338,15 @@ class DeepAgentsApp(App):
                 payload = self._wecom_outbox[0]
                 try:
                     raw = json.dumps(payload, ensure_ascii=False)
+                    body = payload.get("body") or {}
+                    stream = body.get("stream") or {}
                     logger.debug(
-                        "wecom send cmd=%s req_id=%s chatid=%s msgid=%s",
+                        "wecom send cmd=%s req_id=%s chatid=%s stream_id=%s finish=%s",
                         payload.get("cmd"),
                         (payload.get("headers") or {}).get("req_id", ""),
-                        (payload.get("body") or {}).get("chatid", ""),
-                        (payload.get("body") or {}).get("msgid", ""),
+                        body.get("chatid", ""),
+                        stream.get("id", ""),
+                        stream.get("finish", ""),
                     )
                     await ws.send(raw)
                 except Exception as send_exc:
@@ -4379,18 +4359,22 @@ class DeepAgentsApp(App):
     _WECOM_IDLE_TIMEOUT = 30.0
     # Seconds to wait for the agent to finish after injection.
     _WECOM_AGENT_TIMEOUT = 120.0
+    # Maximum seconds before re-sending progress when the visible phase changes.
+    _WECOM_PROGRESS_MAX_INTERVAL = 0.5
 
     async def _process_wecom_message_via_cli(
         self,
         text: str,
-        on_tool: Callable[[Any], Awaitable[None]] | None = None,
+        on_content: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
-        """Inject one WeCom message into current session and return final answer.
+        """Inject one WeCom message into the current session and return the final answer.
 
-        on_tool, if provided, is awaited for each new TOOL message as it
-        appears during agent execution, enabling real-time push to the user.
+        on_content, if provided, is called with a one-line progress string while
+        the agent works. The complete assistant text is sent only once in the
+        final finish=True frame.
         """
         async with self._wecom_lock:
+            answer_started = False
             idle_waited = 0.0
             while (
                 self._connecting
@@ -4409,10 +4393,27 @@ class DeepAgentsApp(App):
             before_assistant_count = sum(1 for m in before if m.type == MessageType.ASSISTANT)
             before_error_count = sum(1 for m in before if m.type == MessageType.ERROR)
 
-            await self._handle_user_message(text)
+            async def _on_text_delta(delta: str, accumulated: str) -> None:
+                nonlocal answer_started
+                answer_started = True
+                logger.debug(
+                    "wecom text delta received chars=%d accumulated=%d",
+                    len(delta),
+                    len(accumulated),
+                )
+                if on_content is not None:
+                    await on_content(accumulated)
 
-            sent_tool_ids: set[str] = set()
+            await self._handle_user_message(text, on_text_delta=_on_text_delta)
+
             _TOOL_PENDING_STATUSES = {ToolStatus.PENDING, ToolStatus.RUNNING, None}
+            sent_tool_ids: set[str] = set()
+            completed_tools = 0
+            last_pushed: str = ""
+            last_push_mono: float = 0.0
+            progress_tick = 0
+            last_progress_key: tuple[str | None, int, bool] | None = None
+
             agent_waited = 0.0
             while self._agent_running or self._shell_running:
                 if agent_waited >= self._WECOM_AGENT_TIMEOUT:
@@ -4420,37 +4421,65 @@ class DeepAgentsApp(App):
                 await asyncio.sleep(0.1)
                 agent_waited += 0.1
 
-                if on_tool:
-                    for m in self._message_store.get_all_messages():
-                        if (
-                            m.id not in before_ids
-                            and m.id not in sent_tool_ids
-                            and m.type == MessageType.TOOL
-                            and m.tool_status not in _TOOL_PENDING_STATUSES
-                        ):
+                messages = self._message_store.get_all_messages()
+                running_tool: str | None = None
+                assistant_started = False
+
+                for m in messages:
+                    if (
+                        m.id not in before_ids
+                        and m.type == MessageType.TOOL
+                    ):
+                        if m.tool_status in _TOOL_PENDING_STATUSES:
+                            running_tool = m.tool_name or running_tool
+                        elif m.id not in sent_tool_ids:
                             sent_tool_ids.add(m.id)
-                            await on_tool(m)
+                            completed_tools += 1
+
+                    if (
+                        m.id not in before_ids
+                        and m.type == MessageType.ASSISTANT
+                        and bool(m.content)
+                    ):
+                        assistant_started = True
+
+                if on_content and not answer_started:
+                    now = asyncio.get_event_loop().time()
+                    progress_key = (running_tool, completed_tools, assistant_started)
+                    if (
+                        last_pushed == ""
+                        or progress_key != last_progress_key
+                        or (now - last_push_mono) >= self._WECOM_PROGRESS_MAX_INTERVAL
+                    ):
+                        display = _wecom_format_progress_line(
+                            running_tool=running_tool,
+                            completed_tools=completed_tools,
+                            assistant_started=assistant_started,
+                            tick=progress_tick,
+                        )
+                        await on_content(display)
+                        last_pushed = display
+                        last_progress_key = progress_key
+                        last_push_mono = now
+                        progress_tick += 1
 
             after = self._message_store.get_all_messages()
 
-            # Final sweep: catch any TOOL messages that landed in the window between
-            # the last 0.1s poll and the agent finishing. Send even if still pending
-            # (agent is done, no further status updates expected).
-            if on_tool:
-                for m in after:
-                    if (
-                        m.id not in before_ids
-                        and m.id not in sent_tool_ids
-                        and m.type == MessageType.TOOL
-                    ):
-                        sent_tool_ids.add(m.id)
-                        await on_tool(m)
+            # Final sweep: catch any TOOL messages that arrived after the loop.
+            for m in after:
+                if (
+                    m.id not in before_ids
+                    and m.id not in sent_tool_ids
+                    and m.type == MessageType.TOOL
+                ):
+                    sent_tool_ids.add(m.id)
+                    completed_tools += 1
 
             assistant_msgs = [m for m in after if m.type == MessageType.ASSISTANT]
             if len(assistant_msgs) > before_assistant_count:
                 return assistant_msgs[-1].content.strip() or "（空回复）"
 
-            # Only surface errors that appeared during this turn, not historical ones.
+            # Only surface errors that appeared during this turn.
             all_errors = [m for m in after if m.type == MessageType.ERROR]
             new_errors = all_errors[before_error_count:]
             if new_errors:
@@ -4947,11 +4976,17 @@ class DeepAgentsApp(App):
             except Exception:  # best-effort spinner cleanup
                 logger.exception("Failed to dismiss spinner after offload")
 
-    async def _handle_user_message(self, message: str) -> None:
+    async def _handle_user_message(
+        self,
+        message: str,
+        *,
+        on_text_delta: Callable[[str, str], Awaitable[None]] | None = None,
+    ) -> None:
         """Handle a user message to send to the agent.
 
         Args:
             message: The user's message
+            on_text_delta: Optional callback for each real assistant text chunk.
         """
         if self._session_state and self._session_state.plan_mode:
             await self._mount_message(UserMessage(message))
@@ -4962,7 +4997,7 @@ class DeepAgentsApp(App):
 
         # Mount the user message
         await self._mount_message(UserMessage(message))
-        await self._send_to_agent(message)
+        await self._send_to_agent(message, on_text_delta=on_text_delta)
 
     async def _send_to_agent(
         self,
@@ -4972,6 +5007,7 @@ class DeepAgentsApp(App):
         agent_override: Pregel | None = None,
         thread_id_override: str | None = None,
         post_turn_hook: Callable[[], Awaitable[None]] | None = None,
+        on_text_delta: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> bool:
         """Send a message to the agent and start execution.
 
@@ -4987,6 +5023,7 @@ class DeepAgentsApp(App):
             thread_id_override: Optional thread ID used only for this turn.
             post_turn_hook: Optional async callback executed after streaming
                 finishes successfully (before cleanup).
+            on_text_delta: Optional callback for each real assistant text chunk.
         """
         # Anchor to bottom so streaming response stays visible
         with suppress(NoMatches, ScreenStackError):
@@ -5017,6 +5054,7 @@ class DeepAgentsApp(App):
                     agent_override=target_agent,
                     thread_id_override=thread_id_override,
                     post_turn_hook=post_turn_hook,
+                    on_text_delta=on_text_delta,
                 ),
                 exclusive=False,
             )
@@ -5036,6 +5074,7 @@ class DeepAgentsApp(App):
         agent_override: Pregel | None = None,
         thread_id_override: str | None = None,
         post_turn_hook: Callable[[], Awaitable[None]] | None = None,
+        on_text_delta: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> None:
         """Run the agent task in a background worker.
 
@@ -5052,6 +5091,7 @@ class DeepAgentsApp(App):
             agent_override: Optional agent used for this turn only.
             thread_id_override: Optional thread ID used for this turn only.
             post_turn_hook: Optional async callback after successful stream.
+            on_text_delta: Optional callback for each real assistant text chunk.
         """
         # Caller ensures _ui_adapter is set (checked in _handle_user_message)
         if self._ui_adapter is None:
@@ -5090,6 +5130,7 @@ class DeepAgentsApp(App):
                     memory_model_params=self._memory_model_params_override or {},
                 ),
                 turn_stats=turn_stats,
+                on_text_delta=on_text_delta,
             )
             if post_turn_hook is not None:
                 await post_turn_hook()
