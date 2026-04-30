@@ -668,6 +668,36 @@ def _wecom_build_reply_frame(inbound_frame: dict[str, Any], content: str) -> dic
         "headers": {"req_id": inbound_req_id},
         "body": body,
     }
+
+
+_WECOM_TOOL_STATUS_ICON: dict[str, str] = {
+    "success": "✅",
+    "error": "❌",
+    "pending": "⏳",
+    "running": "🔄",
+    "rejected": "🚫",
+    "skipped": "⏭️",
+}
+_WECOM_ARG_VALUE_MAX = 80  # max chars per arg value shown in summary
+
+
+def _wecom_format_tool_calls(tool_msgs: list[Any]) -> str:
+    """Format a list of TOOL MessageData into a compact markdown summary."""
+    lines: list[str] = ["**🔧 工具调用**"]
+    for m in tool_msgs:
+        icon = _WECOM_TOOL_STATUS_ICON.get(str(m.tool_status or ""), "❓")
+        args_parts: list[str] = []
+        if m.tool_args:
+            for k, v in m.tool_args.items():
+                v_str = json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v
+                if len(v_str) > _WECOM_ARG_VALUE_MAX:
+                    v_str = v_str[:_WECOM_ARG_VALUE_MAX] + "…"
+                args_parts.append(f"{k}: {v_str}")
+        args_str = " | ".join(args_parts) if args_parts else "—"
+        lines.append(f"- `{m.tool_name}` {icon} {args_str}")
+    return "\n".join(lines)
+
+
 """Slash-command to URL mapping for commands that just open a browser."""
 
 
@@ -4340,6 +4370,7 @@ class DeepAgentsApp(App):
                 idle_waited += 0.1
 
             before = self._message_store.get_all_messages()
+            before_ids: set[str] = {m.id for m in before}
             before_assistant_count = sum(1 for m in before if m.type == MessageType.ASSISTANT)
             before_error_count = sum(1 for m in before if m.type == MessageType.ERROR)
 
@@ -4353,16 +4384,23 @@ class DeepAgentsApp(App):
                 agent_waited += 0.1
 
             after = self._message_store.get_all_messages()
+            new_msgs = [m for m in after if m.id not in before_ids]
+            new_tool_msgs = [m for m in new_msgs if m.type == MessageType.TOOL]
+
+            tool_summary = _wecom_format_tool_calls(new_tool_msgs) if new_tool_msgs else ""
+
             assistant_msgs = [m for m in after if m.type == MessageType.ASSISTANT]
             if len(assistant_msgs) > before_assistant_count:
-                return assistant_msgs[-1].content.strip() or "（空回复）"
+                answer = assistant_msgs[-1].content.strip() or "（空回复）"
+                return f"{tool_summary}\n\n{answer}" if tool_summary else answer
 
             # Only surface errors that appeared during this turn, not historical ones.
             all_errors = [m for m in after if m.type == MessageType.ERROR]
             new_errors = all_errors[before_error_count:]
             if new_errors:
-                return new_errors[-1].content.strip()
-            return "未获取到有效回复。"
+                error_text = new_errors[-1].content.strip()
+                return f"{tool_summary}\n\n{error_text}" if tool_summary else error_text
+            return tool_summary or "未获取到有效回复。"
 
     async def _handle_skill_command(self, command: str) -> None:
         """Handle a `/skill:<name>` command by loading and invoking a skill.
