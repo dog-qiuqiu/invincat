@@ -1087,6 +1087,10 @@ async def execute_task_textual(
                                             "tool.error",
                                             {"tool_names": [tool_msg._tool_name]},
                                         )
+                                    if tool_msg.id and adapter._message_store:
+                                        adapter._update_tool_message_in_store(
+                                            tool_msg.id, tool_status, output_str
+                                        )
                                 elif tool_id:
                                     # Widget not in current tracking map — it was either
                                     # pruned before the ToolMessage arrived, or the index
@@ -1487,6 +1491,10 @@ async def execute_task_textual(
                                             tool_msg = adapter._current_tool_messages.get(display_key)
                                             if tool_msg is not None:
                                                 tool_msg.update_args(parsed_args)
+                                                if tool_msg.id and adapter._message_store:
+                                                    adapter._message_store.update_message(
+                                                        tool_msg.id, tool_args=parsed_args
+                                                    )
         
                                             # Register file op only once args are final.
                                             # Use display_key (always a str) rather than

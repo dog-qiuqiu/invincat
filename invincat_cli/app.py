@@ -4412,6 +4412,7 @@ class DeepAgentsApp(App):
             await self._handle_user_message(text)
 
             sent_tool_ids: set[str] = set()
+            _TOOL_PENDING_STATUSES = {ToolStatus.PENDING, ToolStatus.RUNNING, None}
             agent_waited = 0.0
             while self._agent_running or self._shell_running:
                 if agent_waited >= self._WECOM_AGENT_TIMEOUT:
@@ -4425,6 +4426,7 @@ class DeepAgentsApp(App):
                             m.id not in before_ids
                             and m.id not in sent_tool_ids
                             and m.type == MessageType.TOOL
+                            and m.tool_status not in _TOOL_PENDING_STATUSES
                         ):
                             sent_tool_ids.add(m.id)
                             await on_tool(m)
@@ -4432,7 +4434,8 @@ class DeepAgentsApp(App):
             after = self._message_store.get_all_messages()
 
             # Final sweep: catch any TOOL messages that landed in the window between
-            # the last 0.1s poll and the agent finishing.
+            # the last 0.1s poll and the agent finishing. Send even if still pending
+            # (agent is done, no further status updates expected).
             if on_tool:
                 for m in after:
                     if (
