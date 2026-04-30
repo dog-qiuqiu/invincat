@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
 import logging
 import os
@@ -70,6 +72,7 @@ from textual.widgets import Static
 
 from invincat_cli import theme
 from invincat_cli._cli_context import CLIContext
+from invincat_cli._debug import configure_debug_logging
 from invincat_cli._session_stats import (
     SessionStats,
     SpinnerStatus,
@@ -105,6 +108,7 @@ from invincat_cli.widgets.status import StatusBar
 from invincat_cli.widgets.welcome import WelcomeBanner
 
 logger = logging.getLogger(__name__)
+configure_debug_logging(logger)
 _monotonic = time.monotonic
 
 # Auto-offload triggers when context window usage exceeds this fraction.
@@ -613,8 +617,8 @@ def _wecom_build_subscribe_frame(bot_id: str, secret: str) -> dict[str, Any]:
 
 def _wecom_build_ping_frame() -> dict[str, Any]:
     return {
-        "cmd": "aibot_ping",
-        "headers": {"req_id": _wecom_req_id("aibot_ping")},
+        "cmd": "ping",
+        "headers": {"req_id": _wecom_req_id("ping")},
         "body": {},
     }
 
@@ -657,6 +661,49 @@ def _wecom_build_stream_frame(
     if isinstance(chatid, str) and chatid:
         body["chatid"] = chatid
     return {"cmd": "aibot_respond_msg", "headers": {"req_id": inbound_req_id}, "body": body}
+
+
+def _wecom_build_file_frame(
+    inbound_frame: dict[str, Any],
+    media_id: str,
+) -> dict[str, Any]:
+    """Build an active file send frame for an uploaded WeCom media id."""
+    chatid = _wecom_resolve_active_chat_id(inbound_frame)
+    return {
+        "cmd": "aibot_send_msg",
+        "headers": {"req_id": _wecom_req_id("aibot_send_msg")},
+        "body": {
+            "msgtype": "file",
+            "file": {"media_id": media_id},
+            "chatid": chatid,
+        },
+    }
+
+
+def _wecom_resolve_active_chat_id(inbound_frame: dict[str, Any]) -> str:
+    """Resolve the active-send target from a WeCom message callback.
+
+    Group callbacks provide `chatid`. Some single-chat callbacks omit `chatid`
+    and only include `from.userid`; the SDK's active send method still names
+    the target parameter `chatID`, so use the sender userid for single chats.
+    """
+    inbound_body = inbound_frame.get("body") or {}
+    chatid = inbound_body.get("chatid")
+    if isinstance(chatid, str) and chatid:
+        return chatid
+    chattype = inbound_body.get("chattype")
+    from_obj = inbound_body.get("from") or {}
+    from_userid = from_obj.get("userid") if isinstance(from_obj, dict) else None
+    if chattype == "single" and isinstance(from_userid, str) and from_userid:
+        return from_userid
+    raise RuntimeError(
+        "WeCom callback missing active-send target: expected body.chatid or "
+        "body.from.userid for single chat"
+    )
+
+
+def _wecom_frame_req_id(frame: dict[str, Any]) -> str:
+    return str((frame.get("headers") or {}).get("req_id") or "")
 
 
 def _wecom_format_progress_line(
@@ -1029,6 +1076,7 @@ class DeepAgentsApp(App):
         self._wecom_outbox: deque[dict[str, Any]] = deque()
         self._wecom_seen_req_ids: set[str] = set()
         self._wecom_msg_tasks: set[asyncio.Task[None]] = set()
+        self._wecom_pending_requests: dict[str, asyncio.Future[dict[str, Any]]] = {}
 
     def _remote_agent(self) -> RemoteAgent | None:
         """Return the agent narrowed to `RemoteAgent`, or `None`.
@@ -4180,8 +4228,8 @@ class DeepAgentsApp(App):
                     # Disable websockets' built-in WebSocket-level ping: the WeChat Work
                     # server does not respond to RFC-6455 Ping frames, which causes the
                     # library to send Close(1002) after ping_timeout, producing the
-                    # recurring "sent 1002 / code=1006" reconnect loop.  We use an
-                    # application-level aibot_ping heartbeat instead.
+                    # recurring "sent 1002 / code=1006" reconnect loop.  We use the
+                    # WeCom application-level ping command instead.
                     ping_interval=None,
                 ) as ws:
                     self._wecom_ws = ws
@@ -4201,6 +4249,11 @@ class DeepAgentsApp(App):
                         try:
                             frame = json.loads(raw)
                         except json.JSONDecodeError:
+                            continue
+                        req_id = _wecom_frame_req_id(frame)
+                        pending = self._wecom_pending_requests.pop(req_id, None)
+                        if pending is not None and not pending.done():
+                            pending.set_result(frame)
                             continue
                         # Control frame (subscribe ack / heartbeat ack / error)
                         cmd = frame.get("cmd")
@@ -4229,7 +4282,23 @@ class DeepAgentsApp(App):
                         text = _wecom_extract_text_message(frame)
                         if text is None:
                             continue
-                        req_id = str((frame.get("headers") or {}).get("req_id") or "")
+                        body = frame.get("body") or {}
+                        from_obj = body.get("from") or {}
+                        from_userid = (
+                            from_obj.get("userid", "")
+                            if isinstance(from_obj, dict)
+                            else ""
+                        )
+                        logger.info(
+                            "wecom inbound message req_id=%s chatid=%s chattype=%s from_userid=%s msgtype=%s msgid=%s body_keys=%s",
+                            req_id,
+                            body.get("chatid", ""),
+                            body.get("chattype", ""),
+                            from_userid,
+                            body.get("msgtype", ""),
+                            body.get("msgid", ""),
+                            sorted(body.keys()),
+                        )
                         if req_id and req_id in self._wecom_seen_req_ids:
                             logger.debug("Skipping duplicate wecom req_id=%s", req_id)
                             continue
@@ -4278,6 +4347,10 @@ class DeepAgentsApp(App):
                 reconnect_delay = min(reconnect_delay * 2, 30)
 
         self._wecom_active = False
+        for pending in self._wecom_pending_requests.values():
+            if not pending.done():
+                pending.cancel()
+        self._wecom_pending_requests.clear()
         for task in list(self._wecom_msg_tasks):
             task.cancel()
         self._wecom_msg_tasks.clear()
@@ -4314,7 +4387,11 @@ class DeepAgentsApp(App):
                 logger.warning("wecom stream content update failed: %s", exc)
 
         try:
-            answer = await self._process_wecom_message_via_cli(text, on_content=_on_content)
+            answer = await self._process_wecom_message_via_cli(
+                text,
+                inbound_frame=frame,
+                on_content=_on_content,
+            )
         except Exception as exc:
             logger.warning("wecom message process failed: %s", exc, exc_info=True)
             answer = "处理消息时发生异常，请稍后重试。"
@@ -4355,16 +4432,175 @@ class DeepAgentsApp(App):
                 self._wecom_outbox.popleft()
         return True
 
+    async def _wecom_send_request(
+        self,
+        payload: dict[str, Any],
+        *,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        """Send a WeCom request frame and wait for its matching req_id response."""
+        ws = self._wecom_ws
+        if ws is None:
+            raise RuntimeError("WeCom connection is offline")
+        req_id = _wecom_frame_req_id(payload)
+        if not req_id:
+            raise RuntimeError("WeCom request payload is missing headers.req_id")
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[dict[str, Any]] = loop.create_future()
+        self._wecom_pending_requests[req_id] = fut
+        body = payload.get("body") or {}
+        logger.debug(
+            "wecom request send cmd=%s req_id=%s body_keys=%s",
+            payload.get("cmd"),
+            req_id,
+            sorted(body.keys()),
+        )
+        try:
+            async with self._wecom_send_lock:
+                await ws.send(json.dumps(payload, ensure_ascii=False))
+            response = await asyncio.wait_for(fut, timeout=timeout)
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"WeCom request timed out: cmd={payload.get('cmd')} req_id={req_id}"
+            ) from exc
+        finally:
+            self._wecom_pending_requests.pop(req_id, None)
+
+        errcode = response.get("errcode", 0)
+        resp_body = response.get("body") or {}
+        logger.debug(
+            "wecom request response cmd=%s req_id=%s errcode=%s errmsg=%s body_keys=%s",
+            payload.get("cmd"),
+            req_id,
+            errcode,
+            response.get("errmsg", ""),
+            sorted(resp_body.keys()) if isinstance(resp_body, dict) else type(resp_body).__name__,
+        )
+        if errcode not in (0, None):
+            errmsg = response.get("errmsg", "")
+            raise RuntimeError(f"WeCom request failed: errcode={errcode} errmsg={errmsg}")
+        return response
+
+    async def _wecom_upload_media(self, path: Path) -> str:
+        """Upload one file through the WeCom long-connection media protocol."""
+        data = await asyncio.to_thread(path.read_bytes)
+        size = len(data)
+        if size <= 0:
+            raise ValueError("Cannot send an empty file")
+        from invincat_cli.wecom_file import WECOM_FILE_MAX_BYTES
+
+        if size > WECOM_FILE_MAX_BYTES:
+            raise ValueError("File is larger than the WeCom 20 MB limit")
+
+        # WeCom long-connection media upload chunks are capped at 512 KB.
+        chunk_size = 512 * 1024
+        chunks = [data[i : i + chunk_size] for i in range(0, size, chunk_size)]
+        logger.info(
+            "wecom file upload start path=%s size=%d chunks=%d",
+            path,
+            size,
+            len(chunks),
+        )
+        init_req_id = _wecom_req_id("aibot_upload_media_init")
+        init_frame = {
+            "cmd": "aibot_upload_media_init",
+            "headers": {"req_id": init_req_id},
+            "body": {
+                "type": "file",
+                "filename": path.name,
+                "total_size": size,
+                "total_chunks": len(chunks),
+                "md5": hashlib.md5(data).hexdigest(),  # noqa: S324  # protocol checksum
+            },
+        }
+        init_resp = await self._wecom_send_request(init_frame)
+        init_body = init_resp.get("body") or {}
+        upload_id = init_body.get("upload_id")
+        if not isinstance(upload_id, str) or not upload_id:
+            raise RuntimeError("WeCom upload init response missing upload_id")
+        logger.debug("wecom file upload initialized upload_id=%s", upload_id)
+
+        for index, chunk in enumerate(chunks):
+            logger.debug(
+                "wecom file upload chunk upload_id=%s index=%d size=%d",
+                upload_id,
+                index,
+                len(chunk),
+            )
+            chunk_frame = {
+                "cmd": "aibot_upload_media_chunk",
+                "headers": {"req_id": _wecom_req_id("aibot_upload_media_chunk")},
+                "body": {
+                    "upload_id": upload_id,
+                    "chunk_index": index,
+                    "base64_data": base64.b64encode(chunk).decode("ascii"),
+                },
+            }
+            await self._wecom_send_request(chunk_frame)
+
+        finish_frame = {
+            "cmd": "aibot_upload_media_finish",
+            "headers": {"req_id": _wecom_req_id("aibot_upload_media_finish")},
+            "body": {"upload_id": upload_id},
+        }
+        finish_resp = await self._wecom_send_request(finish_frame)
+        finish_body = finish_resp.get("body") or {}
+        media_id = finish_body.get("media_id")
+        if not isinstance(media_id, str) or not media_id:
+            raise RuntimeError("WeCom upload finish response missing media_id")
+        logger.info(
+            "wecom file upload finish path=%s media_id=%s",
+            path,
+            media_id,
+        )
+        return media_id
+
+    async def _wecom_send_file_from_tool(
+        self,
+        frame: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> None:
+        """Handle a send_wecom_file tool payload by uploading and replying."""
+        raw_path = str(payload.get("path") or "").strip()
+        if not raw_path:
+            raise ValueError("send_wecom_file payload missing path")
+        path = Path(raw_path).expanduser().resolve()
+        root = Path(self._cwd).expanduser().resolve()
+        try:
+            path.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(
+                f"WeCom file sending is limited to the current project: {root}"
+            ) from exc
+        if not path.is_file():
+            raise ValueError(f"File does not exist or is not a regular file: {path}")
+        inbound_body = frame.get("body") or {}
+        target_chat_id = _wecom_resolve_active_chat_id(frame)
+        logger.info(
+            "wecom file send requested path=%s target_chatid=%s inbound_chatid=%s chattype=%s inbound_req_id=%s",
+            path,
+            target_chat_id,
+            inbound_body.get("chatid", ""),
+            inbound_body.get("chattype", ""),
+            _wecom_frame_req_id(frame),
+        )
+        media_id = await self._wecom_upload_media(path)
+        file_frame = _wecom_build_file_frame(frame, media_id)
+        await self._wecom_send_request(file_frame)
+        logger.info("wecom file send completed path=%s media_id=%s", path, media_id)
+
     # Seconds to wait for the session to become idle before injecting a message.
     _WECOM_IDLE_TIMEOUT = 30.0
     # Seconds to wait for the agent to finish after injection.
-    _WECOM_AGENT_TIMEOUT = 120.0
+    _WECOM_AGENT_TIMEOUT = 30 * 60.0
     # Maximum seconds before re-sending progress when the visible phase changes.
     _WECOM_PROGRESS_MAX_INTERVAL = 0.5
 
     async def _process_wecom_message_via_cli(
         self,
         text: str,
+        *,
+        inbound_frame: dict[str, Any],
         on_content: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
         """Inject one WeCom message into the current session and return the final answer.
@@ -4404,7 +4640,22 @@ class DeepAgentsApp(App):
                 if on_content is not None:
                     await on_content(accumulated)
 
-            await self._handle_user_message(text, on_text_delta=_on_text_delta)
+            async def _on_wecom_file_request(payload: dict[str, Any]) -> None:
+                try:
+                    await self._wecom_send_file_from_tool(inbound_frame, payload)
+                    if on_content is not None:
+                        filename = payload.get("filename") or payload.get("path") or "文件"
+                        await on_content(f"已发送文件：{filename}")
+                except Exception as exc:
+                    logger.warning("wecom file send failed: %s", exc, exc_info=True)
+                    if on_content is not None:
+                        await on_content(f"文件发送失败：{exc}")
+
+            await self._handle_user_message(
+                text,
+                on_text_delta=_on_text_delta,
+                on_wecom_file_request=_on_wecom_file_request,
+            )
 
             _TOOL_PENDING_STATUSES = {ToolStatus.PENDING, ToolStatus.RUNNING, None}
             sent_tool_ids: set[str] = set()
@@ -4981,12 +5232,14 @@ class DeepAgentsApp(App):
         message: str,
         *,
         on_text_delta: Callable[[str, str], Awaitable[None]] | None = None,
+        on_wecom_file_request: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         """Handle a user message to send to the agent.
 
         Args:
             message: The user's message
             on_text_delta: Optional callback for each real assistant text chunk.
+            on_wecom_file_request: Optional callback for WeCom file-send requests.
         """
         if self._session_state and self._session_state.plan_mode:
             await self._mount_message(UserMessage(message))
@@ -4997,7 +5250,11 @@ class DeepAgentsApp(App):
 
         # Mount the user message
         await self._mount_message(UserMessage(message))
-        await self._send_to_agent(message, on_text_delta=on_text_delta)
+        await self._send_to_agent(
+            message,
+            on_text_delta=on_text_delta,
+            on_wecom_file_request=on_wecom_file_request,
+        )
 
     async def _send_to_agent(
         self,
@@ -5008,6 +5265,7 @@ class DeepAgentsApp(App):
         thread_id_override: str | None = None,
         post_turn_hook: Callable[[], Awaitable[None]] | None = None,
         on_text_delta: Callable[[str, str], Awaitable[None]] | None = None,
+        on_wecom_file_request: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> bool:
         """Send a message to the agent and start execution.
 
@@ -5024,6 +5282,7 @@ class DeepAgentsApp(App):
             post_turn_hook: Optional async callback executed after streaming
                 finishes successfully (before cleanup).
             on_text_delta: Optional callback for each real assistant text chunk.
+            on_wecom_file_request: Optional callback for WeCom file-send requests.
         """
         # Anchor to bottom so streaming response stays visible
         with suppress(NoMatches, ScreenStackError):
@@ -5055,6 +5314,7 @@ class DeepAgentsApp(App):
                     thread_id_override=thread_id_override,
                     post_turn_hook=post_turn_hook,
                     on_text_delta=on_text_delta,
+                    on_wecom_file_request=on_wecom_file_request,
                 ),
                 exclusive=False,
             )
@@ -5075,6 +5335,7 @@ class DeepAgentsApp(App):
         thread_id_override: str | None = None,
         post_turn_hook: Callable[[], Awaitable[None]] | None = None,
         on_text_delta: Callable[[str, str], Awaitable[None]] | None = None,
+        on_wecom_file_request: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         """Run the agent task in a background worker.
 
@@ -5092,6 +5353,7 @@ class DeepAgentsApp(App):
             thread_id_override: Optional thread ID used for this turn only.
             post_turn_hook: Optional async callback after successful stream.
             on_text_delta: Optional callback for each real assistant text chunk.
+            on_wecom_file_request: Optional callback for WeCom file-send requests.
         """
         # Caller ensures _ui_adapter is set (checked in _handle_user_message)
         if self._ui_adapter is None:
@@ -5128,9 +5390,11 @@ class DeepAgentsApp(App):
                     model_params=self._model_params_override or {},
                     memory_model=self._memory_model_override,
                     memory_model_params=self._memory_model_params_override or {},
+                    wecom_enabled=on_wecom_file_request is not None,
                 ),
                 turn_stats=turn_stats,
                 on_text_delta=on_text_delta,
+                on_wecom_file_request=on_wecom_file_request,
             )
             if post_turn_hook is not None:
                 await post_turn_hook()

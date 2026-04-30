@@ -34,3 +34,10 @@ class CLIContext(TypedDict, total=False):
 
     memory_model_params: dict[str, Any]
     """Invocation params for the dedicated memory model."""
+
+    wecom_enabled: bool
+    """Whether this invocation is running from the WeCom bridge.
+
+    WeCom-only tools use this flag to expose their schemas only for
+    `/wecombot` turns.
+    """

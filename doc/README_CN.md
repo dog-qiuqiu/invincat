@@ -528,6 +528,8 @@ export WECOM_WS_URL="wss://openws.work.weixin.qq.com" # 可选
 - 模型开始输出正文前，会显示带动效的一行进度，例如 `处理中：正在分析问题...` 或 `处理中：正在执行工具 read_file...`。
 - 一旦模型产生真实文本 chunk，进度动效停止，同一条企业微信消息切换为累计正文流式更新。
 - 最后一帧会以 `finish=true` 收尾，内容为完整答案。
+- 在企业微信回合中，agent 可以使用仅在 `/wecombot` 下暴露的 `send_wecom_file(path)` 工具，把已生成的本地文件发送回当前企业微信会话。
+- 每个企业微信回合最长可运行 30 分钟，超过后桥接会返回超时消息。
 
 ### 注意事项
 
@@ -535,6 +537,7 @@ export WECOM_WS_URL="wss://openws.work.weixin.qq.com" # 可选
 - 企业微信消息会串行进入当前 CLI 会话，避免两个远端消息同时污染同一个 agent 回合。
 - 长连接断开后会自动重连，并保留一个小的待发送队列做尽力投递。
 - 是否真正 token 级流式取决于模型服务和 LangChain 驱动。如果上游只返回一个大 chunk，企业微信侧也只能收到一次大块内容更新。
+- 文件发送工具只会在 `/wecombot` 回合暴露给模型。文件必须已存在于当前项目目录内，必须是非空普通文件，且大小不超过 20 MB。
 - 可开启 debug 日志，查看 `wecom text delta received chars=...`，确认模型是否真的在输出增量 chunk。
 
 ---

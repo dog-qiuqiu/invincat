@@ -1121,6 +1121,7 @@ def create_cli_agent(
 
     # Add approve_plan middleware for plan confirmation
     from invincat_cli.approve_plan import ApprovePlanMiddleware
+    from invincat_cli.wecom_file import WeComFileMiddleware
 
     if approve_plan_system_prompt is not None:
         agent_middleware.append(
@@ -1128,6 +1129,10 @@ def create_cli_agent(
         )
     else:
         agent_middleware.append(ApprovePlanMiddleware())
+
+    agent_middleware.append(
+        WeComFileMiddleware(allowed_root=effective_cwd or Path.cwd())
+    )
 
     # Add memory middleware
     if enable_memory:

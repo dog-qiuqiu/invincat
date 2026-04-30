@@ -505,6 +505,7 @@ async def execute_task_textual(
     message_kwargs: dict[str, Any] | None = None,
     turn_stats: SessionStats | None = None,
     on_text_delta: Callable[[str, str], Awaitable[None]] | None = None,
+    on_wecom_file_request: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
 
@@ -538,6 +539,9 @@ async def execute_task_textual(
             chunk with `(delta_text, accumulated_text)`. Used by external
             transports that need model-provider streaming rather than polling
             the rendered message store.
+        on_wecom_file_request: Optional callback invoked when the WeCom-only
+            `send_wecom_file` tool requests sending a file through the active
+            WeCom bridge.
 
     Returns:
         Stats accumulated over this turn (request count, token counts,
@@ -910,7 +914,24 @@ async def execute_task_textual(
                                 tool_name = getattr(message, "name", "")
                                 tool_status = getattr(message, "status", "success")
                                 tool_content = format_tool_message_content(message.content)
-                                
+                                if (
+                                    tool_name == "send_wecom_file"
+                                    and on_wecom_file_request is not None
+                                ):
+                                    from invincat_cli.wecom_file import (
+                                        parse_wecom_file_request,
+                                    )
+
+                                    payload = parse_wecom_file_request(message.content)
+                                    if payload is not None:
+                                        try:
+                                            await on_wecom_file_request(payload)
+                                        except Exception:
+                                            logger.warning(
+                                                "WeCom file request callback failed",
+                                                exc_info=True,
+                                            )
+
                                 raw_tool_id = getattr(message, "tool_call_id", None)
                                 logger.debug(
                                     "ToolMessage received: name=%s, status=%s, raw_tool_id=%s (type=%s), active_keys=%s",

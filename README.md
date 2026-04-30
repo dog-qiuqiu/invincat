@@ -553,6 +553,10 @@ Manage lifecycle:
 - Once the model emits real text chunks, progress animation stops and the same
   WeCom message switches to streaming the accumulated answer text.
 - The final frame is sent with `finish=true` and contains the completed answer.
+- During WeCom turns, the agent can use the WeCom-only `send_wecom_file(path)`
+  tool to send a generated local file back to the current WeCom chat.
+- Each WeCom turn can run for up to 30 minutes before the bridge returns a
+  timeout message.
 
 ### Notes and Limits
 
@@ -564,6 +568,9 @@ Manage lifecycle:
 - True token-level streaming depends on the model provider and LangChain driver.
   If the upstream model returns one large chunk, WeCom will also receive one
   large content update rather than token-by-token output.
+- File sending is only exposed to the model during `/wecombot` turns. The file
+  must already exist inside the current project directory, must be a regular
+  non-empty file, and must be no larger than 20 MB.
 - Enable debug logging and look for `wecom text delta received chars=...` to
   verify whether the provider is producing real incremental chunks.
 
