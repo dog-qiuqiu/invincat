@@ -681,21 +681,36 @@ _WECOM_TOOL_STATUS_ICON: dict[str, str] = {
 _WECOM_ARG_VALUE_MAX = 80  # max chars per arg value shown in summary
 
 
-def _wecom_format_tool_calls(tool_msgs: list[Any]) -> str:
-    """Format a list of TOOL MessageData into a compact markdown summary."""
-    lines: list[str] = ["**🔧 工具调用**"]
-    for m in tool_msgs:
-        icon = _WECOM_TOOL_STATUS_ICON.get(str(m.tool_status or ""), "❓")
-        args_parts: list[str] = []
-        if m.tool_args:
-            for k, v in m.tool_args.items():
-                v_str = json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v
-                if len(v_str) > _WECOM_ARG_VALUE_MAX:
-                    v_str = v_str[:_WECOM_ARG_VALUE_MAX] + "…"
-                args_parts.append(f"{k}: {v_str}")
-        args_str = " | ".join(args_parts) if args_parts else "—"
-        lines.append(f"- `{m.tool_name}` {icon} {args_str}")
-    return "\n".join(lines)
+def _wecom_format_single_tool(m: Any) -> str:
+    """Format one TOOL MessageData into a single markdown line."""
+    icon = _WECOM_TOOL_STATUS_ICON.get(str(m.tool_status or ""), "❓")
+    args_parts: list[str] = []
+    if m.tool_args:
+        for k, v in m.tool_args.items():
+            v_str = json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v
+            if len(v_str) > _WECOM_ARG_VALUE_MAX:
+                v_str = v_str[:_WECOM_ARG_VALUE_MAX] + "…"
+            args_parts.append(f"{k}: {v_str}")
+    args_str = " | ".join(args_parts) if args_parts else "—"
+    return f"🔧 `{m.tool_name}` {icon} {args_str}"
+
+
+def _wecom_build_tool_notification_frame(
+    inbound_frame: dict[str, Any], tool_msg: Any
+) -> dict[str, Any]:
+    """Build a real-time tool-call notification frame (no msgid = non-canonical).
+
+    Omitting msgid keeps this as an intermediate update so the subsequent
+    final reply with msgid is not discarded by the WeChat Work server.
+    """
+    inbound_req_id = ((inbound_frame.get("headers") or {}).get("req_id")) or ""
+    inbound_body = inbound_frame.get("body") or {}
+    chatid = inbound_body.get("chatid")
+    content = _wecom_format_single_tool(tool_msg)
+    body: dict[str, Any] = {"msgtype": "markdown", "markdown": {"content": content}}
+    if isinstance(chatid, str) and chatid:
+        body["chatid"] = chatid
+    return {"cmd": "aibot_respond_msg", "headers": {"req_id": inbound_req_id}, "body": body}
 
 
 """Slash-command to URL mapping for commands that just open a browser."""
@@ -4311,8 +4326,14 @@ class DeepAgentsApp(App):
         ack_sent = await self._wecom_flush_outbox()
         logger.debug("wecom thinking ACK sent=%s", ack_sent)
 
+        async def _push_tool(tool_msg: Any) -> None:
+            self._wecom_outbox.append(
+                _wecom_build_tool_notification_frame(frame, tool_msg)
+            )
+            await self._wecom_flush_outbox()
+
         try:
-            answer = await self._process_wecom_message_via_cli(text)
+            answer = await self._process_wecom_message_via_cli(text, on_tool=_push_tool)
         except Exception as exc:
             logger.warning("wecom message process failed: %s", exc, exc_info=True)
             answer = "处理消息时发生异常，请稍后重试。"
@@ -4353,8 +4374,16 @@ class DeepAgentsApp(App):
     # Seconds to wait for the agent to finish after injection.
     _WECOM_AGENT_TIMEOUT = 120.0
 
-    async def _process_wecom_message_via_cli(self, text: str) -> str:
-        """Inject one WeCom message into current session and return final answer."""
+    async def _process_wecom_message_via_cli(
+        self,
+        text: str,
+        on_tool: Callable[[Any], Awaitable[None]] | None = None,
+    ) -> str:
+        """Inject one WeCom message into current session and return final answer.
+
+        on_tool, if provided, is awaited for each new TOOL message as it
+        appears during agent execution, enabling real-time push to the user.
+        """
         async with self._wecom_lock:
             idle_waited = 0.0
             while (
@@ -4376,6 +4405,7 @@ class DeepAgentsApp(App):
 
             await self._handle_user_message(text)
 
+            sent_tool_ids: set[str] = set()
             agent_waited = 0.0
             while self._agent_running or self._shell_running:
                 if agent_waited >= self._WECOM_AGENT_TIMEOUT:
@@ -4383,24 +4413,27 @@ class DeepAgentsApp(App):
                 await asyncio.sleep(0.1)
                 agent_waited += 0.1
 
+                if on_tool:
+                    for m in self._message_store.get_all_messages():
+                        if (
+                            m.id not in before_ids
+                            and m.id not in sent_tool_ids
+                            and m.type == MessageType.TOOL
+                        ):
+                            sent_tool_ids.add(m.id)
+                            await on_tool(m)
+
             after = self._message_store.get_all_messages()
-            new_msgs = [m for m in after if m.id not in before_ids]
-            new_tool_msgs = [m for m in new_msgs if m.type == MessageType.TOOL]
-
-            tool_summary = _wecom_format_tool_calls(new_tool_msgs) if new_tool_msgs else ""
-
             assistant_msgs = [m for m in after if m.type == MessageType.ASSISTANT]
             if len(assistant_msgs) > before_assistant_count:
-                answer = assistant_msgs[-1].content.strip() or "（空回复）"
-                return f"{tool_summary}\n\n{answer}" if tool_summary else answer
+                return assistant_msgs[-1].content.strip() or "（空回复）"
 
             # Only surface errors that appeared during this turn, not historical ones.
             all_errors = [m for m in after if m.type == MessageType.ERROR]
             new_errors = all_errors[before_error_count:]
             if new_errors:
-                error_text = new_errors[-1].content.strip()
-                return f"{tool_summary}\n\n{error_text}" if tool_summary else error_text
-            return tool_summary or "未获取到有效回复。"
+                return new_errors[-1].content.strip()
+            return "未获取到有效回复。"
 
     async def _handle_skill_command(self, command: str) -> None:
         """Handle a `/skill:<name>` command by loading and invoking a skill.
