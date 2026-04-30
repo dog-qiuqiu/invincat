@@ -584,6 +584,138 @@ _COMMAND_URLS: dict[str, str] = {
     "/docs": DOCS_URL,
     "/feedback": "https://github.com/langchain-ai/deepagents/issues/new/choose",
 }
+
+
+def _wecom_req_id(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex}"
+
+
+def _wecom_extract_text_message(frame: dict[str, Any]) -> str | None:
+    if frame.get("cmd") != "aibot_msg_callback":
+        return None
+    body = frame.get("body") or {}
+    if body.get("msgtype") != "text":
+        return None
+    text_obj = body.get("text") or {}
+    content = text_obj.get("content")
+    if isinstance(content, str) and content.strip():
+        return content.strip()
+    return None
+
+
+def _wecom_build_subscribe_frame(bot_id: str, secret: str) -> dict[str, Any]:
+    return {
+        "cmd": "aibot_subscribe",
+        "headers": {"req_id": _wecom_req_id("aibot_subscribe")},
+        "body": {"bot_id": bot_id, "secret": secret},
+    }
+
+
+def _wecom_build_ping_frame() -> dict[str, Any]:
+    return {
+        "cmd": "aibot_ping",
+        "headers": {"req_id": _wecom_req_id("aibot_ping")},
+        "body": {},
+    }
+
+
+def _wecom_build_thinking_frame(inbound_frame: dict[str, Any]) -> dict[str, Any]:
+    """Build an immediate ACK frame sent before the agent starts processing.
+
+    Uses the inbound req_id so WeChat Work can route it to the right session.
+    WeChat Work's aibot_respond_msg routing is req_id-based; a fresh req_id
+    results in silent drops because there is no matching pending request on
+    the server side.  msgid is intentionally omitted to prevent the server
+    from treating this as the single canonical reply and discarding the
+    subsequent final answer.
+    """
+    inbound_req_id = ((inbound_frame.get("headers") or {}).get("req_id")) or ""
+    inbound_body = inbound_frame.get("body") or {}
+    chatid = inbound_body.get("chatid")
+    body: dict[str, Any] = {"msgtype": "markdown", "markdown": {"content": "⏳ 正在处理，请稍候…"}}
+    if isinstance(chatid, str) and chatid:
+        body["chatid"] = chatid
+    return {"cmd": "aibot_respond_msg", "headers": {"req_id": inbound_req_id}, "body": body}
+
+
+def _wecom_build_reply_frame(inbound_frame: dict[str, Any], content: str) -> dict[str, Any]:
+    inbound_req_id = ((inbound_frame.get("headers") or {}).get("req_id")) or ""
+    inbound_body = inbound_frame.get("body") or {}
+    msgid = inbound_body.get("msgid")
+    chatid = inbound_body.get("chatid")
+    # Normalize to valid UTF-8 text and strip problematic control characters.
+    safe_content = content.encode("utf-8", errors="ignore").decode(
+        "utf-8", errors="ignore"
+    )
+    safe_content = "".join(ch for ch in safe_content if (ch >= " " or ch in "\n\t\r"))
+    # Keep payload bounded by bytes (not codepoints) — CJK chars are 3 bytes each.
+    max_bytes = 4096
+    encoded = safe_content.encode("utf-8")
+    if len(encoded) > max_bytes:
+        safe_content = encoded[:max_bytes].decode("utf-8", errors="ignore") + "\n\n(输出过长，已截断)"
+    if not safe_content.strip():
+        safe_content = "（空回复）"
+    body: dict[str, Any] = {
+        "msgtype": "markdown",
+        "markdown": {"content": safe_content},
+    }
+    if isinstance(msgid, str) and msgid:
+        body["msgid"] = msgid
+    if isinstance(chatid, str) and chatid:
+        body["chatid"] = chatid
+    return {
+        "cmd": "aibot_respond_msg",
+        "headers": {"req_id": inbound_req_id},
+        "body": body,
+    }
+
+
+_WECOM_TOOL_STATUS_ICON: dict[str, str] = {
+    "success": "✅",
+    "error": "❌",
+    "pending": "⏳",
+    "running": "🔄",
+    "rejected": "🚫",
+    "skipped": "⏭️",
+}
+_WECOM_ARG_VALUE_MAX = 80  # max chars per arg value shown in summary
+
+
+def _wecom_format_single_tool(m: Any) -> str:
+    """Format one TOOL MessageData into a single markdown line."""
+    icon = _WECOM_TOOL_STATUS_ICON.get(str(m.tool_status or ""), "❓")
+    args_parts: list[str] = []
+    if m.tool_args:
+        for k, v in m.tool_args.items():
+            v_str = json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v
+            if len(v_str) > _WECOM_ARG_VALUE_MAX:
+                v_str = v_str[:_WECOM_ARG_VALUE_MAX] + "…"
+            args_parts.append(f"{k}: {v_str}")
+    args_str = " | ".join(args_parts) if args_parts else "—"
+    return f"🔧 `{m.tool_name}` {icon} {args_str}"
+
+
+def _wecom_build_tool_notification_frame(
+    inbound_frame: dict[str, Any], tool_msg: Any
+) -> dict[str, Any]:
+    """Build a real-time tool-call notification frame (no msgid = non-canonical).
+
+    Omitting msgid keeps this as an intermediate update so the subsequent
+    final reply with msgid is not discarded by the WeChat Work server.
+    """
+    inbound_req_id = ((inbound_frame.get("headers") or {}).get("req_id")) or ""
+    inbound_body = inbound_frame.get("body") or {}
+    chatid = inbound_body.get("chatid")
+    content = _wecom_format_single_tool(tool_msg)
+    encoded = content.encode("utf-8")
+    if len(encoded) > 4096:  # noqa: PLR2004
+        content = encoded[:4096].decode("utf-8", errors="ignore") + "…"
+    body: dict[str, Any] = {"msgtype": "markdown", "markdown": {"content": content}}
+    if isinstance(chatid, str) and chatid:
+        body["chatid"] = chatid
+    return {"cmd": "aibot_respond_msg", "headers": {"req_id": inbound_req_id}, "body": body}
+
+
 """Slash-command to URL mapping for commands that just open a browser."""
 
 
@@ -924,6 +1056,14 @@ class DeepAgentsApp(App):
         from invincat_cli.input import MediaTracker
 
         self._image_tracker = MediaTracker()
+        self._wecom_task: asyncio.Task[None] | None = None
+        self._wecom_active = False
+        self._wecom_ws: Any = None  # current live WS connection; None when offline
+        self._wecom_lock = asyncio.Lock()
+        self._wecom_send_lock = asyncio.Lock()
+        self._wecom_outbox: deque[dict[str, Any]] = deque()
+        self._wecom_seen_req_ids: set[str] = set()
+        self._wecom_msg_tasks: set[asyncio.Task[None]] = set()
 
     def _remote_agent(self) -> RemoteAgent | None:
         """Return the agent narrowed to `RemoteAgent`, or `None`.
@@ -3864,6 +4004,12 @@ class DeepAgentsApp(App):
             await self._show_mcp_viewer()
         elif cmd == "/memory":
             await self._show_memory_viewer()
+        elif cmd == "/wecombot-start":
+            await self._handle_wecombot_command(command, action="start")
+        elif cmd == "/wecombot-status":
+            await self._handle_wecombot_command(command, action="status")
+        elif cmd == "/wecombot-stop":
+            await self._handle_wecombot_command(command, action="stop")
         elif cmd == "/theme":
             await self._show_theme_selector()
         elif cmd == "/language":
@@ -3986,6 +4132,330 @@ class DeepAgentsApp(App):
         # Anchor to bottom so command output stays visible
         with suppress(NoMatches, ScreenStackError):
             self.query_one("#chat", VerticalScroll).anchor()
+
+    async def _handle_wecombot_command(self, command: str, *, action: str) -> None:
+        """Manage WeCom bridge lifecycle in current CLI session.
+
+        Supported forms:
+        - /wecombot-start
+        - /wecombot-status
+        - /wecombot-stop
+        """
+        await self._mount_message(UserMessage(command))
+
+        if action == "start":
+            if self._wecom_task and not self._wecom_task.done():
+                await self._mount_message(AppMessage("WeCom bot is already running."))
+                return
+            self._wecom_active = True
+            self._wecom_task = asyncio.create_task(self._run_wecombot_bridge())
+            await self._mount_message(
+                AppMessage("WeCom bot bridge started. Use /wecombot-stop to stop.")
+            )
+            return
+
+        if action == "stop":
+            self._wecom_active = False
+            if self._wecom_task and not self._wecom_task.done():
+                self._wecom_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await self._wecom_task
+            self._wecom_task = None
+            await self._mount_message(AppMessage("WeCom bot bridge stopped."))
+            return
+
+        if action == "status":
+            running = self._wecom_task is not None and not self._wecom_task.done()
+            await self._mount_message(
+                AppMessage(f"WeCom bot bridge status: {'running' if running else 'stopped'}")
+            )
+            return
+
+        await self._mount_message(
+            AppMessage("Usage: /wecombot-start | /wecombot-status | /wecombot-stop")
+        )
+
+    async def _run_wecombot_bridge(self) -> None:
+        """Run WeCom long-connection client and bridge to current session."""
+        bot_id = os.getenv("WECOM_BOT_ID", "").strip()
+        secret = os.getenv("WECOM_BOT_SECRET", "").strip()
+        ws_url = os.getenv("WECOM_WS_URL", "wss://openws.work.weixin.qq.com").strip()
+        if not bot_id or not secret:
+            await self._mount_message(
+                ErrorMessage(
+                    "WECOM_BOT_ID / WECOM_BOT_SECRET not set; cannot start /wecombot-start."
+                )
+            )
+            self._wecom_active = False
+            return
+
+        try:
+            import websockets
+        except Exception as exc:
+            await self._mount_message(
+                ErrorMessage(f"Missing websockets dependency: {exc}")
+            )
+            self._wecom_active = False
+            return
+
+        async def _heartbeat(ws: Any) -> None:  # noqa: ANN401
+            while True:
+                await asyncio.sleep(30)
+                try:
+                    await ws.send(json.dumps(_wecom_build_ping_frame(), ensure_ascii=False))
+                except Exception:
+                    return
+
+        reconnect_delay = 1
+        while self._wecom_active and not self._exit:
+            heartbeat_task: asyncio.Task[None] | None = None
+            try:
+                async with websockets.connect(
+                    ws_url,
+                    # Disable websockets' built-in WebSocket-level ping: the WeChat Work
+                    # server does not respond to RFC-6455 Ping frames, which causes the
+                    # library to send Close(1002) after ping_timeout, producing the
+                    # recurring "sent 1002 / code=1006" reconnect loop.  We use an
+                    # application-level aibot_ping heartbeat instead.
+                    ping_interval=None,
+                ) as ws:
+                    self._wecom_ws = ws
+                    await ws.send(
+                        json.dumps(_wecom_build_subscribe_frame(bot_id, secret), ensure_ascii=False)
+                    )
+                    await self._mount_message(
+                        AppMessage("WeCom connected and subscribed.")
+                    )
+                    # Best-effort flush of replies buffered while offline.
+                    await self._wecom_flush_outbox()
+                    heartbeat_task = asyncio.create_task(_heartbeat(ws))
+                    saw_subscribe_ack = False
+                    async for raw in ws:
+                        if not self._wecom_active or self._exit:
+                            break
+                        try:
+                            frame = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        # Control frame (subscribe ack / heartbeat ack / error)
+                        cmd = frame.get("cmd")
+                        if cmd is None:
+                            errcode = frame.get("errcode", 0)
+                            errmsg = str(frame.get("errmsg", ""))
+                            if not saw_subscribe_ack:
+                                saw_subscribe_ack = True
+                                if errcode == 0:
+                                    await self._mount_message(
+                                        AppMessage("WeCom subscription acknowledged.")
+                                    )
+                                else:
+                                    await self._mount_message(
+                                        ErrorMessage(
+                                            f"WeCom subscribe failed: errcode={errcode} errmsg={errmsg}"
+                                        )
+                                    )
+                                    # Auth errors won't recover on reconnect; stop entirely.
+                                    self._wecom_active = False
+                                    break
+                            # keep running on normal acks
+                            continue
+                        if cmd not in ("aibot_msg_callback", "aibot_event_callback"):
+                            continue
+                        text = _wecom_extract_text_message(frame)
+                        if text is None:
+                            continue
+                        req_id = str((frame.get("headers") or {}).get("req_id") or "")
+                        if req_id and req_id in self._wecom_seen_req_ids:
+                            logger.debug("Skipping duplicate wecom req_id=%s", req_id)
+                            continue
+                        if req_id:
+                            self._wecom_seen_req_ids.add(req_id)
+                            if len(self._wecom_seen_req_ids) > 500:  # noqa: PLR2004
+                                # Keep memory bounded; drop arbitrary old entries.
+                                self._wecom_seen_req_ids = set(
+                                    list(self._wecom_seen_req_ids)[-300:]
+                                )
+
+                        task = asyncio.create_task(
+                            self._wecom_handle_inbound_message(frame=frame, text=text)
+                        )
+                        self._wecom_msg_tasks.add(task)
+                        task.add_done_callback(self._wecom_msg_tasks.discard)
+                # Clean up after graceful WS close
+                heartbeat_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await heartbeat_task
+                self._wecom_ws = None
+                reconnect_delay = 1
+            except asyncio.CancelledError:
+                if heartbeat_task is not None:
+                    heartbeat_task.cancel()
+                self._wecom_ws = None
+                break
+            except Exception as exc:
+                if heartbeat_task is not None:
+                    heartbeat_task.cancel()
+                self._wecom_ws = None
+                logger.warning("wecom bridge disconnected: %s", exc, exc_info=True)
+                reason = str(exc).strip() or type(exc).__name__
+                code = getattr(exc, "code", None)
+                close_reason = getattr(exc, "reason", None)
+                if code is not None:
+                    reason = f"{reason} (code={code}, reason={close_reason})"
+                with suppress(Exception):
+                    await self._mount_message(
+                        AppMessage(
+                            "WeCom disconnected: "
+                            f"{reason}. Reconnecting in {reconnect_delay}s..."
+                        )
+                    )
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 2, 30)
+
+        self._wecom_active = False
+        for task in list(self._wecom_msg_tasks):
+            task.cancel()
+        self._wecom_msg_tasks.clear()
+
+    async def _wecom_handle_inbound_message(
+        self,
+        *,
+        frame: dict[str, Any],
+        text: str,
+    ) -> None:
+        """Process one inbound WeCom message and enqueue/send its reply."""
+        # Immediately acknowledge receipt so the user isn't left waiting in silence.
+        self._wecom_outbox.append(_wecom_build_thinking_frame(frame))
+        ack_sent = await self._wecom_flush_outbox()
+        logger.debug("wecom thinking ACK sent=%s", ack_sent)
+
+        async def _push_tool(tool_msg: Any) -> None:
+            self._wecom_outbox.append(
+                _wecom_build_tool_notification_frame(frame, tool_msg)
+            )
+            try:
+                await self._wecom_flush_outbox()
+            except Exception as push_exc:
+                logger.warning("wecom tool notification send failed: %s", push_exc)
+
+        try:
+            answer = await self._process_wecom_message_via_cli(text, on_tool=_push_tool)
+        except Exception as exc:
+            logger.warning("wecom message process failed: %s", exc, exc_info=True)
+            answer = "处理消息时发生异常，请稍后重试。"
+        reply = _wecom_build_reply_frame(frame, answer)
+        self._wecom_outbox.append(reply)
+        await self._wecom_flush_outbox()
+
+    async def _wecom_flush_outbox(self) -> bool:
+        """Flush pending outbound replies using the current live WS connection.
+
+        Returns False when no connection is available or sending failed; queued
+        items are preserved and retried when the next connection is established.
+        """
+        ws = self._wecom_ws
+        if ws is None:
+            return False
+        async with self._wecom_send_lock:
+            while self._wecom_outbox:
+                payload = self._wecom_outbox[0]
+                try:
+                    raw = json.dumps(payload, ensure_ascii=False)
+                    logger.debug(
+                        "wecom send cmd=%s req_id=%s chatid=%s msgid=%s",
+                        payload.get("cmd"),
+                        (payload.get("headers") or {}).get("req_id", ""),
+                        (payload.get("body") or {}).get("chatid", ""),
+                        (payload.get("body") or {}).get("msgid", ""),
+                    )
+                    await ws.send(raw)
+                except Exception as send_exc:
+                    logger.warning("wecom outbox send failed: %s", send_exc, exc_info=True)
+                    return False
+                self._wecom_outbox.popleft()
+        return True
+
+    # Seconds to wait for the session to become idle before injecting a message.
+    _WECOM_IDLE_TIMEOUT = 30.0
+    # Seconds to wait for the agent to finish after injection.
+    _WECOM_AGENT_TIMEOUT = 120.0
+
+    async def _process_wecom_message_via_cli(
+        self,
+        text: str,
+        on_tool: Callable[[Any], Awaitable[None]] | None = None,
+    ) -> str:
+        """Inject one WeCom message into current session and return final answer.
+
+        on_tool, if provided, is awaited for each new TOOL message as it
+        appears during agent execution, enabling real-time push to the user.
+        """
+        async with self._wecom_lock:
+            idle_waited = 0.0
+            while (
+                self._connecting
+                or self._thread_switching
+                or self._model_switching
+                or self._agent_running
+                or self._shell_running
+            ):
+                if idle_waited >= self._WECOM_IDLE_TIMEOUT:
+                    return "当前会话忙碌，请稍后再试。"
+                await asyncio.sleep(0.1)
+                idle_waited += 0.1
+
+            before = self._message_store.get_all_messages()
+            before_ids: set[str] = {m.id for m in before}
+            before_assistant_count = sum(1 for m in before if m.type == MessageType.ASSISTANT)
+            before_error_count = sum(1 for m in before if m.type == MessageType.ERROR)
+
+            await self._handle_user_message(text)
+
+            sent_tool_ids: set[str] = set()
+            _TOOL_PENDING_STATUSES = {ToolStatus.PENDING, ToolStatus.RUNNING, None}
+            agent_waited = 0.0
+            while self._agent_running or self._shell_running:
+                if agent_waited >= self._WECOM_AGENT_TIMEOUT:
+                    return "处理超时，请稍后再试。"
+                await asyncio.sleep(0.1)
+                agent_waited += 0.1
+
+                if on_tool:
+                    for m in self._message_store.get_all_messages():
+                        if (
+                            m.id not in before_ids
+                            and m.id not in sent_tool_ids
+                            and m.type == MessageType.TOOL
+                            and m.tool_status not in _TOOL_PENDING_STATUSES
+                        ):
+                            sent_tool_ids.add(m.id)
+                            await on_tool(m)
+
+            after = self._message_store.get_all_messages()
+
+            # Final sweep: catch any TOOL messages that landed in the window between
+            # the last 0.1s poll and the agent finishing. Send even if still pending
+            # (agent is done, no further status updates expected).
+            if on_tool:
+                for m in after:
+                    if (
+                        m.id not in before_ids
+                        and m.id not in sent_tool_ids
+                        and m.type == MessageType.TOOL
+                    ):
+                        sent_tool_ids.add(m.id)
+                        await on_tool(m)
+
+            assistant_msgs = [m for m in after if m.type == MessageType.ASSISTANT]
+            if len(assistant_msgs) > before_assistant_count:
+                return assistant_msgs[-1].content.strip() or "（空回复）"
+
+            # Only surface errors that appeared during this turn, not historical ones.
+            all_errors = [m for m in after if m.type == MessageType.ERROR]
+            new_errors = all_errors[before_error_count:]
+            if new_errors:
+                return new_errors[-1].content.strip()
+            return "未获取到有效回复。"
 
     async def _handle_skill_command(self, command: str) -> None:
         """Handle a `/skill:<name>` command by loading and invoking a skill.
@@ -5746,6 +6216,9 @@ class DeepAgentsApp(App):
             self._shell_worker.cancel()
         if self._agent_running and self._agent_worker:
             self._agent_worker.cancel()
+        if self._wecom_task and not self._wecom_task.done():
+            self._wecom_active = False
+            self._wecom_task.cancel()
 
         # Dispatch synchronously — the event loop is about to be torn down by
         # super().exit(), so an async task would never complete.

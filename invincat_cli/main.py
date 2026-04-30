@@ -528,6 +528,12 @@ def parse_args() -> argparse.Namespace:
         help="Buffer the full response and write it to stdout at once "
         "instead of streaming token-by-token. Requires -n or piped stdin.",
     )
+    parser.add_argument(
+        "--thread-id",
+        default=None,
+        help="Thread ID for non-interactive mode. "
+        "When provided with -n, the run continues this thread context.",
+    )
 
     parser.add_argument(
         "--stdin",
@@ -1539,6 +1545,7 @@ def cli_main() -> None:
                 run_non_interactive(
                     message=args.non_interactive_message,
                     assistant_id=args.agent,
+                    thread_id=getattr(args, "thread_id", None),
                     model_name=getattr(args, "model", None),
                     model_params=model_params,
                     profile_override=profile_override,
