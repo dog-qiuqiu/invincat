@@ -13,7 +13,10 @@ from langgraph.prebuilt.tool_node import ToolCallRequest
 
 from invincat_cli.wecom_bridge import WeComBridge
 from invincat_cli.wecom_media import (
+    build_wecom_agent_input_with_media_downloads,
     decrypt_wecom_media_payload,
+    download_wecom_inbound_media,
+    upload_wecom_outbound_media,
     validate_wecom_media_url,
     wecom_filename_from_response,
 )
@@ -256,12 +259,9 @@ def test_wecom_validate_media_url_rejects_non_http() -> None:
 
 
 def test_wecom_download_inbound_media_streams_and_writes_file(tmp_path: Path) -> None:
-    from invincat_cli.app import DeepAgentsApp
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     from cryptography.hazmat.primitives.padding import PKCS7
 
-    app = DeepAgentsApp()
-    app._cwd = str(tmp_path)
     key = bytes(range(32))
     aeskey = base64.b64encode(key).decode("ascii").rstrip("=")
     padder = PKCS7(128).padder()
@@ -283,18 +283,18 @@ def test_wecom_download_inbound_media_streams_and_writes_file(tmp_path: Path) ->
     def _client() -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=transport)
 
-    app._wecom_media_http_client = _client
-
     async def _run() -> Path:
-        return await app._wecom_download_inbound_media(
+        return await download_wecom_inbound_media(
             WeComInboundMedia(
                 msgtype="file",
                 url="https://example.com/media",
                 aeskey=aeskey,
                 filename_hint="",
             ),
-            frame={"body": {"msgid": "msg-1"}},
+            inbound_frame={"body": {"msgid": "msg-1"}},
             index=1,
+            cwd=tmp_path,
+            http_client_factory=_client,
         )
 
     path = asyncio.run(_run())
@@ -306,15 +306,11 @@ def test_wecom_download_inbound_media_streams_and_writes_file(tmp_path: Path) ->
 def test_wecom_download_inbound_media_rejects_stream_over_limit(
     tmp_path: Path,
 ) -> None:
-    from invincat_cli.app import DeepAgentsApp
-
     class _OversizedStream(httpx.AsyncByteStream):
         async def __aiter__(self):
             yield b"a" * (20 * 1024 * 1024 + 32)
             yield b"b"
 
-    app = DeepAgentsApp()
-    app._cwd = str(tmp_path)
     aeskey = base64.b64encode(bytes(range(32))).decode("ascii").rstrip("=")
 
     def _handler(request: httpx.Request) -> httpx.Response:
@@ -325,18 +321,18 @@ def test_wecom_download_inbound_media_rejects_stream_over_limit(
     def _client() -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=transport)
 
-    app._wecom_media_http_client = _client
-
     async def _run() -> None:
-        await app._wecom_download_inbound_media(
+        await download_wecom_inbound_media(
             WeComInboundMedia(
                 msgtype="file",
                 url="https://example.com/media",
                 aeskey=aeskey,
                 filename_hint="",
             ),
-            frame={"body": {"msgid": "msg-1"}},
+            inbound_frame={"body": {"msgid": "msg-1"}},
             index=1,
+            cwd=tmp_path,
+            http_client_factory=_client,
         )
 
     with pytest.raises(ValueError, match="larger than the 20 MB limit"):
@@ -344,25 +340,77 @@ def test_wecom_download_inbound_media_rejects_stream_over_limit(
 
 
 def test_wecom_download_inbound_media_requires_aeskey(tmp_path: Path) -> None:
-    from invincat_cli.app import DeepAgentsApp
-
-    app = DeepAgentsApp()
-    app._cwd = str(tmp_path)
-
     async def _run() -> None:
-        await app._wecom_download_inbound_media(
+        await download_wecom_inbound_media(
             WeComInboundMedia(
                 msgtype="file",
                 url="https://example.com/media",
                 aeskey="",
                 filename_hint="",
             ),
-            frame={"body": {"msgid": "msg-1"}},
+            inbound_frame={"body": {"msgid": "msg-1"}},
             index=1,
+            cwd=tmp_path,
+            http_client_factory=lambda: httpx.AsyncClient(),
         )
 
     with pytest.raises(ValueError, match="missing aeskey"):
         asyncio.run(_run())
+
+
+def test_wecom_agent_input_downloads_inbound_media(tmp_path: Path) -> None:
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from cryptography.hazmat.primitives.padding import PKCS7
+
+    key = bytes(range(32))
+    aeskey = base64.b64encode(key).decode("ascii").rstrip("=")
+    padder = PKCS7(128).padder()
+    padded = padder.update(b"image-bytes") + padder.finalize()
+    encryptor = Cipher(algorithms.AES(key), modes.CBC(key[:16])).encryptor()
+    encrypted = encryptor.update(padded) + encryptor.finalize()
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            headers={"content-type": "image/jpeg"},
+            content=encrypted,
+            request=request,
+        )
+    )
+
+    def _client() -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=transport)
+
+    frame = {
+        "cmd": "aibot_msg_callback",
+        "body": {
+            "msgid": "msg-1",
+            "msgtype": "mixed",
+            "mixed": {
+                "msg_item": [
+                    {"msgtype": "text", "text": {"content": "看图"}},
+                    {
+                        "msgtype": "image",
+                        "image": {
+                            "url": "https://example.com/media",
+                            "aeskey": aeskey,
+                        },
+                    },
+                ],
+            },
+        },
+    }
+
+    text = asyncio.run(
+        build_wecom_agent_input_with_media_downloads(
+            frame,
+            cwd=tmp_path,
+            http_client_factory=_client,
+        )
+    )
+
+    assert "看图" in text
+    assert "已下载到本地" in text
+    assert ".invincat/wecom_downloads" in text
 
 
 def test_wecom_file_frame_uses_active_send_when_chatid_present() -> None:
@@ -404,6 +452,43 @@ def test_wecom_file_frame_requires_active_send_target() -> None:
         assert "missing active-send target" in str(exc)
     else:
         raise AssertionError("expected missing target to fail")
+
+
+def test_wecom_upload_outbound_media_uses_init_chunks_and_finish(tmp_path: Path) -> None:
+    path = tmp_path / "report.txt"
+    path.write_text("hello", encoding="utf-8")
+    sent: list[dict] = []
+
+    async def _send_request(payload: dict) -> dict:
+        sent.append(payload)
+        if payload["cmd"] == "aibot_upload_media_init":
+            return {"body": {"upload_id": "upload-1"}}
+        if payload["cmd"] == "aibot_upload_media_finish":
+            return {"body": {"media_id": "media-1"}}
+        return {"body": {}}
+
+    media_id = asyncio.run(
+        upload_wecom_outbound_media(path, send_request=_send_request, chunk_size=2)
+    )
+
+    assert media_id == "media-1"
+    assert [payload["cmd"] for payload in sent] == [
+        "aibot_upload_media_init",
+        "aibot_upload_media_chunk",
+        "aibot_upload_media_chunk",
+        "aibot_upload_media_chunk",
+        "aibot_upload_media_finish",
+    ]
+    assert sent[0]["body"]["filename"] == "report.txt"
+    assert sent[0]["body"]["total_size"] == 5
+    assert sent[0]["body"]["total_chunks"] == 3
+    assert [payload["body"]["chunk_index"] for payload in sent[1:4]] == [0, 1, 2]
+    assert [payload["body"]["base64_data"] for payload in sent[1:4]] == [
+        "aGU=",
+        "bGw=",
+        "bw==",
+    ]
+    assert sent[-1]["body"] == {"upload_id": "upload-1"}
 
 
 class _ModelRequest:

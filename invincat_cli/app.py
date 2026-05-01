@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
 import json
 import logging
 import os
@@ -107,16 +105,15 @@ from invincat_cli.widgets.messages import (
 from invincat_cli.widgets.status import StatusBar
 from invincat_cli.widgets.welcome import WelcomeBanner
 from invincat_cli.wecom_bridge import WeComBridge
-from invincat_cli.wecom_media import download_wecom_inbound_media
+from invincat_cli.wecom_media import (
+    build_wecom_agent_input_with_media_downloads,
+    upload_wecom_outbound_media,
+)
 from invincat_cli.wecom_protocol import (
-    WeComInboundMedia as _WeComInboundMedia,
-    build_wecom_agent_input,
     build_wecom_file_frame as _wecom_build_file_frame,
     build_wecom_stream_frame as _wecom_build_stream_frame,
-    extract_wecom_inbound_media as _wecom_extract_inbound_media,
     resolve_wecom_active_chat_id as _wecom_resolve_active_chat_id,
     wecom_frame_req_id as _wecom_frame_req_id,
-    wecom_req_id as _wecom_req_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -4155,7 +4152,10 @@ class DeepAgentsApp(App):
                 logger.warning("wecom stream content update failed: %s", exc)
 
         try:
-            text = await self._wecom_build_agent_input_from_frame(frame)
+            text = await build_wecom_agent_input_with_media_downloads(
+                frame,
+                cwd=self._cwd,
+            )
             answer = await self._process_wecom_message_via_cli(
                 text,
                 inbound_frame=frame,
@@ -4189,53 +4189,6 @@ class DeepAgentsApp(App):
             return False
         return await self._wecom_bridge.flush_outbox()
 
-    async def _wecom_build_agent_input_from_frame(self, frame: dict[str, Any]) -> str:
-        """Convert a WeCom callback frame into the user text sent to the agent."""
-        media_items = _wecom_extract_inbound_media(frame)
-        if not media_items:
-            return build_wecom_agent_input(frame, saved_paths=[])
-
-        saved_paths: list[Path] = []
-        for index, media in enumerate(media_items, start=1):
-            saved_paths.append(
-                await self._wecom_download_inbound_media(
-                    media,
-                    frame=frame,
-                    index=index,
-                )
-            )
-
-        return build_wecom_agent_input(frame, saved_paths=saved_paths)
-
-    async def _wecom_download_inbound_media(
-        self,
-        media: _WeComInboundMedia,
-        *,
-        frame: dict[str, Any],
-        index: int,
-    ) -> Path:
-        """Download and decrypt one inbound WeCom media item into the project."""
-        target = await download_wecom_inbound_media(
-            media,
-            inbound_frame=frame,
-            index=index,
-            cwd=self._cwd,
-            http_client_factory=self._wecom_media_http_client,
-        )
-        logger.info(
-            "wecom inbound media downloaded msgtype=%s path=%s size=%d",
-            media.msgtype,
-            target,
-            target.stat().st_size,
-        )
-        return target
-
-    def _wecom_media_http_client(self) -> Any:
-        """Create the HTTP client used for inbound WeCom media downloads."""
-        import httpx
-
-        return httpx.AsyncClient(follow_redirects=True, timeout=60.0)
-
     async def _wecom_send_request(
         self,
         payload: dict[str, Any],
@@ -4246,80 +4199,6 @@ class DeepAgentsApp(App):
         if self._wecom_bridge is None:
             raise RuntimeError("WeCom connection is offline")
         return await self._wecom_bridge.send_request(payload, timeout=timeout)
-
-    async def _wecom_upload_media(self, path: Path) -> str:
-        """Upload one file through the WeCom long-connection media protocol."""
-        data = await asyncio.to_thread(path.read_bytes)
-        size = len(data)
-        if size <= 0:
-            raise ValueError("Cannot send an empty file")
-        from invincat_cli.wecom_file import WECOM_FILE_MAX_BYTES
-
-        if size > WECOM_FILE_MAX_BYTES:
-            raise ValueError("File is larger than the WeCom 20 MB limit")
-
-        # WeCom long-connection media upload chunks are capped at 512 KB.
-        chunk_size = 512 * 1024
-        chunks = [data[i : i + chunk_size] for i in range(0, size, chunk_size)]
-        logger.info(
-            "wecom file upload start path=%s size=%d chunks=%d",
-            path,
-            size,
-            len(chunks),
-        )
-        init_req_id = _wecom_req_id("aibot_upload_media_init")
-        init_frame = {
-            "cmd": "aibot_upload_media_init",
-            "headers": {"req_id": init_req_id},
-            "body": {
-                "type": "file",
-                "filename": path.name,
-                "total_size": size,
-                "total_chunks": len(chunks),
-                "md5": hashlib.md5(data).hexdigest(),  # noqa: S324  # protocol checksum
-            },
-        }
-        init_resp = await self._wecom_send_request(init_frame)
-        init_body = init_resp.get("body") or {}
-        upload_id = init_body.get("upload_id")
-        if not isinstance(upload_id, str) or not upload_id:
-            raise RuntimeError("WeCom upload init response missing upload_id")
-        logger.debug("wecom file upload initialized upload_id=%s", upload_id)
-
-        for index, chunk in enumerate(chunks):
-            logger.debug(
-                "wecom file upload chunk upload_id=%s index=%d size=%d",
-                upload_id,
-                index,
-                len(chunk),
-            )
-            chunk_frame = {
-                "cmd": "aibot_upload_media_chunk",
-                "headers": {"req_id": _wecom_req_id("aibot_upload_media_chunk")},
-                "body": {
-                    "upload_id": upload_id,
-                    "chunk_index": index,
-                    "base64_data": base64.b64encode(chunk).decode("ascii"),
-                },
-            }
-            await self._wecom_send_request(chunk_frame)
-
-        finish_frame = {
-            "cmd": "aibot_upload_media_finish",
-            "headers": {"req_id": _wecom_req_id("aibot_upload_media_finish")},
-            "body": {"upload_id": upload_id},
-        }
-        finish_resp = await self._wecom_send_request(finish_frame)
-        finish_body = finish_resp.get("body") or {}
-        media_id = finish_body.get("media_id")
-        if not isinstance(media_id, str) or not media_id:
-            raise RuntimeError("WeCom upload finish response missing media_id")
-        logger.info(
-            "wecom file upload finish path=%s media_id=%s",
-            path,
-            media_id,
-        )
-        return media_id
 
     async def _wecom_send_file_from_tool(
         self,
@@ -4350,7 +4229,10 @@ class DeepAgentsApp(App):
             inbound_body.get("chattype", ""),
             _wecom_frame_req_id(frame),
         )
-        media_id = await self._wecom_upload_media(path)
+        media_id = await upload_wecom_outbound_media(
+            path,
+            send_request=self._wecom_send_request,
+        )
         file_frame = _wecom_build_file_frame(frame, media_id)
         await self._wecom_send_request(file_frame)
         logger.info("wecom file send completed path=%s media_id=%s", path, media_id)

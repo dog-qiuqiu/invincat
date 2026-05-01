@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import email.message
+import hashlib
+import logging
 import mimetypes
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlparse
@@ -14,9 +17,19 @@ from urllib.parse import unquote, urlparse
 if TYPE_CHECKING:
     from invincat_cli.wecom_protocol import WeComInboundMedia
 
+logger = logging.getLogger(__name__)
+
 WECOM_INBOUND_MEDIA_TYPES = {"file", "image"}
 WECOM_INBOUND_MEDIA_MAX_BYTES = 20 * 1024 * 1024
 WECOM_AES_CBC_PADDING_MAX_BYTES = 32
+WECOM_UPLOAD_CHUNK_BYTES = 512 * 1024
+
+
+def create_wecom_media_http_client() -> Any:
+    """Create the HTTP client used for inbound WeCom media downloads."""
+    import httpx
+
+    return httpx.AsyncClient(follow_redirects=True, timeout=60.0)
 
 
 def decode_wecom_media_aes_key(aeskey: str) -> bytes:
@@ -174,3 +187,119 @@ async def download_wecom_inbound_media(
 
     await asyncio.to_thread(target.write_bytes, data)
     return target
+
+
+async def build_wecom_agent_input_with_media_downloads(
+    frame: dict[str, Any],
+    *,
+    cwd: str | Path,
+    http_client_factory: Any = create_wecom_media_http_client,
+) -> str:
+    """Download inbound media, if present, and build the text injected into the agent."""
+    from invincat_cli.wecom_protocol import (
+        build_wecom_agent_input,
+        extract_wecom_inbound_media,
+    )
+
+    media_items = extract_wecom_inbound_media(frame)
+    if not media_items:
+        return build_wecom_agent_input(frame, saved_paths=[])
+
+    saved_paths: list[Path] = []
+    for index, media in enumerate(media_items, start=1):
+        target = await download_wecom_inbound_media(
+            media,
+            inbound_frame=frame,
+            index=index,
+            cwd=cwd,
+            http_client_factory=http_client_factory,
+        )
+        logger.info(
+            "wecom inbound media downloaded msgtype=%s path=%s size=%d",
+            media.msgtype,
+            target,
+            target.stat().st_size,
+        )
+        saved_paths.append(target)
+
+    return build_wecom_agent_input(frame, saved_paths=saved_paths)
+
+
+async def upload_wecom_outbound_media(
+    path: Path,
+    *,
+    send_request: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]],
+    chunk_size: int = WECOM_UPLOAD_CHUNK_BYTES,
+) -> str:
+    """Upload a local file through WeCom's long-connection media protocol."""
+    data = await asyncio.to_thread(path.read_bytes)
+    size = len(data)
+    if size <= 0:
+        raise ValueError("Cannot send an empty file")
+    from invincat_cli.wecom_file import WECOM_FILE_MAX_BYTES
+    from invincat_cli.wecom_protocol import wecom_req_id
+
+    if size > WECOM_FILE_MAX_BYTES:
+        raise ValueError("File is larger than the WeCom 20 MB limit")
+    if chunk_size <= 0:
+        raise ValueError("WeCom upload chunk size must be positive")
+
+    chunks = [data[i : i + chunk_size] for i in range(0, size, chunk_size)]
+    logger.info(
+        "wecom file upload start path=%s size=%d chunks=%d",
+        path,
+        size,
+        len(chunks),
+    )
+    init_frame = {
+        "cmd": "aibot_upload_media_init",
+        "headers": {"req_id": wecom_req_id("aibot_upload_media_init")},
+        "body": {
+            "type": "file",
+            "filename": path.name,
+            "total_size": size,
+            "total_chunks": len(chunks),
+            "md5": hashlib.md5(data).hexdigest(),  # noqa: S324  # protocol checksum
+        },
+    }
+    init_resp = await send_request(init_frame)
+    init_body = init_resp.get("body") or {}
+    upload_id = init_body.get("upload_id")
+    if not isinstance(upload_id, str) or not upload_id:
+        raise RuntimeError("WeCom upload init response missing upload_id")
+    logger.debug("wecom file upload initialized upload_id=%s", upload_id)
+
+    for index, chunk in enumerate(chunks):
+        logger.debug(
+            "wecom file upload chunk upload_id=%s index=%d size=%d",
+            upload_id,
+            index,
+            len(chunk),
+        )
+        chunk_frame = {
+            "cmd": "aibot_upload_media_chunk",
+            "headers": {"req_id": wecom_req_id("aibot_upload_media_chunk")},
+            "body": {
+                "upload_id": upload_id,
+                "chunk_index": index,
+                "base64_data": base64.b64encode(chunk).decode("ascii"),
+            },
+        }
+        await send_request(chunk_frame)
+
+    finish_frame = {
+        "cmd": "aibot_upload_media_finish",
+        "headers": {"req_id": wecom_req_id("aibot_upload_media_finish")},
+        "body": {"upload_id": upload_id},
+    }
+    finish_resp = await send_request(finish_frame)
+    finish_body = finish_resp.get("body") or {}
+    media_id = finish_body.get("media_id")
+    if not isinstance(media_id, str) or not media_id:
+        raise RuntimeError("WeCom upload finish response missing media_id")
+    logger.info(
+        "wecom file upload finish path=%s media_id=%s",
+        path,
+        media_id,
+    )
+    return media_id
