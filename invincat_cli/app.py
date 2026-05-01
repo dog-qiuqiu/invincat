@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import email.message
 import json
 import logging
+import mimetypes
 import os
 import shlex
 import signal
@@ -58,6 +60,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from urllib.parse import unquote, urlparse
 
 from textual.app import App, ScreenStackError
 from textual.binding import Binding, BindingType
@@ -605,6 +608,202 @@ def _wecom_extract_text_message(frame: dict[str, Any]) -> str | None:
     if isinstance(content, str) and content.strip():
         return content.strip()
     return None
+
+
+_WECOM_INBOUND_MEDIA_TYPES = {"file", "image"}
+_WECOM_INBOUND_MEDIA_MAX_BYTES = 20 * 1024 * 1024
+_WECOM_AES_CBC_PADDING_MAX_BYTES = 32
+
+
+@dataclass(frozen=True)
+class _WeComInboundMedia:
+    msgtype: str
+    url: str
+    aeskey: str
+    filename_hint: str
+
+
+def _wecom_is_supported_message_frame(frame: dict[str, Any]) -> bool:
+    if frame.get("cmd") != "aibot_msg_callback":
+        return False
+    body = frame.get("body") or {}
+    msgtype = body.get("msgtype")
+    return msgtype in {"text", "file", "image", "mixed", "voice"}
+
+
+def _wecom_extract_inbound_media(frame: dict[str, Any]) -> list[_WeComInboundMedia]:
+    """Extract downloadable media descriptors from a WeCom callback frame."""
+    if frame.get("cmd") != "aibot_msg_callback":
+        return []
+    body = frame.get("body") or {}
+    msgtype = body.get("msgtype")
+
+    def _from_payload(media_type: str, payload: Any) -> _WeComInboundMedia | None:  # noqa: ANN401
+        if not isinstance(payload, dict):
+            return None
+        url = (
+            payload.get("url")
+            or payload.get("download_url")
+            or payload.get("downloadUrl")
+            or payload.get("file_url")
+            or payload.get("fileUrl")
+        )
+        aeskey = payload.get("aeskey") or payload.get("aes_key") or payload.get("aesKey")
+        if not isinstance(url, str) or not url:
+            return None
+        filename_hint = payload.get("filename") or payload.get("name") or ""
+        return _WeComInboundMedia(
+            msgtype=media_type,
+            url=url,
+            aeskey=aeskey if isinstance(aeskey, str) else "",
+            filename_hint=str(filename_hint or ""),
+        )
+
+    if msgtype in _WECOM_INBOUND_MEDIA_TYPES:
+        media = _from_payload(str(msgtype), body.get(str(msgtype)))
+        return [media] if media is not None else []
+
+    if msgtype != "mixed":
+        return []
+    mixed = body.get("mixed") or {}
+    items = mixed.get("msg_item") if isinstance(mixed, dict) else None
+    if not isinstance(items, list):
+        return []
+    media_items: list[_WeComInboundMedia] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("msgtype")
+        if item_type in _WECOM_INBOUND_MEDIA_TYPES:
+            media = _from_payload(str(item_type), item.get(str(item_type)))
+            if media is not None:
+                media_items.append(media)
+    return media_items
+
+
+def _wecom_extract_mixed_text(frame: dict[str, Any]) -> str:
+    body = frame.get("body") or {}
+    mixed = body.get("mixed") or {}
+    items = mixed.get("msg_item") if isinstance(mixed, dict) else None
+    if not isinstance(items, list):
+        return ""
+    parts: list[str] = []
+    for item in items:
+        if not isinstance(item, dict) or item.get("msgtype") != "text":
+            continue
+        text_obj = item.get("text") or {}
+        content = text_obj.get("content") if isinstance(text_obj, dict) else None
+        if isinstance(content, str) and content.strip():
+            parts.append(content.strip())
+    return "\n".join(parts)
+
+
+def _wecom_extract_voice_text(frame: dict[str, Any]) -> str | None:
+    if frame.get("cmd") != "aibot_msg_callback":
+        return None
+    body = frame.get("body") or {}
+    if body.get("msgtype") != "voice":
+        return None
+    voice = body.get("voice") or {}
+    if not isinstance(voice, dict):
+        return None
+    for key in ("recognition", "content", "text"):
+        value = voice.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _wecom_decode_media_aes_key(aeskey: str) -> bytes:
+    padded = aeskey + ("=" * ((4 - len(aeskey) % 4) % 4))
+    try:
+        key = base64.b64decode(padded, validate=True)
+    except Exception:
+        key = base64.urlsafe_b64decode(padded)
+    if len(key) != 32:  # noqa: PLR2004
+        raise ValueError("WeCom media aeskey must decode to 32 bytes")
+    return key
+
+
+def _wecom_decrypt_media_payload(data: bytes, aeskey: str) -> bytes:
+    """Decrypt WeCom inbound media encrypted with AES-256-CBC."""
+    if not aeskey:
+        return data
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    key = _wecom_decode_media_aes_key(aeskey)
+    decryptor = Cipher(algorithms.AES(key), modes.CBC(key[:16])).decryptor()
+    decrypted = decryptor.update(data) + decryptor.finalize()
+    if not decrypted:
+        raise ValueError("WeCom media decrypted to empty payload")
+    pad_len = decrypted[-1]
+    if (
+        pad_len < 1
+        or pad_len > _WECOM_AES_CBC_PADDING_MAX_BYTES
+        or pad_len > len(decrypted)
+    ):
+        raise ValueError(f"Invalid WeCom media padding value: {pad_len}")
+    padding = decrypted[-pad_len:]
+    if any(byte != pad_len for byte in padding):
+        raise ValueError("Invalid WeCom media padding bytes")
+    return decrypted[:-pad_len]
+
+
+def _wecom_safe_filename(name: str, *, default: str) -> str:
+    candidate = unquote(name).split("?")[0].split("#")[0].strip()
+    candidate = Path(candidate).name
+    safe = "".join(ch if ch.isalnum() or ch in ".-_" else "_" for ch in candidate)
+    safe = safe.strip("._")
+    return safe or default
+
+
+def _wecom_filename_from_content_disposition(value: str) -> str:
+    if not value:
+        return ""
+    message = email.message.Message()
+    message["content-disposition"] = value
+    filename = message.get_filename()
+    return filename or ""
+
+
+def _wecom_filename_from_response(
+    *,
+    url: str,
+    filename_hint: str,
+    content_disposition: str,
+    content_type: str,
+    media_type: str,
+    fallback: str,
+) -> str:
+    if filename_hint:
+        return _wecom_safe_filename(filename_hint, default=fallback)
+    from_header = _wecom_safe_filename(
+        _wecom_filename_from_content_disposition(content_disposition),
+        default="",
+    )
+    if from_header:
+        return from_header
+    parsed = urlparse(url)
+    from_path = _wecom_safe_filename(Path(parsed.path).name, default="")
+    if from_path:
+        return from_path
+    ext = mimetypes.guess_extension(content_type.split(";", 1)[0].strip()) or ""
+    if media_type == "image" and not ext:
+        ext = ".jpg"
+    return _wecom_safe_filename(f"{fallback}{ext}", default=fallback)
+
+
+def _wecom_validate_media_url(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Invalid WeCom media URL")
+
+
+def _wecom_user_facing_error(exc: Exception) -> str:
+    text = str(exc).strip()
+    if text:
+        return text
+    return type(exc).__name__
 
 
 def _wecom_build_subscribe_frame(bot_id: str, secret: str) -> dict[str, Any]:
@@ -4292,8 +4491,7 @@ class DeepAgentsApp(App):
                             continue
                         if cmd not in ("aibot_msg_callback", "aibot_event_callback"):
                             continue
-                        text = _wecom_extract_text_message(frame)
-                        if text is None:
+                        if not _wecom_is_supported_message_frame(frame):
                             continue
                         body = frame.get("body") or {}
                         from_obj = body.get("from") or {}
@@ -4324,7 +4522,7 @@ class DeepAgentsApp(App):
                                 )
 
                         task = asyncio.create_task(
-                            self._wecom_handle_inbound_message(frame=frame, text=text)
+                            self._wecom_handle_inbound_message(frame=frame)
                         )
                         self._wecom_msg_tasks.add(task)
                         task.add_done_callback(self._wecom_msg_tasks.discard)
@@ -4372,7 +4570,6 @@ class DeepAgentsApp(App):
         self,
         *,
         frame: dict[str, Any],
-        text: str,
     ) -> None:
         """Process one inbound WeCom message and deliver a true streaming reply.
 
@@ -4400,6 +4597,7 @@ class DeepAgentsApp(App):
                 logger.warning("wecom stream content update failed: %s", exc)
 
         try:
+            text = await self._wecom_build_agent_input_from_frame(frame)
             answer = await self._process_wecom_message_via_cli(
                 text,
                 inbound_frame=frame,
@@ -4407,7 +4605,10 @@ class DeepAgentsApp(App):
             )
         except Exception as exc:
             logger.warning("wecom message process failed: %s", exc, exc_info=True)
-            answer = "处理消息时发生异常，请稍后重试。"
+            detail = _wecom_user_facing_error(exc)
+            with suppress(Exception):
+                await self._mount_message(ErrorMessage(f"WeCom message failed: {detail}"))
+            answer = f"处理消息时发生异常：{detail}"
 
         self._wecom_outbox.append(
             _wecom_build_stream_frame(frame, stream_id, answer, finish=True)
@@ -4444,6 +4645,131 @@ class DeepAgentsApp(App):
                     return False
                 self._wecom_outbox.popleft()
         return True
+
+    async def _wecom_build_agent_input_from_frame(self, frame: dict[str, Any]) -> str:
+        """Convert a WeCom callback frame into the user text sent to the agent."""
+        text = _wecom_extract_text_message(frame)
+        if text is not None:
+            return text
+        voice_text = _wecom_extract_voice_text(frame)
+        if voice_text is not None:
+            return voice_text
+
+        body = frame.get("body") or {}
+        msgtype = body.get("msgtype")
+        media_items = _wecom_extract_inbound_media(frame)
+        mixed_text = _wecom_extract_mixed_text(frame) if msgtype == "mixed" else ""
+        if not media_items:
+            return mixed_text or f"收到企业微信 {msgtype or 'unknown'} 消息，但当前无法提取内容。"
+
+        saved_paths: list[Path] = []
+        for index, media in enumerate(media_items, start=1):
+            saved_paths.append(
+                await self._wecom_download_inbound_media(
+                    media,
+                    frame=frame,
+                    index=index,
+                )
+            )
+
+        lines: list[str] = []
+        if mixed_text:
+            lines.append(mixed_text)
+            lines.append("")
+        noun = "文件" if msgtype == "file" else "附件"
+        lines.append(f"用户通过企业微信发送了{noun}，已下载到本地：")
+        lines.extend(f"- {path}" for path in saved_paths)
+        lines.append("")
+        lines.append("请根据用户需求处理这些本地文件；如需查看内容，可以直接读取上述路径。")
+        return "\n".join(lines)
+
+    async def _wecom_download_inbound_media(
+        self,
+        media: _WeComInboundMedia,
+        *,
+        frame: dict[str, Any],
+        index: int,
+    ) -> Path:
+        """Download and decrypt one inbound WeCom media item into the project."""
+        _wecom_validate_media_url(media.url)
+        if media.msgtype in _WECOM_INBOUND_MEDIA_TYPES and not media.aeskey:
+            raise ValueError(f"WeCom {media.msgtype} message is missing aeskey")
+
+        encrypted_parts: list[bytes] = []
+        encrypted_size = 0
+        encrypted_max_bytes = (
+            _WECOM_INBOUND_MEDIA_MAX_BYTES + _WECOM_AES_CBC_PADDING_MAX_BYTES
+            if media.aeskey
+            else _WECOM_INBOUND_MEDIA_MAX_BYTES
+        )
+        content_type = ""
+        content_disposition = ""
+        async with self._wecom_media_http_client() as client:
+            async with client.stream("GET", media.url) as response:
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "")
+                content_disposition = response.headers.get("content-disposition", "")
+                content_length = response.headers.get("content-length")
+                if content_length is not None:
+                    try:
+                        declared_size = int(content_length)
+                    except ValueError:
+                        declared_size = 0
+                    if declared_size > encrypted_max_bytes:
+                        raise ValueError(
+                            "Inbound WeCom media is larger than the 20 MB limit"
+                        )
+                async for chunk in response.aiter_bytes():
+                    encrypted_size += len(chunk)
+                    if encrypted_size > encrypted_max_bytes:
+                        raise ValueError(
+                            "Inbound WeCom media is larger than the 20 MB limit"
+                        )
+                    encrypted_parts.append(chunk)
+
+        encrypted = b"".join(encrypted_parts)
+
+        data = await asyncio.to_thread(
+            _wecom_decrypt_media_payload,
+            encrypted,
+            media.aeskey,
+        )
+        if len(data) > _WECOM_INBOUND_MEDIA_MAX_BYTES:
+            raise ValueError("Inbound WeCom media is larger than the 20 MB limit")
+
+        body = frame.get("body") or {}
+        msgid = _wecom_safe_filename(str(body.get("msgid") or uuid.uuid4().hex), default="message")
+        fallback = f"{media.msgtype}_{msgid}_{index}"
+        filename = _wecom_filename_from_response(
+            url=media.url,
+            filename_hint=media.filename_hint,
+            content_disposition=content_disposition,
+            content_type=content_type,
+            media_type=media.msgtype,
+            fallback=fallback,
+        )
+        target_dir = Path(self._cwd).expanduser().resolve() / ".invincat" / "wecom_downloads"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / filename
+        if target.exists():
+            stem = target.stem or fallback
+            suffix = target.suffix
+            target = target_dir / f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"
+
+        await asyncio.to_thread(target.write_bytes, data)
+        logger.info(
+            "wecom inbound media downloaded msgtype=%s path=%s size=%d",
+            media.msgtype,
+            target,
+            len(data),
+        )
+        return target
+
+    def _wecom_media_http_client(self) -> Any:
+        """Create the HTTP client used for inbound WeCom media downloads."""
+        import httpx
+
+        return httpx.AsyncClient(follow_redirects=True, timeout=60.0)
 
     async def _wecom_send_request(
         self,

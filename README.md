@@ -560,7 +560,10 @@ Manage lifecycle:
 
 ### Notes and Limits
 
-- Only text callbacks are currently accepted from WeCom.
+- Text, file, image, voice, and mixed text+image callbacks are accepted from WeCom.
+  Inbound media is downloaded and decrypted into `.invincat/wecom_downloads/`
+  under the current project, then the local file path is injected into the
+  agent turn. Other message types are ignored.
 - Incoming WeCom messages are processed serially against the current CLI session
   to avoid mixing two remote messages into the same agent turn.
 - The bridge reconnects automatically and keeps a small outbound queue for

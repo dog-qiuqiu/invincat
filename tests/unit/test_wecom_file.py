@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import base64
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
+import pytest
 from langchain_core.messages import ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
@@ -23,6 +28,275 @@ def test_wecom_ping_frame_uses_official_ping_command() -> None:
     assert frame["cmd"] == "ping"
     assert frame["headers"]["req_id"].startswith("ping_")
     assert frame["body"] == {}
+
+
+def test_wecom_extract_inbound_file_media() -> None:
+    from invincat_cli.app import _wecom_extract_inbound_media
+
+    frame = {
+        "cmd": "aibot_msg_callback",
+        "body": {
+            "msgtype": "file",
+            "file": {
+                "url": "https://example.com/download/report.docx",
+                "aeskey": "a" * 43,
+            },
+        },
+    }
+
+    media = _wecom_extract_inbound_media(frame)
+
+    assert len(media) == 1
+    assert media[0].msgtype == "file"
+    assert media[0].url == "https://example.com/download/report.docx"
+    assert media[0].aeskey == "a" * 43
+
+
+def test_wecom_extract_inbound_file_media_accepts_sdk_aliases() -> None:
+    from invincat_cli.app import _wecom_extract_inbound_media
+
+    frame = {
+        "cmd": "aibot_msg_callback",
+        "body": {
+            "msgtype": "file",
+            "file": {
+                "download_url": "https://example.com/download/report.docx",
+                "aes_key": "b" * 43,
+                "name": "report.docx",
+            },
+        },
+    }
+
+    media = _wecom_extract_inbound_media(frame)
+
+    assert len(media) == 1
+    assert media[0].url == "https://example.com/download/report.docx"
+    assert media[0].aeskey == "b" * 43
+    assert media[0].filename_hint == "report.docx"
+
+
+def test_wecom_extract_inbound_mixed_text_and_image() -> None:
+    from invincat_cli.app import _wecom_extract_inbound_media, _wecom_extract_mixed_text
+
+    frame = {
+        "cmd": "aibot_msg_callback",
+        "body": {
+            "msgtype": "mixed",
+            "mixed": {
+                "msg_item": [
+                    {"msgtype": "text", "text": {"content": "看下这张图"}},
+                    {
+                        "msgtype": "image",
+                        "image": {
+                            "url": "https://example.com/image",
+                            "aeskey": "b" * 43,
+                        },
+                    },
+                ]
+            },
+        },
+    }
+
+    assert _wecom_extract_mixed_text(frame) == "看下这张图"
+    media = _wecom_extract_inbound_media(frame)
+    assert len(media) == 1
+    assert media[0].msgtype == "image"
+
+
+def test_wecom_decrypt_media_payload_roundtrip() -> None:
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from cryptography.hazmat.primitives.padding import PKCS7
+
+    from invincat_cli.app import _wecom_decrypt_media_payload
+
+    key = bytes(range(32))
+    aeskey = base64.b64encode(key).decode("ascii").rstrip("=")
+    plaintext = b"hello wecom file"
+    padder = PKCS7(128).padder()
+    padded = padder.update(plaintext) + padder.finalize()
+    encryptor = Cipher(algorithms.AES(key), modes.CBC(key[:16])).encryptor()
+    encrypted = encryptor.update(padded) + encryptor.finalize()
+
+    assert _wecom_decrypt_media_payload(encrypted, aeskey) == plaintext
+
+
+def test_wecom_decrypt_media_payload_accepts_urlsafe_aeskey() -> None:
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from cryptography.hazmat.primitives.padding import PKCS7
+
+    from invincat_cli.app import _wecom_decrypt_media_payload
+
+    key = b"\xfb" * 32
+    aeskey = base64.urlsafe_b64encode(key).decode("ascii").rstrip("=")
+    plaintext = b"hello urlsafe key"
+    padder = PKCS7(128).padder()
+    padded = padder.update(plaintext) + padder.finalize()
+    encryptor = Cipher(algorithms.AES(key), modes.CBC(key[:16])).encryptor()
+    encrypted = encryptor.update(padded) + encryptor.finalize()
+
+    assert _wecom_decrypt_media_payload(encrypted, aeskey) == plaintext
+
+
+def test_wecom_decrypt_media_payload_accepts_wecom_32_byte_padding() -> None:
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    from invincat_cli.app import _wecom_decrypt_media_payload
+
+    key = bytes(range(32))
+    aeskey = base64.b64encode(key).decode("ascii").rstrip("=")
+    plaintext = b"0123456789abcdef"
+    padded = plaintext + (bytes([32]) * 32)
+    encryptor = Cipher(algorithms.AES(key), modes.CBC(key[:16])).encryptor()
+    encrypted = encryptor.update(padded) + encryptor.finalize()
+
+    assert _wecom_decrypt_media_payload(encrypted, aeskey) == plaintext
+
+
+def test_wecom_extract_voice_text() -> None:
+    from invincat_cli.app import _wecom_extract_voice_text, _wecom_is_supported_message_frame
+
+    frame = {
+        "cmd": "aibot_msg_callback",
+        "body": {
+            "msgtype": "voice",
+            "voice": {"recognition": "帮我总结这个语音"},
+        },
+    }
+
+    assert _wecom_is_supported_message_frame(frame) is True
+    assert _wecom_extract_voice_text(frame) == "帮我总结这个语音"
+
+
+def test_wecom_filename_prefers_content_disposition() -> None:
+    from invincat_cli.app import _wecom_filename_from_response
+
+    filename = _wecom_filename_from_response(
+        url="https://example.com/download",
+        filename_hint="",
+        content_disposition='attachment; filename="report final.txt"',
+        content_type="text/plain",
+        media_type="file",
+        fallback="file_1",
+    )
+
+    assert filename == "report_final.txt"
+
+
+def test_wecom_validate_media_url_rejects_non_http() -> None:
+    from invincat_cli.app import _wecom_validate_media_url
+
+    with pytest.raises(ValueError, match="Invalid WeCom media URL"):
+        _wecom_validate_media_url("file:///etc/passwd")
+
+
+def test_wecom_download_inbound_media_streams_and_writes_file(tmp_path: Path) -> None:
+    from invincat_cli.app import _WeComInboundMedia, DeepAgentsApp
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from cryptography.hazmat.primitives.padding import PKCS7
+
+    app = DeepAgentsApp()
+    app._cwd = str(tmp_path)
+    key = bytes(range(32))
+    aeskey = base64.b64encode(key).decode("ascii").rstrip("=")
+    padder = PKCS7(128).padder()
+    padded = padder.update(b"hello") + padder.finalize()
+    encryptor = Cipher(algorithms.AES(key), modes.CBC(key[:16])).encryptor()
+    encrypted = encryptor.update(padded) + encryptor.finalize()
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            headers={
+                "content-disposition": 'attachment; filename="from-header.txt"',
+                "content-type": "text/plain",
+            },
+            content=encrypted,
+            request=request,
+        )
+    )
+
+    def _client() -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=transport)
+
+    app._wecom_media_http_client = _client
+
+    async def _run() -> Path:
+        return await app._wecom_download_inbound_media(
+            _WeComInboundMedia(
+                msgtype="file",
+                url="https://example.com/media",
+                aeskey=aeskey,
+                filename_hint="",
+            ),
+            frame={"body": {"msgid": "msg-1"}},
+            index=1,
+        )
+
+    path = asyncio.run(_run())
+
+    assert path == tmp_path / ".invincat" / "wecom_downloads" / "from-header.txt"
+    assert path.read_bytes() == b"hello"
+
+
+def test_wecom_download_inbound_media_rejects_stream_over_limit(
+    tmp_path: Path,
+) -> None:
+    from invincat_cli.app import _WeComInboundMedia, DeepAgentsApp
+
+    class _OversizedStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"a" * (20 * 1024 * 1024 + 32)
+            yield b"b"
+
+    app = DeepAgentsApp()
+    app._cwd = str(tmp_path)
+    aeskey = base64.b64encode(bytes(range(32))).decode("ascii").rstrip("=")
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=_OversizedStream(), request=request)
+
+    transport = httpx.MockTransport(_handler)
+
+    def _client() -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=transport)
+
+    app._wecom_media_http_client = _client
+
+    async def _run() -> None:
+        await app._wecom_download_inbound_media(
+            _WeComInboundMedia(
+                msgtype="file",
+                url="https://example.com/media",
+                aeskey=aeskey,
+                filename_hint="",
+            ),
+            frame={"body": {"msgid": "msg-1"}},
+            index=1,
+        )
+
+    with pytest.raises(ValueError, match="larger than the 20 MB limit"):
+        asyncio.run(_run())
+
+
+def test_wecom_download_inbound_media_requires_aeskey(tmp_path: Path) -> None:
+    from invincat_cli.app import _WeComInboundMedia, DeepAgentsApp
+
+    app = DeepAgentsApp()
+    app._cwd = str(tmp_path)
+
+    async def _run() -> None:
+        await app._wecom_download_inbound_media(
+            _WeComInboundMedia(
+                msgtype="file",
+                url="https://example.com/media",
+                aeskey="",
+                filename_hint="",
+            ),
+            frame={"body": {"msgid": "msg-1"}},
+            index=1,
+        )
+
+    with pytest.raises(ValueError, match="missing aeskey"):
+        asyncio.run(_run())
 
 
 def test_wecom_file_frame_uses_active_send_when_chatid_present() -> None:
