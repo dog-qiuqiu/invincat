@@ -107,13 +107,20 @@ from invincat_cli.widgets.welcome import WelcomeBanner
 from invincat_cli.wecom_bridge import WeComBridge
 from invincat_cli.wecom_media import (
     build_wecom_agent_input_with_media_downloads,
-    upload_wecom_outbound_media,
+    send_wecom_file_from_tool_payload,
 )
 from invincat_cli.wecom_protocol import (
-    build_wecom_file_frame as _wecom_build_file_frame,
     build_wecom_stream_frame as _wecom_build_stream_frame,
-    resolve_wecom_active_chat_id as _wecom_resolve_active_chat_id,
-    wecom_frame_req_id as _wecom_frame_req_id,
+)
+from invincat_cli.wecom_session import (
+    WECOM_AGENT_TIMEOUT,
+    WECOM_BLINK_INTERVAL,
+    WECOM_FILE_NOTIFY_HOLD,
+    WECOM_IDLE_TIMEOUT,
+    WECOM_PROGRESS_MAX_INTERVAL,
+    WECOM_STREAM_BLINK_DELAY,
+    format_wecom_progress_line,
+    wecom_user_facing_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -597,35 +604,6 @@ _COMMAND_URLS: dict[str, str] = {
     "/docs": DOCS_URL,
     "/feedback": "https://github.com/langchain-ai/deepagents/issues/new/choose",
 }
-
-
-def _wecom_user_facing_error(exc: Exception) -> str:
-    text = str(exc).strip()
-    if text:
-        return text
-    return type(exc).__name__
-
-
-def _wecom_format_progress_line(
-    *,
-    running_tool: str | None,
-    completed_tools: int,
-    assistant_started: bool,
-    tick: int = 0,
-) -> str:
-    """Format the one-line in-place progress update shown before final output."""
-    dots = "." * (tick % 3 + 1)
-    if running_tool:
-        if completed_tools:
-            return f"处理中：正在执行工具 `{running_tool}`，已完成 {completed_tools} 个{dots}"
-        return f"处理中：正在执行工具 `{running_tool}`{dots}"
-    if assistant_started:
-        if completed_tools:
-            return f"处理中：已完成 {completed_tools} 个工具调用，正在整理回复{dots}"
-        return f"处理中：正在整理回复{dots}"
-    if completed_tools:
-        return f"处理中：已完成 {completed_tools} 个工具调用，正在继续分析{dots}"
-    return f"处理中：正在分析问题{dots}"
 
 
 """Slash-command to URL mapping for commands that just open a browser."""
@@ -4163,7 +4141,7 @@ class DeepAgentsApp(App):
             )
         except Exception as exc:
             logger.warning("wecom message process failed: %s", exc, exc_info=True)
-            detail = _wecom_user_facing_error(exc)
+            detail = wecom_user_facing_error(exc)
             with suppress(Exception):
                 await self._mount_message(ErrorMessage(f"WeCom message failed: {detail}"))
             answer = f"处理消息时发生异常：{detail}"
@@ -4200,56 +4178,6 @@ class DeepAgentsApp(App):
             raise RuntimeError("WeCom connection is offline")
         return await self._wecom_bridge.send_request(payload, timeout=timeout)
 
-    async def _wecom_send_file_from_tool(
-        self,
-        frame: dict[str, Any],
-        payload: dict[str, Any],
-    ) -> None:
-        """Handle a send_wecom_file tool payload by uploading and replying."""
-        raw_path = str(payload.get("path") or "").strip()
-        if not raw_path:
-            raise ValueError("send_wecom_file payload missing path")
-        path = Path(raw_path).expanduser().resolve()
-        root = Path(self._cwd).expanduser().resolve()
-        try:
-            path.relative_to(root)
-        except ValueError as exc:
-            raise ValueError(
-                f"WeCom file sending is limited to the current project: {root}"
-            ) from exc
-        if not path.is_file():
-            raise ValueError(f"File does not exist or is not a regular file: {path}")
-        inbound_body = frame.get("body") or {}
-        target_chat_id = _wecom_resolve_active_chat_id(frame)
-        logger.info(
-            "wecom file send requested path=%s target_chatid=%s inbound_chatid=%s chattype=%s inbound_req_id=%s",
-            path,
-            target_chat_id,
-            inbound_body.get("chatid", ""),
-            inbound_body.get("chattype", ""),
-            _wecom_frame_req_id(frame),
-        )
-        media_id = await upload_wecom_outbound_media(
-            path,
-            send_request=self._wecom_send_request,
-        )
-        file_frame = _wecom_build_file_frame(frame, media_id)
-        await self._wecom_send_request(file_frame)
-        logger.info("wecom file send completed path=%s media_id=%s", path, media_id)
-
-    # Seconds to wait for the session to become idle before injecting a message.
-    _WECOM_IDLE_TIMEOUT = 30.0
-    # Seconds to wait for the agent to finish after injection.
-    _WECOM_AGENT_TIMEOUT = 30 * 60.0
-    # Maximum seconds before re-sending progress when the visible phase changes.
-    _WECOM_PROGRESS_MAX_INTERVAL = 0.25
-    # Seconds to hold a file-send notification visible before resuming progress.
-    _WECOM_FILE_NOTIFY_HOLD = 2.0
-    # Seconds of streaming silence before the blinking cursor starts.
-    _WECOM_STREAM_BLINK_DELAY = 1.0
-    # Seconds between each cursor on/off toggle.
-    _WECOM_BLINK_INTERVAL = 0.6
-
     async def _process_wecom_message_via_cli(
         self,
         text: str,
@@ -4276,7 +4204,7 @@ class DeepAgentsApp(App):
                 or self._agent_running
                 or self._shell_running
             ):
-                if idle_waited >= self._WECOM_IDLE_TIMEOUT:
+                if idle_waited >= WECOM_IDLE_TIMEOUT:
                     return "当前会话忙碌，请稍后再试。"
                 await asyncio.sleep(0.1)
                 idle_waited += 0.1
@@ -4303,7 +4231,12 @@ class DeepAgentsApp(App):
             async def _on_wecom_file_request(payload: dict[str, Any]) -> None:
                 nonlocal last_file_notified_mono
                 try:
-                    await self._wecom_send_file_from_tool(inbound_frame, payload)
+                    await send_wecom_file_from_tool_payload(
+                        inbound_frame,
+                        payload,
+                        cwd=self._cwd,
+                        send_request=self._wecom_send_request,
+                    )
                     if on_content is not None:
                         filename = payload.get("filename") or payload.get("path") or "文件"
                         await on_content(f"已发送文件：{filename}")
@@ -4331,7 +4264,7 @@ class DeepAgentsApp(App):
 
             agent_waited = 0.0
             while self._agent_running or self._shell_running:
-                if agent_waited >= self._WECOM_AGENT_TIMEOUT:
+                if agent_waited >= WECOM_AGENT_TIMEOUT:
                     self._cancel_wecom_timed_out_turn()
                     return "处理超时，请稍后再试。"
                 await asyncio.sleep(0.1)
@@ -4367,16 +4300,16 @@ class DeepAgentsApp(App):
                     not answer_started or running_tool is not None
                 ):
                     now = asyncio.get_event_loop().time()
-                    if (now - last_file_notified_mono) < self._WECOM_FILE_NOTIFY_HOLD:
+                    if (now - last_file_notified_mono) < WECOM_FILE_NOTIFY_HOLD:
                         pass  # keep file-send notification visible
                     else:
                         progress_key = (running_tool, completed_tools, assistant_started)
                         if (
                             last_pushed == ""
                             or progress_key != last_progress_key
-                            or (now - last_push_mono) >= self._WECOM_PROGRESS_MAX_INTERVAL
+                            or (now - last_push_mono) >= WECOM_PROGRESS_MAX_INTERVAL
                         ):
-                            display = _wecom_format_progress_line(
+                            display = format_wecom_progress_line(
                                 running_tool=running_tool,
                                 completed_tools=completed_tools,
                                 assistant_started=assistant_started,
@@ -4394,8 +4327,8 @@ class DeepAgentsApp(App):
                     now = asyncio.get_event_loop().time()
                     idle = now - last_delta_mono
                     if (
-                        idle >= self._WECOM_STREAM_BLINK_DELAY
-                        and (now - last_push_mono) >= self._WECOM_BLINK_INTERVAL
+                        idle >= WECOM_STREAM_BLINK_DELAY
+                        and (now - last_push_mono) >= WECOM_BLINK_INTERVAL
                     ):
                         cursor_visible = not cursor_visible
                         suffix = " ▏" if cursor_visible else ""
@@ -6042,7 +5975,7 @@ class DeepAgentsApp(App):
         self._active_turn_is_planner = False
         logger.warning(
             "wecom turn timed out after %.1fs; cancelled active agent/shell worker",
-            self._WECOM_AGENT_TIMEOUT,
+            WECOM_AGENT_TIMEOUT,
         )
 
     def action_quit_or_interrupt(self) -> None:

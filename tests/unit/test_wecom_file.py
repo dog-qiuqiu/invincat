@@ -16,6 +16,7 @@ from invincat_cli.wecom_media import (
     build_wecom_agent_input_with_media_downloads,
     decrypt_wecom_media_payload,
     download_wecom_inbound_media,
+    send_wecom_file_from_tool_payload,
     upload_wecom_outbound_media,
     validate_wecom_media_url,
     wecom_filename_from_response,
@@ -37,6 +38,7 @@ from invincat_cli.wecom_protocol import (
     extract_wecom_voice_text,
     is_supported_wecom_message_frame,
 )
+from invincat_cli.wecom_session import format_wecom_progress_line, wecom_user_facing_error
 
 
 def test_wecom_ping_frame_uses_official_ping_command() -> None:
@@ -489,6 +491,57 @@ def test_wecom_upload_outbound_media_uses_init_chunks_and_finish(tmp_path: Path)
         "bw==",
     ]
     assert sent[-1]["body"] == {"upload_id": "upload-1"}
+
+
+def test_wecom_send_file_from_tool_payload_uploads_and_sends_file(tmp_path: Path) -> None:
+    path = tmp_path / "report.txt"
+    path.write_text("hello", encoding="utf-8")
+    sent: list[dict] = []
+
+    async def _send_request(payload: dict) -> dict:
+        sent.append(payload)
+        if payload["cmd"] == "aibot_upload_media_init":
+            return {"body": {"upload_id": "upload-1"}}
+        if payload["cmd"] == "aibot_upload_media_finish":
+            return {"body": {"media_id": "media-1"}}
+        return {"body": {}}
+
+    frame = {
+        "headers": {"req_id": "inbound-1"},
+        "body": {"chatid": "chat-1"},
+    }
+
+    asyncio.run(
+        send_wecom_file_from_tool_payload(
+            frame,
+            {"path": str(path), "filename": "report.txt"},
+            cwd=tmp_path,
+            send_request=_send_request,
+        )
+    )
+
+    assert sent[-1]["cmd"] == "aibot_send_msg"
+    assert sent[-1]["body"] == {
+        "msgtype": "file",
+        "file": {"media_id": "media-1"},
+        "chatid": "chat-1",
+    }
+
+
+def test_wecom_progress_and_error_helpers() -> None:
+    assert format_wecom_progress_line(
+        running_tool="shell",
+        completed_tools=2,
+        assistant_started=False,
+        tick=1,
+    ) == "处理中：正在执行工具 `shell`，已完成 2 个.."
+    assert format_wecom_progress_line(
+        running_tool=None,
+        completed_tools=0,
+        assistant_started=True,
+        tick=0,
+    ) == "处理中：正在整理回复."
+    assert wecom_user_facing_error(ValueError("bad input")) == "bad input"
 
 
 class _ModelRequest:

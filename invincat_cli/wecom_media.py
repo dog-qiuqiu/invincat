@@ -303,3 +303,46 @@ async def upload_wecom_outbound_media(
         media_id,
     )
     return media_id
+
+
+async def send_wecom_file_from_tool_payload(
+    frame: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    cwd: str | Path,
+    send_request: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]],
+) -> None:
+    """Handle a send_wecom_file tool payload by uploading and replying."""
+    from invincat_cli.wecom_protocol import (
+        build_wecom_file_frame,
+        resolve_wecom_active_chat_id,
+        wecom_frame_req_id,
+    )
+
+    raw_path = str(payload.get("path") or "").strip()
+    if not raw_path:
+        raise ValueError("send_wecom_file payload missing path")
+    path = Path(raw_path).expanduser().resolve()
+    root = Path(cwd).expanduser().resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(
+            f"WeCom file sending is limited to the current project: {root}"
+        ) from exc
+    if not path.is_file():
+        raise ValueError(f"File does not exist or is not a regular file: {path}")
+
+    inbound_body = frame.get("body") or {}
+    target_chat_id = resolve_wecom_active_chat_id(frame)
+    logger.info(
+        "wecom file send requested path=%s target_chatid=%s inbound_chatid=%s chattype=%s inbound_req_id=%s",
+        path,
+        target_chat_id,
+        inbound_body.get("chatid", ""),
+        inbound_body.get("chattype", ""),
+        wecom_frame_req_id(frame),
+    )
+    media_id = await upload_wecom_outbound_media(path, send_request=send_request)
+    await send_request(build_wecom_file_frame(frame, media_id))
+    logger.info("wecom file send completed path=%s media_id=%s", path, media_id)
