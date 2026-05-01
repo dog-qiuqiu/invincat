@@ -107,21 +107,12 @@ from invincat_cli.widgets.welcome import WelcomeBanner
 from invincat_cli.wecom_bridge import WeComBridge
 from invincat_cli.wecom_media import (
     build_wecom_agent_input_with_media_downloads,
-    send_wecom_file_from_tool_payload,
-)
-from invincat_cli.wecom_protocol import (
-    build_wecom_stream_frame as _wecom_build_stream_frame,
 )
 from invincat_cli.wecom_session import (
     WECOM_AGENT_TIMEOUT,
-    WECOM_BLINK_INTERVAL,
-    WECOM_FILE_NOTIFY_HOLD,
-    WECOM_IDLE_TIMEOUT,
-    WECOM_PROGRESS_MAX_INTERVAL,
-    WECOM_STREAM_BLINK_DELAY,
-    format_wecom_progress_line,
-    wecom_user_facing_error,
+    WeComMessageResponder,
 )
+from invincat_cli.wecom_turn import WeComTurnRunner
 
 logger = logging.getLogger(__name__)
 configure_debug_logging(logger)
@@ -4104,52 +4095,33 @@ class DeepAgentsApp(App):
         *,
         frame: dict[str, Any],
     ) -> None:
-        """Process one inbound WeCom message and deliver a true streaming reply.
+        """Process one inbound WeCom message and deliver a true streaming reply."""
 
-        A single stream_id covers the whole turn.  As the agent generates
-        tokens, on_content is called with the latest cumulative display string
-        and each call produces a finish=False stream frame that updates the
-        message in-place.  The final finish=True frame delivers the canonical
-        answer.
-        """
-        stream_id = uuid.uuid4().hex
-
-        self._wecom_enqueue(
-            _wecom_build_stream_frame(frame, stream_id, "⏳ 正在处理，请稍候…", finish=False)
-        )
-        ack_sent = await self._wecom_flush_outbox()
-        logger.debug("wecom stream ACK sent=%s stream_id=%s", ack_sent, stream_id)
-
-        async def _on_content(content: str) -> None:
-            self._wecom_enqueue(
-                _wecom_build_stream_frame(frame, stream_id, content, finish=False)
-            )
-            try:
-                await self._wecom_flush_outbox()
-            except Exception as exc:
-                logger.warning("wecom stream content update failed: %s", exc)
-
-        try:
-            text = await build_wecom_agent_input_with_media_downloads(
-                frame,
+        async def _build_agent_input(inbound_frame: dict[str, Any]) -> str:
+            return await build_wecom_agent_input_with_media_downloads(
+                inbound_frame,
                 cwd=self._cwd,
             )
-            answer = await self._process_wecom_message_via_cli(
-                text,
-                inbound_frame=frame,
-                on_content=_on_content,
-            )
-        except Exception as exc:
-            logger.warning("wecom message process failed: %s", exc, exc_info=True)
-            detail = wecom_user_facing_error(exc)
-            with suppress(Exception):
-                await self._mount_message(ErrorMessage(f"WeCom message failed: {detail}"))
-            answer = f"处理消息时发生异常：{detail}"
 
-        self._wecom_enqueue(
-            _wecom_build_stream_frame(frame, stream_id, answer, finish=True)
+        async def _run_turn(
+            text: str,
+            inbound_frame: dict[str, Any],
+            on_content: Callable[[str], Awaitable[None]],
+        ) -> str:
+            return await self._process_wecom_message_via_cli(
+                text,
+                inbound_frame=inbound_frame,
+                on_content=on_content,
+            )
+
+        responder = WeComMessageResponder(
+            enqueue=self._wecom_enqueue,
+            flush=self._wecom_flush_outbox,
+            build_agent_input=_build_agent_input,
+            run_turn=_run_turn,
+            report_error=lambda message: self._mount_message(ErrorMessage(message)),
         )
-        await self._wecom_flush_outbox()
+        await responder.handle(frame)
 
     def _wecom_enqueue(self, payload: dict[str, Any]) -> None:
         if self._wecom_bridge is None:
@@ -4191,172 +4163,34 @@ class DeepAgentsApp(App):
         the agent works. The complete assistant text is sent only once in the
         final finish=True frame.
         """
-        async with self._wecom_lock:
-            answer_started = False
-            last_file_notified_mono: float = 0.0
-            last_delta_mono: float = 0.0
-            last_streamed_text: str = ""
-            idle_waited = 0.0
-            while (
+        async def _handle_user_message(
+            message: str,
+            on_text_delta: Callable[[str, str], Awaitable[None]],
+            on_wecom_file_request: Callable[[dict[str, Any]], Awaitable[None]],
+        ) -> None:
+            await self._handle_user_message(
+                message,
+                on_text_delta=on_text_delta,
+                on_wecom_file_request=on_wecom_file_request,
+            )
+
+        runner = WeComTurnRunner(
+            lock=self._wecom_lock,
+            cwd=self._cwd,
+            is_busy=lambda: (
                 self._connecting
                 or self._thread_switching
                 or self._model_switching
                 or self._agent_running
                 or self._shell_running
-            ):
-                if idle_waited >= WECOM_IDLE_TIMEOUT:
-                    return "当前会话忙碌，请稍后再试。"
-                await asyncio.sleep(0.1)
-                idle_waited += 0.1
-
-            before = self._message_store.get_all_messages()
-            before_ids: set[str] = {m.id for m in before}
-            before_assistant_count = sum(1 for m in before if m.type == MessageType.ASSISTANT)
-            before_error_count = sum(1 for m in before if m.type == MessageType.ERROR)
-
-            async def _on_text_delta(delta: str, accumulated: str) -> None:
-                nonlocal answer_started, last_delta_mono, last_streamed_text, cursor_visible
-                answer_started = True
-                last_delta_mono = asyncio.get_event_loop().time()
-                last_streamed_text = accumulated
-                cursor_visible = False
-                logger.debug(
-                    "wecom text delta received chars=%d accumulated=%d",
-                    len(delta),
-                    len(accumulated),
-                )
-                if on_content is not None:
-                    await on_content(accumulated)
-
-            async def _on_wecom_file_request(payload: dict[str, Any]) -> None:
-                nonlocal last_file_notified_mono
-                try:
-                    await send_wecom_file_from_tool_payload(
-                        inbound_frame,
-                        payload,
-                        cwd=self._cwd,
-                        send_request=self._wecom_send_request,
-                    )
-                    if on_content is not None:
-                        filename = payload.get("filename") or payload.get("path") or "文件"
-                        await on_content(f"已发送文件：{filename}")
-                    last_file_notified_mono = asyncio.get_event_loop().time()
-                except Exception as exc:
-                    logger.warning("wecom file send failed: %s", exc, exc_info=True)
-                    if on_content is not None:
-                        await on_content(f"文件发送失败：{exc}")
-                    last_file_notified_mono = asyncio.get_event_loop().time()
-
-            await self._handle_user_message(
-                text,
-                on_text_delta=_on_text_delta,
-                on_wecom_file_request=_on_wecom_file_request,
-            )
-
-            _TOOL_PENDING_STATUSES = {ToolStatus.PENDING, ToolStatus.RUNNING, None}
-            sent_tool_ids: set[str] = set()
-            completed_tools = 0
-            last_pushed: str = ""
-            last_push_mono: float = 0.0
-            progress_tick = 0
-            last_progress_key: tuple[str | None, int, bool] | None = None
-            cursor_visible: bool = False
-
-            agent_waited = 0.0
-            while self._agent_running or self._shell_running:
-                if agent_waited >= WECOM_AGENT_TIMEOUT:
-                    self._cancel_wecom_timed_out_turn()
-                    return "处理超时，请稍后再试。"
-                await asyncio.sleep(0.1)
-                agent_waited += 0.1
-
-                messages = self._message_store.get_all_messages()
-                running_tool: str | None = None
-                assistant_started = False
-
-                for m in messages:
-                    if (
-                        m.id not in before_ids
-                        and m.type == MessageType.TOOL
-                    ):
-                        if m.tool_status in _TOOL_PENDING_STATUSES:
-                            running_tool = m.tool_name or running_tool
-                        elif m.id not in sent_tool_ids:
-                            sent_tool_ids.add(m.id)
-                            completed_tools += 1
-
-                    if (
-                        m.id not in before_ids
-                        and m.type == MessageType.ASSISTANT
-                        and bool(m.content)
-                    ):
-                        assistant_started = True
-
-                # Once real assistant text has streamed, do not overwrite it with
-                # generic "thinking" ticks. Do resume progress updates if the model
-                # enters a later tool phase, otherwise WeCom appears stuck while the
-                # local UI is waiting on a tool.
-                if on_content is not None and (
-                    not answer_started or running_tool is not None
-                ):
-                    now = asyncio.get_event_loop().time()
-                    if (now - last_file_notified_mono) < WECOM_FILE_NOTIFY_HOLD:
-                        pass  # keep file-send notification visible
-                    else:
-                        progress_key = (running_tool, completed_tools, assistant_started)
-                        if (
-                            last_pushed == ""
-                            or progress_key != last_progress_key
-                            or (now - last_push_mono) >= WECOM_PROGRESS_MAX_INTERVAL
-                        ):
-                            display = format_wecom_progress_line(
-                                running_tool=running_tool,
-                                completed_tools=completed_tools,
-                                assistant_started=assistant_started,
-                                tick=progress_tick,
-                            )
-                            # Defensive re-check: answer_started may have been set
-                            # by the worker task at a yield point above.
-                            if not answer_started or running_tool is not None:
-                                await on_content(display)
-                                last_pushed = display
-                                last_progress_key = progress_key
-                                last_push_mono = now
-                                progress_tick += 1
-                elif on_content is not None and answer_started and last_streamed_text:
-                    now = asyncio.get_event_loop().time()
-                    idle = now - last_delta_mono
-                    if (
-                        idle >= WECOM_STREAM_BLINK_DELAY
-                        and (now - last_push_mono) >= WECOM_BLINK_INTERVAL
-                    ):
-                        cursor_visible = not cursor_visible
-                        suffix = " ▏" if cursor_visible else ""
-                        await on_content(last_streamed_text + suffix)
-                        last_push_mono = now
-
-            after = self._message_store.get_all_messages()
-
-            # Final sweep: catch any TOOL messages that arrived after the loop.
-            for m in after:
-                if (
-                    m.id not in before_ids
-                    and m.id not in sent_tool_ids
-                    and m.type == MessageType.TOOL
-                ):
-                    sent_tool_ids.add(m.id)
-                    completed_tools += 1
-
-            assistant_msgs = [m for m in after if m.type == MessageType.ASSISTANT]
-            if len(assistant_msgs) > before_assistant_count:
-                return assistant_msgs[-1].content.strip() or "（空回复）"
-
-            # Only surface errors that appeared during this turn.
-            all_errors = [m for m in after if m.type == MessageType.ERROR]
-            new_errors = all_errors[before_error_count:]
-            if new_errors:
-                return new_errors[-1].content.strip()
-            return "未获取到有效回复。"
+            ),
+            get_messages=self._message_store.get_all_messages,
+            handle_user_message=_handle_user_message,
+            send_request=self._wecom_send_request,
+            cancel_timed_out_turn=self._cancel_wecom_timed_out_turn,
+            on_content=on_content,
+        )
+        return await runner.run(text, inbound_frame=inbound_frame)
 
     async def _handle_skill_command(self, command: str) -> None:
         """Handle a `/skill:<name>` command by loading and invoking a skill.

@@ -38,7 +38,13 @@ from invincat_cli.wecom_protocol import (
     extract_wecom_voice_text,
     is_supported_wecom_message_frame,
 )
-from invincat_cli.wecom_session import format_wecom_progress_line, wecom_user_facing_error
+from invincat_cli.wecom_session import (
+    WeComMessageResponder,
+    format_wecom_progress_line,
+    wecom_user_facing_error,
+)
+from invincat_cli.wecom_turn import WeComTurnRunner
+from invincat_cli.widgets.message_store import MessageData, MessageType
 
 
 def test_wecom_ping_frame_uses_official_ping_command() -> None:
@@ -542,6 +548,90 @@ def test_wecom_progress_and_error_helpers() -> None:
         tick=0,
     ) == "处理中：正在整理回复."
     assert wecom_user_facing_error(ValueError("bad input")) == "bad input"
+
+
+def test_wecom_turn_runner_returns_new_assistant_message(tmp_path: Path) -> None:
+    lock = asyncio.Lock()
+    messages: list[MessageData] = [
+        MessageData(type=MessageType.USER, content="before", id="m-before")
+    ]
+    handled: list[str] = []
+
+    async def _handle_user_message(
+        message: str,
+        on_text_delta,
+        on_wecom_file_request,
+    ) -> None:
+        handled.append(message)
+        await on_text_delta("answer", "answer")
+        messages.append(
+            MessageData(type=MessageType.ASSISTANT, content="answer", id="m-answer")
+        )
+
+    async def _send_request(payload: dict) -> dict:
+        return {"body": {}}
+
+    runner = WeComTurnRunner(
+        lock=lock,
+        cwd=tmp_path,
+        is_busy=lambda: False,
+        get_messages=lambda: list(messages),
+        handle_user_message=_handle_user_message,
+        send_request=_send_request,
+        cancel_timed_out_turn=lambda: None,
+    )
+
+    answer = asyncio.run(runner.run("hello", inbound_frame={"body": {}}))
+
+    assert handled == ["hello"]
+    assert answer == "answer"
+
+
+def test_wecom_message_responder_streams_ack_content_and_final() -> None:
+    queued: list[dict] = []
+    flush_count = 0
+
+    def _enqueue(payload: dict) -> None:
+        queued.append(payload)
+
+    async def _flush() -> bool:
+        nonlocal flush_count
+        flush_count += 1
+        return True
+
+    async def _build_agent_input(frame: dict) -> str:
+        return "hello"
+
+    async def _run_turn(text, frame, on_content) -> str:
+        await on_content(f"streaming {text}")
+        return "final answer"
+
+    async def _report_error(message: str) -> None:
+        raise AssertionError(message)
+
+    responder = WeComMessageResponder(
+        enqueue=_enqueue,
+        flush=_flush,
+        build_agent_input=_build_agent_input,
+        run_turn=_run_turn,
+        report_error=_report_error,
+    )
+    frame = {
+        "headers": {"req_id": "inbound-1"},
+        "body": {"chatid": "chat-1"},
+    }
+
+    asyncio.run(responder.handle(frame))
+
+    assert flush_count == 3
+    assert [payload["body"]["stream"]["finish"] for payload in queued] == [
+        False,
+        False,
+        True,
+    ]
+    assert queued[0]["headers"]["req_id"] == "inbound-1"
+    assert queued[1]["body"]["stream"]["content"] == "streaming hello"
+    assert queued[2]["body"]["stream"]["content"] == "final answer"
 
 
 class _ModelRequest:
