@@ -715,14 +715,14 @@ def _wecom_format_progress_line(
 ) -> str:
     """Format the one-line in-place progress update shown before final output."""
     dots = "." * (tick % 4)
-    if assistant_started:
-        if completed_tools:
-            return f"处理中：已完成 {completed_tools} 个工具调用，正在整理回复{dots}"
-        return f"处理中：正在整理回复{dots}"
     if running_tool:
         if completed_tools:
             return f"处理中：正在执行工具 `{running_tool}`，已完成 {completed_tools} 个{dots}"
         return f"处理中：正在执行工具 `{running_tool}`{dots}"
+    if assistant_started:
+        if completed_tools:
+            return f"处理中：已完成 {completed_tools} 个工具调用，正在整理回复{dots}"
+        return f"处理中：正在整理回复{dots}"
     if completed_tools:
         return f"处理中：已完成 {completed_tools} 个工具调用，正在继续分析{dots}"
     return f"处理中：正在分析问题{dots}"
@@ -4698,7 +4698,13 @@ class DeepAgentsApp(App):
                     ):
                         assistant_started = True
 
-                if on_content and not answer_started:
+                # Once real assistant text has streamed, do not overwrite it with
+                # generic "thinking" ticks. Do resume progress updates if the model
+                # enters a later tool phase, otherwise WeCom appears stuck while the
+                # local UI is waiting on a tool.
+                if on_content is not None and (
+                    not answer_started or running_tool is not None
+                ):
                     now = asyncio.get_event_loop().time()
                     progress_key = (running_tool, completed_tools, assistant_started)
                     if (
