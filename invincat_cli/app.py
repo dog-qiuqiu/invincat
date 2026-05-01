@@ -4610,8 +4610,10 @@ class DeepAgentsApp(App):
     _WECOM_PROGRESS_MAX_INTERVAL = 0.25
     # Seconds to hold a file-send notification visible before resuming progress.
     _WECOM_FILE_NOTIFY_HOLD = 2.0
-    # Seconds of streaming silence before sending a heartbeat cursor tick.
-    _WECOM_STREAM_HEARTBEAT_INTERVAL = 1.5
+    # Seconds of streaming silence before the blinking cursor starts.
+    _WECOM_STREAM_BLINK_DELAY = 1.0
+    # Seconds between each cursor on/off toggle.
+    _WECOM_BLINK_INTERVAL = 0.6
 
     async def _process_wecom_message_via_cli(
         self,
@@ -4650,10 +4652,11 @@ class DeepAgentsApp(App):
             before_error_count = sum(1 for m in before if m.type == MessageType.ERROR)
 
             async def _on_text_delta(delta: str, accumulated: str) -> None:
-                nonlocal answer_started, last_delta_mono, last_streamed_text
+                nonlocal answer_started, last_delta_mono, last_streamed_text, cursor_visible
                 answer_started = True
                 last_delta_mono = asyncio.get_event_loop().time()
                 last_streamed_text = accumulated
+                cursor_visible = False
                 logger.debug(
                     "wecom text delta received chars=%d accumulated=%d",
                     len(delta),
@@ -4689,6 +4692,7 @@ class DeepAgentsApp(App):
             last_push_mono: float = 0.0
             progress_tick = 0
             last_progress_key: tuple[str | None, int, bool] | None = None
+            cursor_visible: bool = False
 
             agent_waited = 0.0
             while self._agent_running or self._shell_running:
@@ -4753,11 +4757,14 @@ class DeepAgentsApp(App):
                                 progress_tick += 1
                 elif on_content is not None and answer_started and last_streamed_text:
                     now = asyncio.get_event_loop().time()
+                    idle = now - last_delta_mono
                     if (
-                        (now - last_delta_mono) >= self._WECOM_STREAM_HEARTBEAT_INTERVAL
-                        and (now - last_push_mono) >= self._WECOM_STREAM_HEARTBEAT_INTERVAL
+                        idle >= self._WECOM_STREAM_BLINK_DELAY
+                        and (now - last_push_mono) >= self._WECOM_BLINK_INTERVAL
                     ):
-                        await on_content(last_streamed_text + " ▌")
+                        cursor_visible = not cursor_visible
+                        suffix = " ▏" if cursor_visible else ""
+                        await on_content(last_streamed_text + suffix)
                         last_push_mono = now
 
             after = self._message_store.get_all_messages()
