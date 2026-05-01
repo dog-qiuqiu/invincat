@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from invincat_cli.file_ops import (
+from invincat_cli.io.file_ops import (
     FileOpTracker,
     compute_unified_diff,
     format_display_path,
@@ -119,7 +119,7 @@ class TestFileOpTracker:
         
         assert len(tracker.active) == 0
 
-    @patch("invincat_cli.file_ops._safe_read")
+    @patch("invincat_cli.io.file_ops._safe_read")
     def test_complete_read_operation(self, mock_safe_read):
         """Test completing a read file operation."""
         tracker = FileOpTracker(assistant_id="test", backend=None)

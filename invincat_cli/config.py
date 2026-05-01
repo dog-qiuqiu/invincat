@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlparse
 
-from invincat_cli._version import __version__
+from invincat_cli.core.version import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +186,7 @@ def _ensure_bootstrap() -> None:
             # separate project. LangSmith reads LANGSMITH_PROJECT at invocation
             # time, so we override it here and preserve the user's original
             # value for shell commands.
-            from invincat_cli._env_vars import LANGSMITH_PROJECT
+            from invincat_cli.core.env_vars import LANGSMITH_PROJECT
 
             deepagents_project = os.environ.get(LANGSMITH_PROJECT)
             if deepagents_project:
@@ -651,7 +651,7 @@ def build_stream_config(
         "versions": versions,
         "ls_integration": "deepagents-cli",
     }
-    from invincat_cli._env_vars import USER_ID
+    from invincat_cli.core.env_vars import USER_ID
 
     user_id = os.environ.get(USER_ID)
     if user_id:
@@ -921,7 +921,7 @@ class Settings:
         # LANGSMITH_PROJECT. We use the saved original value, not the
         # current os.environ value. Direct callers should ensure
         # bootstrap has run if they depend on the override.
-        from invincat_cli._env_vars import (
+        from invincat_cli.core.env_vars import (
             EXTRA_SKILLS_DIRS,
             LANGSMITH_PROJECT,
             SHELL_ALLOW_LIST,
@@ -1021,7 +1021,7 @@ class Settings:
 
         previous = {field: getattr(self, field) for field in reloadable_fields}
 
-        from invincat_cli._env_vars import (
+        from invincat_cli.core.env_vars import (
             EXTRA_SKILLS_DIRS,
             LANGSMITH_PROJECT,
             SHELL_ALLOW_LIST,
@@ -2311,7 +2311,7 @@ def create_model(
     if class_path:
         model = _create_model_from_class(class_path, model_name, provider, kwargs)
     elif _is_deepseek_openai_compatible_path(provider, kwargs):
-        from invincat_cli.deepseek_chat_openai import DeepSeekChatOpenAICompat
+        from invincat_cli.models.deepseek_chat_openai import DeepSeekChatOpenAICompat
 
         model_kwargs = (
             _apply_deepseek_thinking_defaults(kwargs) if enable_thinking_default else kwargs

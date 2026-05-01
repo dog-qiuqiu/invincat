@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlparse
 
 if TYPE_CHECKING:
-    from invincat_cli.wecom_protocol import WeComInboundMedia
+    from invincat_cli.wecom.protocol import WeComInboundMedia
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +196,7 @@ async def build_wecom_agent_input_with_media_downloads(
     http_client_factory: Any = create_wecom_media_http_client,
 ) -> str:
     """Download inbound media, if present, and build the text injected into the agent."""
-    from invincat_cli.wecom_protocol import (
+    from invincat_cli.wecom.protocol import (
         build_wecom_agent_input,
         extract_wecom_inbound_media,
     )
@@ -236,8 +236,8 @@ async def upload_wecom_outbound_media(
     size = len(data)
     if size <= 0:
         raise ValueError("Cannot send an empty file")
-    from invincat_cli.wecom_file import WECOM_FILE_MAX_BYTES
-    from invincat_cli.wecom_protocol import wecom_req_id
+    from invincat_cli.wecom.file import WECOM_FILE_MAX_BYTES
+    from invincat_cli.wecom.protocol import wecom_req_id
 
     if size > WECOM_FILE_MAX_BYTES:
         raise ValueError("File is larger than the WeCom 20 MB limit")
@@ -313,7 +313,7 @@ async def send_wecom_file_from_tool_payload(
     send_request: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]],
 ) -> None:
     """Handle a send_wecom_file tool payload by uploading and replying."""
-    from invincat_cli.wecom_protocol import (
+    from invincat_cli.wecom.protocol import (
         build_wecom_file_frame,
         resolve_wecom_active_chat_id,
         wecom_frame_req_id,

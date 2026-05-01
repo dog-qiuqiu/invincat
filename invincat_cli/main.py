@@ -24,12 +24,12 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from invincat_cli.app import AppResult
-    from invincat_cli.mcp_tools import MCPServerInfo
+    from invincat_cli.mcp.tools import MCPServerInfo
 
 # Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
 
-from invincat_cli._version import __version__
+from invincat_cli.core.version import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +200,7 @@ async def _preload_session_mcp_server_info(
     if no_mcp:
         return None
 
-    from invincat_cli.mcp_tools import resolve_and_load_mcp_tools
+    from invincat_cli.mcp.tools import resolve_and_load_mcp_tools
     from invincat_cli.project_utils import ProjectContext
 
     session_manager = None
@@ -234,7 +234,7 @@ def parse_args() -> argparse.Namespace:
     Returns:
         Parsed arguments namespace.
     """
-    from invincat_cli.output import add_json_output_arg
+    from invincat_cli.io.output import add_json_output_arg
     from invincat_cli.skills import setup_skills_parser
 
     # Factory that builds an argparse Action whose __call__ invokes the
@@ -849,7 +849,7 @@ async def _run_acp_cli_async(
     mcp_session_manager = None
     mcp_server_info = None
     try:
-        from invincat_cli.mcp_tools import resolve_and_load_mcp_tools
+        from invincat_cli.mcp.tools import resolve_and_load_mcp_tools
 
         (
             mcp_tools,
@@ -1081,7 +1081,7 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
         `True` to allow project stdio servers, `False` to deny, or `None`
             when no project stdio servers exist.
     """
-    from invincat_cli.mcp_tools import (
+    from invincat_cli.mcp.tools import (
         classify_discovered_configs,
         discover_mcp_configs,
         extract_stdio_server_commands,
@@ -1113,7 +1113,7 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
         return True
 
     # Check trust store
-    from invincat_cli.mcp_trust import (
+    from invincat_cli.mcp.trust import (
         compute_config_fingerprint,
         is_project_mcp_trusted,
         trust_project_mcp,
@@ -1354,7 +1354,7 @@ def cli_main() -> None:
             try:
                 from rich.markup import escape
 
-                from invincat_cli._version import __version__ as cli_version
+                from invincat_cli.core.version import __version__ as cli_version
                 from invincat_cli.update_check import (
                     is_update_available,
                     perform_upgrade,

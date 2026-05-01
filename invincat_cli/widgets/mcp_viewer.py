@@ -16,7 +16,7 @@ from textual.widgets import Static
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
-    from invincat_cli.mcp_tools import MCPServerInfo
+    from invincat_cli.mcp.tools import MCPServerInfo
 
 from invincat_cli import theme
 from invincat_cli.config import get_glyphs, is_ascii_mode

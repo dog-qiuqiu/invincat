@@ -11,7 +11,7 @@ from urllib.parse import unquote, urlparse
 from rich.markup import escape as escape_markup
 
 from invincat_cli.config import console
-from invincat_cli.media_utils import ImageData, VideoData
+from invincat_cli.io.media_utils import ImageData, VideoData
 
 logger = logging.getLogger(__name__)
 

@@ -23,8 +23,8 @@ from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.types import Command, interrupt
 
-from invincat_cli._ask_user_types import AskUserRequest, Question
-from invincat_cli.wecom_file import WECOM_CONTEXT_FLAG
+from invincat_cli.core.ask_user_types import AskUserRequest, Question
+from invincat_cli.wecom.file import WECOM_CONTEXT_FLAG
 
 logger = logging.getLogger(__name__)
 

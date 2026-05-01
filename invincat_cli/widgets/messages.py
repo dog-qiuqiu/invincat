@@ -27,7 +27,7 @@ from invincat_cli.config import (
 )
 from invincat_cli.i18n import t
 from invincat_cli.formatting import format_duration
-from invincat_cli.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
+from invincat_cli.io.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
 from invincat_cli.tool_display import format_tool_display
 from invincat_cli.widgets._links import open_style_link
 from invincat_cli.widgets.diff import compose_diff_lines

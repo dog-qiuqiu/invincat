@@ -8,8 +8,8 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from invincat_cli.wecom_media import send_wecom_file_from_tool_payload
-from invincat_cli.wecom_session import (
+from invincat_cli.wecom.media import send_wecom_file_from_tool_payload
+from invincat_cli.wecom.session import (
     WECOM_AGENT_TIMEOUT,
     WECOM_BLINK_INTERVAL,
     WECOM_FILE_NOTIFY_HOLD,

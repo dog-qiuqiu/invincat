@@ -34,8 +34,8 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
     from langgraph.types import Command
 
-    from invincat_cli.mcp_tools import MCPServerInfo
-    from invincat_cli.output import OutputFormat
+    from invincat_cli.mcp.tools import MCPServerInfo
+    from invincat_cli.io.output import OutputFormat
 
 from langchain.agents.middleware.types import AgentMiddleware
 
@@ -339,7 +339,7 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
 
     if not agents_dir.exists() or not any(agents_dir.iterdir()):
         if output_format == "json":
-            from invincat_cli.output import write_json
+            from invincat_cli.io.output import write_json
 
             write_json("list", [])
             return
@@ -352,7 +352,7 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
         return
 
     if output_format == "json":
-        from invincat_cli.output import write_json
+        from invincat_cli.io.output import write_json
 
         agents = []
         for agent_path in sorted(agents_dir.iterdir()):
@@ -445,7 +445,7 @@ def reset_agent(
 
     if dry_run:
         if output_format == "json":
-            from invincat_cli.output import write_json
+            from invincat_cli.io.output import write_json
 
             write_json(
                 "reset",
@@ -474,7 +474,7 @@ def reset_agent(
     agent_md.write_text(source_content)
 
     if output_format == "json":
-        from invincat_cli.output import write_json
+        from invincat_cli.io.output import write_json
 
         write_json(
             "reset",
@@ -1121,7 +1121,7 @@ def create_cli_agent(
 
     # Add approve_plan middleware for plan confirmation
     from invincat_cli.approve_plan import ApprovePlanMiddleware
-    from invincat_cli.wecom_file import WeComFileMiddleware
+    from invincat_cli.wecom.file import WeComFileMiddleware
 
     if approve_plan_system_prompt is not None:
         agent_middleware.append(

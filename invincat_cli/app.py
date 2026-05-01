@@ -69,9 +69,9 @@ from textual.theme import Theme
 from textual.widgets import Static
 
 from invincat_cli import theme
-from invincat_cli._cli_context import CLIContext
-from invincat_cli._debug import configure_debug_logging
-from invincat_cli._session_stats import (
+from invincat_cli.core.cli_context import CLIContext
+from invincat_cli.core.debug import configure_debug_logging
+from invincat_cli.core.session_stats import (
     SessionStats,
     SpinnerStatus,
     format_token_count,
@@ -82,7 +82,7 @@ from invincat_cli.i18n import t
 # All other config imports — settings, create_model, detect_provider, etc. — are
 # deferred to local imports at their call sites since they are only accessed
 # after user interaction begins.
-from invincat_cli._version import CHANGELOG_URL, DOCS_URL
+from invincat_cli.core.version import CHANGELOG_URL, DOCS_URL
 from invincat_cli.config import is_ascii_mode
 from invincat_cli.plan_agent import PLANNER_ALLOWED_TOOLS
 from invincat_cli.widgets.chat_input import ChatInput
@@ -104,15 +104,15 @@ from invincat_cli.widgets.messages import (
 )
 from invincat_cli.widgets.status import StatusBar
 from invincat_cli.widgets.welcome import WelcomeBanner
-from invincat_cli.wecom_bridge import WeComBridge
-from invincat_cli.wecom_media import (
+from invincat_cli.wecom.bridge import WeComBridge
+from invincat_cli.wecom.media import (
     build_wecom_agent_input_with_media_downloads,
 )
-from invincat_cli.wecom_session import (
+from invincat_cli.wecom.session import (
     WECOM_AGENT_TIMEOUT,
     WeComMessageResponder,
 )
-from invincat_cli.wecom_turn import WeComTurnRunner
+from invincat_cli.wecom.turn import WeComTurnRunner
 
 logger = logging.getLogger(__name__)
 configure_debug_logging(logger)
@@ -138,10 +138,10 @@ if TYPE_CHECKING:
     from textual.widget import Widget
     from textual.worker import Worker
 
-    from invincat_cli._ask_user_types import AskUserWidgetResult, Question
-    from invincat_cli.mcp_tools import MCPServerInfo
+    from invincat_cli.core.ask_user_types import AskUserWidgetResult, Question
+    from invincat_cli.mcp.tools import MCPServerInfo
     from invincat_cli.remote_client import RemoteAgent
-    from invincat_cli.server import ServerProcess
+    from invincat_cli.server.app_server import ServerProcess
     from invincat_cli.skills.load import ExtendedSkillMetadata
     from invincat_cli.textual_adapter import TextualUIAdapter
     from invincat_cli.widgets.approval import ApprovalMenu
@@ -934,7 +934,7 @@ class DeepAgentsApp(App):
 
         # Lazily imported here to avoid pulling image dependencies into
         # argument parsing paths.
-        from invincat_cli.input import MediaTracker
+        from invincat_cli.io.input import MediaTracker
 
         self._image_tracker = MediaTracker()
         self._wecom_task: asyncio.Task[None] | None = None
@@ -1475,7 +1475,7 @@ class DeepAgentsApp(App):
             model_instance = result.model
             self._model_kwargs = None  # consumed
 
-        from invincat_cli.server_manager import start_server_and_get_agent
+        from invincat_cli.server.manager import start_server_and_get_agent
 
         coros: list[Any] = [start_server_and_get_agent(**self._server_kwargs)]  # type: ignore[arg-type]
 
@@ -1616,7 +1616,7 @@ class DeepAgentsApp(App):
         # we let the exception propagate (the worker catches it and logs
         # at WARNING). textual_adapter and update_check are included so
         # _post_paint_init's inline imports are dict lookups.
-        from invincat_cli.clipboard import (
+        from invincat_cli.io.clipboard import (
             copy_selection_to_clipboard,  # noqa: F401
         )
         from invincat_cli.command_registry import ALWAYS_IMMEDIATE  # noqa: F401
@@ -1712,7 +1712,7 @@ class DeepAgentsApp(App):
 
         # Phase 2: auto-update or notify (failures surfaced to user)
         try:
-            from invincat_cli._version import __version__ as cli_version
+            from invincat_cli.core.version import __version__ as cli_version
 
             if is_auto_update_enabled():
                 from invincat_cli.update_check import perform_upgrade
@@ -1765,7 +1765,7 @@ class DeepAgentsApp(App):
             return
 
         try:
-            from invincat_cli._version import __version__ as cli_version
+            from invincat_cli.core.version import __version__ as cli_version
 
             await self._mount_message(
                 AppMessage(
@@ -1777,7 +1777,7 @@ class DeepAgentsApp(App):
             return
 
         try:
-            from invincat_cli._version import __version__ as cli_version
+            from invincat_cli.core.version import __version__ as cli_version
             from invincat_cli.update_check import mark_version_seen
 
             await asyncio.to_thread(mark_version_seen, cli_version)
@@ -1802,7 +1802,7 @@ class DeepAgentsApp(App):
                 await self._mount_message(AppMessage(t("success.up_to_date")))
                 return
 
-            from invincat_cli._version import __version__ as cli_version
+            from invincat_cli.core.version import __version__ as cli_version
 
             await self._mount_message(
                 AppMessage(
@@ -3754,7 +3754,7 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             # Show CLI and SDK package versions
             try:
-                from invincat_cli._version import (
+                from invincat_cli.core.version import (
                     __version__ as cli_version,
                 )
 
@@ -6120,7 +6120,7 @@ class DeepAgentsApp(App):
 
     async def action_open_editor(self) -> None:
         """Open the current prompt text in an external editor ($VISUAL/$EDITOR)."""
-        from invincat_cli.editor import open_in_editor
+        from invincat_cli.io.editor import open_in_editor
 
         chat_input = self._chat_input
         if not chat_input or not chat_input._text_area:
@@ -6189,7 +6189,7 @@ class DeepAgentsApp(App):
 
     def on_mouse_up(self, event: MouseUp) -> None:  # noqa: ARG002  # Textual event handler signature
         """Copy selection to clipboard on mouse release."""
-        from invincat_cli.clipboard import copy_selection_to_clipboard
+        from invincat_cli.io.clipboard import copy_selection_to_clipboard
 
         copy_selection_to_clipboard(self)
 

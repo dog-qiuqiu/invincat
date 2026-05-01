@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from typing import Any
 
-from invincat_cli.wecom_protocol import build_wecom_stream_frame
+from invincat_cli.wecom.protocol import build_wecom_stream_frame
 
 logger = logging.getLogger(__name__)
 

@@ -12,7 +12,7 @@ import logging
 import os
 from pathlib import Path
 
-from invincat_cli._env_vars import DEBUG, DEBUG_FILE
+from invincat_cli.core.env_vars import DEBUG, DEBUG_FILE
 
 
 def configure_debug_logging(target: logging.Logger) -> None:

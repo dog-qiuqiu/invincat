@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from deepagents.middleware.summarization import SummarizationEvent
     from langgraph.runtime import Runtime
 
-    from invincat_cli.mcp_tools import MCPServerInfo
+    from invincat_cli.mcp.tools import MCPServerInfo
 
 
 _TOOL_NAME_DISPLAY_LIMIT = 10

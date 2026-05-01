@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from invincat_cli._version import __version__
+from invincat_cli.core.version import __version__
 
 if TYPE_CHECKING:
     from collections.abc import Callable

@@ -24,7 +24,7 @@ from deepagents.middleware.skills import (
     _list_skills as list_skills_from_backend,  # noqa: PLC2701  # Intentional access to internal skill listing
 )
 
-from invincat_cli._version import __version__ as _cli_version
+from invincat_cli.core.version import __version__ as _cli_version
 
 logger = logging.getLogger(__name__)
 
@@ -173,7 +173,7 @@ def load_skill_content(
             "Skill path %s is outside all allowed roots, refusing to read",
             skill_path,
         )
-        from invincat_cli._env_vars import EXTRA_SKILLS_DIRS
+        from invincat_cli.core.env_vars import EXTRA_SKILLS_DIRS
 
         msg = (
             f"Skill path {skill_path} resolves outside all allowed skill "

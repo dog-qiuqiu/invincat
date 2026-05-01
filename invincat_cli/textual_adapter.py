@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from pydantic import TypeAdapter
     from rich.console import Console
 
-    from invincat_cli._ask_user_types import AskUserWidgetResult, Question
+    from invincat_cli.core.ask_user_types import AskUserWidgetResult, Question
 
     # Type alias matching HITLResponse["decisions"] element type
     HITLDecision = ApproveDecision | EditDecision | RejectDecision
@@ -43,22 +43,22 @@ if TYPE_CHECKING:
         def __call__(self, *, approximate: bool = False) -> None: ...
 
 
-from invincat_cli._ask_user_types import AskUserRequest
-from invincat_cli._cli_context import CLIContext  # noqa: TC001
-from invincat_cli._debug import configure_debug_logging
-from invincat_cli._session_stats import (
+from invincat_cli.core.ask_user_types import AskUserRequest
+from invincat_cli.core.cli_context import CLIContext  # noqa: TC001
+from invincat_cli.core.debug import configure_debug_logging
+from invincat_cli.core.session_stats import (
     ModelStats as ModelStats,
     SessionStats as SessionStats,
     SpinnerStatus as SpinnerStatus,
     format_token_count as format_token_count,
 )
 from invincat_cli.config import build_stream_config
-from invincat_cli.file_ops import FileOpTracker
+from invincat_cli.io.file_ops import FileOpTracker
 from invincat_cli.formatting import format_duration
 from invincat_cli.hooks import dispatch_hook
-from invincat_cli.input import MediaTracker, parse_file_mentions
+from invincat_cli.io.input import MediaTracker, parse_file_mentions
 from invincat_cli.i18n import t
-from invincat_cli.media_utils import create_multimodal_content
+from invincat_cli.io.media_utils import create_multimodal_content
 from invincat_cli.plan_agent import PLANNER_ALLOWED_TOOLS
 from invincat_cli.tool_display import format_tool_message_content
 from invincat_cli.widgets.messages import (
@@ -921,7 +921,7 @@ async def execute_task_textual(
                                     tool_name == "send_wecom_file"
                                     and on_wecom_file_request is not None
                                 ):
-                                    from invincat_cli.wecom_file import (
+                                    from invincat_cli.wecom.file import (
                                         parse_wecom_file_request,
                                     )
 

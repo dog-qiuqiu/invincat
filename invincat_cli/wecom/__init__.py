@@ -1,0 +1,1 @@
+"""WeCom integration package."""

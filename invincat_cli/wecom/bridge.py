@@ -11,7 +11,7 @@ from typing import Any
 
 from collections.abc import Awaitable, Callable
 
-from invincat_cli.wecom_protocol import (
+from invincat_cli.wecom.protocol import (
     build_wecom_ping_frame,
     build_wecom_subscribe_frame,
     is_supported_wecom_message_frame,

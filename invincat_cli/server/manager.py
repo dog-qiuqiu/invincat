@@ -26,12 +26,12 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from invincat_cli.mcp_tools import MCPSessionManager
+    from invincat_cli.mcp.tools import MCPSessionManager
     from invincat_cli.remote_client import RemoteAgent
-    from invincat_cli.server import ServerProcess
+    from invincat_cli.server.app_server import ServerProcess
 
-from invincat_cli._env_vars import SERVER_ENV_PREFIX
-from invincat_cli._server_config import ServerConfig
+from invincat_cli.core.env_vars import SERVER_ENV_PREFIX
+from invincat_cli.server.config import ServerConfig
 from invincat_cli.project_utils import ProjectContext
 
 logger = logging.getLogger(__name__)
@@ -94,9 +94,9 @@ def _scaffold_workspace(work_dir: Path) -> None:
     Args:
         work_dir: Temporary directory that will become the server's cwd.
     """
-    from invincat_cli.server import generate_langgraph_json
+    from invincat_cli.server.app_server import generate_langgraph_json
 
-    server_graph_src = Path(__file__).parent / "server_graph.py"
+    server_graph_src = Path(__file__).parent / "graph.py"
     server_graph_dst = work_dir / "server_graph.py"
     shutil.copy2(server_graph_src, server_graph_dst)
 
@@ -235,7 +235,7 @@ async def start_server_and_get_agent(
             is handled server-side).
     """
     from invincat_cli.remote_client import RemoteAgent
-    from invincat_cli.server import ServerProcess
+    from invincat_cli.server.app_server import ServerProcess
 
     project_context = _capture_project_context()
 

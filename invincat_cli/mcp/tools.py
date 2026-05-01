@@ -657,7 +657,7 @@ async def resolve_and_load_mcp_tools(
             )
         else:
             # None — check trust store
-            from invincat_cli.mcp_trust import (
+            from invincat_cli.mcp.trust import (
                 compute_config_fingerprint,
                 is_project_mcp_trusted,
             )

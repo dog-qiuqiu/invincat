@@ -18,7 +18,7 @@ import sys
 import traceback
 from typing import Any
 
-from invincat_cli._server_config import ServerConfig
+from invincat_cli.server.config import ServerConfig
 from invincat_cli.project_utils import ProjectContext, get_server_project_context
 
 logger = logging.getLogger(__name__)
@@ -63,7 +63,7 @@ def _build_tools(
     if not config.no_mcp:
         import asyncio
 
-        from invincat_cli.mcp_tools import resolve_and_load_mcp_tools
+        from invincat_cli.mcp.tools import resolve_and_load_mcp_tools
 
         try:
             mcp_tools, _, mcp_server_info = asyncio.run(

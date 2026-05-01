@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from textual.events import Click
 
 from invincat_cli import theme
-from invincat_cli._version import __version__
+from invincat_cli.core.version import __version__
 from invincat_cli.config import (
     _get_editable_install_path,
     _is_editable_install,

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from invincat_cli.wecom_media import WECOM_INBOUND_MEDIA_TYPES
+from invincat_cli.wecom.media import WECOM_INBOUND_MEDIA_TYPES
 
 
 @dataclass(frozen=True)

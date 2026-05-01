@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
 
-    from invincat_cli._ask_user_types import (
+    from invincat_cli.core.ask_user_types import (
         AskUserWidgetResult,
         Choice,
         Question,

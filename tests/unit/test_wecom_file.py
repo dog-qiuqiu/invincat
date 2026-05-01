@@ -11,8 +11,8 @@ import pytest
 from langchain_core.messages import ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
-from invincat_cli.wecom_bridge import WeComBridge
-from invincat_cli.wecom_media import (
+from invincat_cli.wecom.bridge import WeComBridge
+from invincat_cli.wecom.media import (
     build_wecom_agent_input_with_media_downloads,
     decrypt_wecom_media_payload,
     download_wecom_inbound_media,
@@ -21,14 +21,14 @@ from invincat_cli.wecom_media import (
     validate_wecom_media_url,
     wecom_filename_from_response,
 )
-from invincat_cli.wecom_file import (
+from invincat_cli.wecom.file import (
     WECOM_CONTEXT_FLAG,
     WECOM_FILE_MAX_BYTES,
     WECOM_FILE_TOOL_NAME,
     WeComFileMiddleware,
     parse_wecom_file_request,
 )
-from invincat_cli.wecom_protocol import (
+from invincat_cli.wecom.protocol import (
     WeComInboundMedia,
     build_wecom_agent_input,
     build_wecom_file_frame,
@@ -38,12 +38,12 @@ from invincat_cli.wecom_protocol import (
     extract_wecom_voice_text,
     is_supported_wecom_message_frame,
 )
-from invincat_cli.wecom_session import (
+from invincat_cli.wecom.session import (
     WeComMessageResponder,
     format_wecom_progress_line,
     wecom_user_facing_error,
 )
-from invincat_cli.wecom_turn import WeComTurnRunner
+from invincat_cli.wecom.turn import WeComTurnRunner
 from invincat_cli.widgets.message_store import MessageData, MessageType
 
 
@@ -215,7 +215,7 @@ def test_wecom_bridge_dispatches_supported_message_once() -> None:
 
 
 def test_wecom_recv_closes_stale_connection(monkeypatch) -> None:
-    import invincat_cli.wecom_bridge as bridge_module
+    import invincat_cli.wecom.bridge as bridge_module
 
     monkeypatch.setattr(bridge_module, "WECOM_STALE_CONNECTION_SECONDS", 0)
 
@@ -254,7 +254,7 @@ def test_wecom_recv_closes_stale_connection(monkeypatch) -> None:
 
 
 def test_wecom_heartbeat_closes_on_send_failure(monkeypatch) -> None:
-    import invincat_cli.wecom_bridge as bridge_module
+    import invincat_cli.wecom.bridge as bridge_module
 
     monkeypatch.setattr(bridge_module, "WECOM_HEARTBEAT_INTERVAL", 0)
 

@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
     from deepagents.middleware.skills import SkillMetadata
 
-    from invincat_cli.output import OutputFormat
+    from invincat_cli.io.output import OutputFormat
 
 from invincat_cli import theme
 
@@ -166,7 +166,7 @@ def _list(
     if project:
         if not project_skills_dir:
             if output_format == "json":
-                from invincat_cli.output import write_json
+                from invincat_cli.io.output import write_json
 
                 write_json("skills list", [])
                 return
@@ -190,7 +190,7 @@ def _list(
 
         if not has_deepagents_skills and not has_agent_skills:
             if output_format == "json":
-                from invincat_cli.output import write_json
+                from invincat_cli.io.output import write_json
 
                 write_json("skills list", [])
                 return
@@ -215,7 +215,7 @@ def _list(
         )
 
         if output_format == "json":
-            from invincat_cli.output import write_json
+            from invincat_cli.io.output import write_json
 
             write_json("skills list", [dict(s) for s in skills])
             return
@@ -232,7 +232,7 @@ def _list(
         )
 
         if output_format == "json":
-            from invincat_cli.output import write_json
+            from invincat_cli.io.output import write_json
 
             write_json("skills list", [dict(s) for s in skills])
             return
@@ -459,7 +459,7 @@ def _create(
 
     if skill_dir.exists():
         if output_format == "json":
-            from invincat_cli.output import write_json
+            from invincat_cli.io.output import write_json
 
             write_json(
                 "skills create",
@@ -485,7 +485,7 @@ def _create(
     skill_md.write_text(template)
 
     if output_format == "json":
-        from invincat_cli.output import write_json
+        from invincat_cli.io.output import write_json
 
         write_json(
             "skills create",
@@ -582,7 +582,7 @@ def _info(
         raise SystemExit(1)
 
     if output_format == "json":
-        from invincat_cli.output import write_json
+        from invincat_cli.io.output import write_json
 
         write_json("skills info", dict(skill))
         return
@@ -784,7 +784,7 @@ def _delete(
 
     if dry_run:
         if output_format == "json":
-            from invincat_cli.output import write_json
+            from invincat_cli.io.output import write_json
 
             write_json(
                 "skills delete",
@@ -875,7 +875,7 @@ def _delete(
         raise SystemExit(1) from e
 
     if output_format == "json":
-        from invincat_cli.output import write_json
+        from invincat_cli.io.output import write_json
 
         write_json(
             "skills delete",

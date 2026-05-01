@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Literal
 
 from packaging.version import InvalidVersion, Version
 
-from invincat_cli._version import PYPI_URL, USER_AGENT, __version__
+from invincat_cli.core.version import PYPI_URL, USER_AGENT, __version__
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -331,7 +331,7 @@ def is_update_check_enabled() -> bool:
 
     Defaults to enabled.
     """
-    from invincat_cli._env_vars import NO_UPDATE_CHECK
+    from invincat_cli.core.env_vars import NO_UPDATE_CHECK
 
     if os.environ.get(NO_UPDATE_CHECK):
         return False
@@ -348,7 +348,7 @@ def is_auto_update_enabled() -> bool:
 
     Always disabled for editable installs.
     """
-    from invincat_cli._env_vars import AUTO_UPDATE
+    from invincat_cli.core.env_vars import AUTO_UPDATE
     from invincat_cli.config import _is_editable_install
 
     if _is_editable_install():

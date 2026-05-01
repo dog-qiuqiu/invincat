@@ -4,7 +4,7 @@ Provides `run_non_interactive` which runs a single user task against the
 agent graph, streams results to stdout, and exits with an appropriate code.
 
 The agent runs inside a `langgraph dev` server subprocess, connected via
-the `RemoteAgent` client (see `server_manager.server_session`).
+the `RemoteAgent` client (see `server.manager.server_session`).
 
 Shell commands are gated by an optional allow-list (`--shell-allow-list`):
 
@@ -37,7 +37,7 @@ from rich.spinner import Spinner as RichSpinner
 from rich.style import Style
 from rich.text import Text
 
-from invincat_cli._version import __version__
+from invincat_cli.core.version import __version__
 from invincat_cli.agent import DEFAULT_AGENT_NAME
 from invincat_cli.config import (
     SHELL_ALLOW_ALL,
@@ -47,7 +47,7 @@ from invincat_cli.config import (
     is_shell_command_allowed,
     settings,
 )
-from invincat_cli.file_ops import FileOpTracker
+from invincat_cli.io.file_ops import FileOpTracker
 from invincat_cli.hooks import dispatch_hook, dispatch_hook_fire_and_forget
 from invincat_cli.model_config import ModelConfigError
 from invincat_cli.sessions import generate_thread_id
@@ -837,7 +837,7 @@ async def run_non_interactive(
 
     import asyncio
 
-    from invincat_cli.server_manager import server_session
+    from invincat_cli.server.manager import server_session
 
     # Launch MCP preload concurrently with server startup
     mcp_task: asyncio.Task[Any] | None = None

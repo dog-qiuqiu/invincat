@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
 
-from invincat_cli._debug import configure_debug_logging
+from invincat_cli.core.debug import configure_debug_logging
 
 logger = logging.getLogger(__name__)
 configure_debug_logging(logger)

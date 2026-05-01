@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from invincat_cli._env_vars import SERVER_ENV_PREFIX
+from invincat_cli.core.env_vars import SERVER_ENV_PREFIX
 
 if TYPE_CHECKING:
     from collections.abc import Mapping

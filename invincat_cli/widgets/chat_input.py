@@ -25,7 +25,7 @@ from invincat_cli.config import (
     is_ascii_mode,
 )
 from invincat_cli.i18n import t
-from invincat_cli.input import IMAGE_PLACEHOLDER_PATTERN, VIDEO_PLACEHOLDER_PATTERN
+from invincat_cli.io.input import IMAGE_PLACEHOLDER_PATTERN, VIDEO_PLACEHOLDER_PATTERN
 from invincat_cli.widgets.autocomplete import (
     CompletionResult,
     FuzzyFileController,
@@ -72,7 +72,7 @@ if TYPE_CHECKING:
     from textual.events import Click
     from textual.timer import Timer
 
-    from invincat_cli.input import MediaTracker, ParsedPastedPathPayload
+    from invincat_cli.io.input import MediaTracker, ParsedPastedPathPayload
 
 
 class CompletionOption(Static):
@@ -486,7 +486,7 @@ class ChatTextArea(TextArea):
         if not payload:
             return
 
-        from invincat_cli.input import parse_pasted_path_payload
+        from invincat_cli.io.input import parse_pasted_path_payload
 
         try:
             parsed = await asyncio.to_thread(parse_pasted_path_payload, payload)
@@ -722,7 +722,7 @@ class ChatTextArea(TextArea):
         if self._paste_burst_buffer:
             await self._flush_paste_burst()
 
-        from invincat_cli.input import parse_pasted_path_payload
+        from invincat_cli.io.input import parse_pasted_path_payload
 
         try:
             parsed = await asyncio.to_thread(parse_pasted_path_payload, event.text)
@@ -1094,7 +1094,7 @@ class ChatInput(Vertical):
         Returns:
             Parsed payload details, otherwise `None`.
         """
-        from invincat_cli.input import parse_pasted_path_payload
+        from invincat_cli.io.input import parse_pasted_path_payload
 
         return parse_pasted_path_payload(text, allow_leading_path=allow_leading_path)
 
@@ -1146,7 +1146,7 @@ class ChatInput(Vertical):
             Tuple of `(candidate_text, leading_match)`, where `leading_match` is
             `(path, token_end)` when extraction succeeds, otherwise `None`.
         """
-        from invincat_cli.input import extract_leading_pasted_file_path
+        from invincat_cli.io.input import extract_leading_pasted_file_path
 
         leading_match = extract_leading_pasted_file_path(text)
         candidate = text
@@ -1173,7 +1173,7 @@ class ChatInput(Vertical):
         """Return whether text is a dropped-path payload for existing files."""
         if len(text) < 2:  # noqa: PLR2004  # Need at least '/' + one char
             return False
-        from invincat_cli.input import parse_pasted_path_payload
+        from invincat_cli.io.input import parse_pasted_path_payload
 
         return parse_pasted_path_payload(text, allow_leading_path=True) is not None
 
@@ -1464,7 +1464,7 @@ class ChatInput(Vertical):
         if not self._image_tracker:
             return raw_text, False
 
-        from invincat_cli.media_utils import (
+        from invincat_cli.io.media_utils import (
             IMAGE_EXTENSIONS,
             MAX_MEDIA_BYTES,
             VIDEO_EXTENSIONS,

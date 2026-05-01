@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-    from invincat_cli.output import OutputFormat
+    from invincat_cli.io.output import OutputFormat
 
 logger = logging.getLogger(__name__)
 
@@ -1164,7 +1164,7 @@ async def list_threads_command(
         )
 
     if output_format == "json":
-        from invincat_cli.output import write_json
+        from invincat_cli.io.output import write_json
 
         write_json("threads list", list(threads))
         return
@@ -1262,7 +1262,7 @@ async def delete_thread_command(
     if dry_run:
         exists = await thread_exists(thread_id)
         if output_format == "json":
-            from invincat_cli.output import write_json
+            from invincat_cli.io.output import write_json
 
             write_json(
                 "threads delete",
@@ -1285,7 +1285,7 @@ async def delete_thread_command(
     deleted = await delete_thread(thread_id)
 
     if output_format == "json":
-        from invincat_cli.output import write_json
+        from invincat_cli.io.output import write_json
 
         write_json("threads delete", {"thread_id": thread_id, "deleted": deleted})
         return
