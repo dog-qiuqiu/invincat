@@ -106,23 +106,14 @@ from invincat_cli.widgets.messages import (
 )
 from invincat_cli.widgets.status import StatusBar
 from invincat_cli.widgets.welcome import WelcomeBanner
-from invincat_cli.wecom_media import (
-    download_wecom_inbound_media,
-    decrypt_wecom_media_payload as _wecom_decrypt_media_payload,
-    validate_wecom_media_url as _wecom_validate_media_url,
-    wecom_filename_from_response as _wecom_filename_from_response,
-)
+from invincat_cli.wecom_bridge import WeComBridge
+from invincat_cli.wecom_media import download_wecom_inbound_media
 from invincat_cli.wecom_protocol import (
     WeComInboundMedia as _WeComInboundMedia,
+    build_wecom_agent_input,
     build_wecom_file_frame as _wecom_build_file_frame,
-    build_wecom_ping_frame as _wecom_build_ping_frame,
     build_wecom_stream_frame as _wecom_build_stream_frame,
-    build_wecom_subscribe_frame as _wecom_build_subscribe_frame,
     extract_wecom_inbound_media as _wecom_extract_inbound_media,
-    extract_wecom_mixed_text as _wecom_extract_mixed_text,
-    extract_wecom_text_message as _wecom_extract_text_message,
-    extract_wecom_voice_text as _wecom_extract_voice_text,
-    is_supported_wecom_message_frame as _wecom_is_supported_message_frame,
     resolve_wecom_active_chat_id as _wecom_resolve_active_chat_id,
     wecom_frame_req_id as _wecom_frame_req_id,
     wecom_req_id as _wecom_req_id,
@@ -981,14 +972,8 @@ class DeepAgentsApp(App):
 
         self._image_tracker = MediaTracker()
         self._wecom_task: asyncio.Task[None] | None = None
-        self._wecom_active = False
-        self._wecom_ws: Any = None  # current live WS connection; None when offline
+        self._wecom_bridge: WeComBridge | None = None
         self._wecom_lock = asyncio.Lock()
-        self._wecom_send_lock = asyncio.Lock()
-        self._wecom_outbox: deque[dict[str, Any]] = deque()
-        self._wecom_seen_req_ids: set[str] = set()
-        self._wecom_msg_tasks: set[asyncio.Task[None]] = set()
-        self._wecom_pending_requests: dict[str, asyncio.Future[dict[str, Any]]] = {}
 
     def _remote_agent(self) -> RemoteAgent | None:
         """Return the agent narrowed to `RemoteAgent`, or `None`.
@@ -4074,7 +4059,6 @@ class DeepAgentsApp(App):
                 return
             auto_approve_was_enabled = self._auto_approve
             self._on_auto_approve_enabled()
-            self._wecom_active = True
             self._wecom_task = asyncio.create_task(self._run_wecombot_bridge())
             message = "WeCom bot bridge started. Use /wecombot-stop to stop."
             if not auto_approve_was_enabled:
@@ -4083,12 +4067,14 @@ class DeepAgentsApp(App):
             return
 
         if action == "stop":
-            self._wecom_active = False
+            if self._wecom_bridge is not None:
+                self._wecom_bridge.stop()
             if self._wecom_task and not self._wecom_task.done():
                 self._wecom_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await self._wecom_task
             self._wecom_task = None
+            self._wecom_bridge = None
             await self._mount_message(AppMessage("WeCom bot bridge stopped."))
             return
 
@@ -4114,170 +4100,29 @@ class DeepAgentsApp(App):
                     "WECOM_BOT_ID / WECOM_BOT_SECRET not set; cannot start /wecombot-start."
                 )
             )
-            self._wecom_active = False
             return
 
+        async def _on_status(message: str) -> None:
+            await self._mount_message(AppMessage(message))
+
+        async def _on_error(message: str) -> None:
+            await self._mount_message(ErrorMessage(message))
+
+        async def _on_message(frame: dict[str, Any]) -> None:
+            await self._wecom_handle_inbound_message(frame=frame)
+
+        bridge = WeComBridge(
+            on_status=_on_status,
+            on_error=_on_error,
+            on_message=_on_message,
+            should_exit=lambda: self._exit,
+        )
+        self._wecom_bridge = bridge
         try:
-            import websockets
-        except Exception as exc:
-            await self._mount_message(
-                ErrorMessage(f"Missing websockets dependency: {exc}")
-            )
-            self._wecom_active = False
-            return
-
-        async def _heartbeat(ws: Any) -> None:  # noqa: ANN401
-            while True:
-                await asyncio.sleep(30)
-                try:
-                    await ws.send(json.dumps(_wecom_build_ping_frame(), ensure_ascii=False))
-                except Exception:
-                    return
-
-        reconnect_delay = 1
-        while self._wecom_active and not self._exit:
-            heartbeat_task: asyncio.Task[None] | None = None
-            try:
-                async with websockets.connect(
-                    ws_url,
-                    # Disable websockets' built-in WebSocket-level ping: the WeChat Work
-                    # server does not respond to RFC-6455 Ping frames, which causes the
-                    # library to send Close(1002) after ping_timeout, producing the
-                    # recurring "sent 1002 / code=1006" reconnect loop.  We use the
-                    # WeCom application-level ping command instead.
-                    ping_interval=None,
-                ) as ws:
-                    self._wecom_ws = ws
-                    await ws.send(
-                        json.dumps(_wecom_build_subscribe_frame(bot_id, secret), ensure_ascii=False)
-                    )
-                    await self._mount_message(
-                        AppMessage("WeCom connected and subscribed.")
-                    )
-                    # Discard stale finish=False progress frames accumulated while
-                    # offline; only retry finish=True final-answer frames.
-                    self._wecom_outbox = deque(
-                        f for f in self._wecom_outbox
-                        if not (
-                            f.get("cmd") == "aibot_respond_msg"
-                            and not (
-                                ((f.get("body") or {}).get("stream") or {}).get("finish", True)
-                            )
-                        )
-                    )
-                    await self._wecom_flush_outbox()
-                    heartbeat_task = asyncio.create_task(_heartbeat(ws))
-                    saw_subscribe_ack = False
-                    async for raw in ws:
-                        if not self._wecom_active or self._exit:
-                            break
-                        try:
-                            frame = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-                        req_id = _wecom_frame_req_id(frame)
-                        pending = self._wecom_pending_requests.pop(req_id, None)
-                        if pending is not None and not pending.done():
-                            pending.set_result(frame)
-                            continue
-                        # Control frame (subscribe ack / heartbeat ack / error)
-                        cmd = frame.get("cmd")
-                        if cmd is None:
-                            errcode = frame.get("errcode", 0)
-                            errmsg = str(frame.get("errmsg", ""))
-                            if not saw_subscribe_ack:
-                                saw_subscribe_ack = True
-                                if errcode == 0:
-                                    await self._mount_message(
-                                        AppMessage("WeCom subscription acknowledged.")
-                                    )
-                                else:
-                                    await self._mount_message(
-                                        ErrorMessage(
-                                            f"WeCom subscribe failed: errcode={errcode} errmsg={errmsg}"
-                                        )
-                                    )
-                                    # Auth errors won't recover on reconnect; stop entirely.
-                                    self._wecom_active = False
-                                    break
-                            # keep running on normal acks
-                            continue
-                        if cmd not in ("aibot_msg_callback", "aibot_event_callback"):
-                            continue
-                        if not _wecom_is_supported_message_frame(frame):
-                            continue
-                        body = frame.get("body") or {}
-                        from_obj = body.get("from") or {}
-                        from_userid = (
-                            from_obj.get("userid", "")
-                            if isinstance(from_obj, dict)
-                            else ""
-                        )
-                        logger.info(
-                            "wecom inbound message req_id=%s chatid=%s chattype=%s from_userid=%s msgtype=%s msgid=%s body_keys=%s",
-                            req_id,
-                            body.get("chatid", ""),
-                            body.get("chattype", ""),
-                            from_userid,
-                            body.get("msgtype", ""),
-                            body.get("msgid", ""),
-                            sorted(body.keys()),
-                        )
-                        if req_id and req_id in self._wecom_seen_req_ids:
-                            logger.debug("Skipping duplicate wecom req_id=%s", req_id)
-                            continue
-                        if req_id:
-                            self._wecom_seen_req_ids.add(req_id)
-                            if len(self._wecom_seen_req_ids) > 500:  # noqa: PLR2004
-                                # Keep memory bounded; drop arbitrary old entries.
-                                self._wecom_seen_req_ids = set(
-                                    list(self._wecom_seen_req_ids)[-300:]
-                                )
-
-                        task = asyncio.create_task(
-                            self._wecom_handle_inbound_message(frame=frame)
-                        )
-                        self._wecom_msg_tasks.add(task)
-                        task.add_done_callback(self._wecom_msg_tasks.discard)
-                # Clean up after graceful WS close
-                heartbeat_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await heartbeat_task
-                self._wecom_ws = None
-                reconnect_delay = 1
-            except asyncio.CancelledError:
-                if heartbeat_task is not None:
-                    heartbeat_task.cancel()
-                self._wecom_ws = None
-                break
-            except Exception as exc:
-                if heartbeat_task is not None:
-                    heartbeat_task.cancel()
-                self._wecom_ws = None
-                logger.warning("wecom bridge disconnected: %s", exc, exc_info=True)
-                reason = str(exc).strip() or type(exc).__name__
-                code = getattr(exc, "code", None)
-                close_reason = getattr(exc, "reason", None)
-                if code is not None:
-                    reason = f"{reason} (code={code}, reason={close_reason})"
-                with suppress(Exception):
-                    await self._mount_message(
-                        AppMessage(
-                            "WeCom disconnected: "
-                            f"{reason}. Reconnecting in {reconnect_delay}s..."
-                        )
-                    )
-                await asyncio.sleep(reconnect_delay)
-                reconnect_delay = min(reconnect_delay * 2, 30)
-
-        self._wecom_active = False
-        for pending in self._wecom_pending_requests.values():
-            if not pending.done():
-                pending.cancel()
-        self._wecom_pending_requests.clear()
-        for task in list(self._wecom_msg_tasks):
-            task.cancel()
-        self._wecom_msg_tasks.clear()
+            await bridge.run(bot_id=bot_id, secret=secret, ws_url=ws_url)
+        finally:
+            if self._wecom_bridge is bridge:
+                self._wecom_bridge = None
 
     async def _wecom_handle_inbound_message(
         self,
@@ -4294,14 +4139,14 @@ class DeepAgentsApp(App):
         """
         stream_id = uuid.uuid4().hex
 
-        self._wecom_outbox.append(
+        self._wecom_enqueue(
             _wecom_build_stream_frame(frame, stream_id, "⏳ 正在处理，请稍候…", finish=False)
         )
         ack_sent = await self._wecom_flush_outbox()
         logger.debug("wecom stream ACK sent=%s stream_id=%s", ack_sent, stream_id)
 
         async def _on_content(content: str) -> None:
-            self._wecom_outbox.append(
+            self._wecom_enqueue(
                 _wecom_build_stream_frame(frame, stream_id, content, finish=False)
             )
             try:
@@ -4323,10 +4168,16 @@ class DeepAgentsApp(App):
                 await self._mount_message(ErrorMessage(f"WeCom message failed: {detail}"))
             answer = f"处理消息时发生异常：{detail}"
 
-        self._wecom_outbox.append(
+        self._wecom_enqueue(
             _wecom_build_stream_frame(frame, stream_id, answer, finish=True)
         )
         await self._wecom_flush_outbox()
+
+    def _wecom_enqueue(self, payload: dict[str, Any]) -> None:
+        if self._wecom_bridge is None:
+            logger.debug("Skipping WeCom enqueue while bridge is offline")
+            return
+        self._wecom_bridge.enqueue(payload)
 
     async def _wecom_flush_outbox(self) -> bool:
         """Flush pending outbound replies using the current live WS connection.
@@ -4334,46 +4185,15 @@ class DeepAgentsApp(App):
         Returns False when no connection is available or sending failed; queued
         items are preserved and retried when the next connection is established.
         """
-        ws = self._wecom_ws
-        if ws is None:
+        if self._wecom_bridge is None:
             return False
-        async with self._wecom_send_lock:
-            while self._wecom_outbox:
-                payload = self._wecom_outbox[0]
-                try:
-                    raw = json.dumps(payload, ensure_ascii=False)
-                    body = payload.get("body") or {}
-                    stream = body.get("stream") or {}
-                    logger.debug(
-                        "wecom send cmd=%s req_id=%s chatid=%s stream_id=%s finish=%s",
-                        payload.get("cmd"),
-                        (payload.get("headers") or {}).get("req_id", ""),
-                        body.get("chatid", ""),
-                        stream.get("id", ""),
-                        stream.get("finish", ""),
-                    )
-                    await ws.send(raw)
-                except Exception as send_exc:
-                    logger.warning("wecom outbox send failed: %s", send_exc, exc_info=True)
-                    return False
-                self._wecom_outbox.popleft()
-        return True
+        return await self._wecom_bridge.flush_outbox()
 
     async def _wecom_build_agent_input_from_frame(self, frame: dict[str, Any]) -> str:
         """Convert a WeCom callback frame into the user text sent to the agent."""
-        text = _wecom_extract_text_message(frame)
-        if text is not None:
-            return text
-        voice_text = _wecom_extract_voice_text(frame)
-        if voice_text is not None:
-            return voice_text
-
-        body = frame.get("body") or {}
-        msgtype = body.get("msgtype")
         media_items = _wecom_extract_inbound_media(frame)
-        mixed_text = _wecom_extract_mixed_text(frame) if msgtype == "mixed" else ""
         if not media_items:
-            return mixed_text or f"收到企业微信 {msgtype or 'unknown'} 消息，但当前无法提取内容。"
+            return build_wecom_agent_input(frame, saved_paths=[])
 
         saved_paths: list[Path] = []
         for index, media in enumerate(media_items, start=1):
@@ -4385,16 +4205,7 @@ class DeepAgentsApp(App):
                 )
             )
 
-        lines: list[str] = []
-        if mixed_text:
-            lines.append(mixed_text)
-            lines.append("")
-        noun = "文件" if msgtype == "file" else "附件"
-        lines.append(f"用户通过企业微信发送了{noun}，已下载到本地：")
-        lines.extend(f"- {path}" for path in saved_paths)
-        lines.append("")
-        lines.append("请根据用户需求处理这些本地文件；如需查看内容，可以直接读取上述路径。")
-        return "\n".join(lines)
+        return build_wecom_agent_input(frame, saved_paths=saved_paths)
 
     async def _wecom_download_inbound_media(
         self,
@@ -4432,47 +4243,9 @@ class DeepAgentsApp(App):
         timeout: float = 30.0,
     ) -> dict[str, Any]:
         """Send a WeCom request frame and wait for its matching req_id response."""
-        ws = self._wecom_ws
-        if ws is None:
+        if self._wecom_bridge is None:
             raise RuntimeError("WeCom connection is offline")
-        req_id = _wecom_frame_req_id(payload)
-        if not req_id:
-            raise RuntimeError("WeCom request payload is missing headers.req_id")
-        loop = asyncio.get_running_loop()
-        fut: asyncio.Future[dict[str, Any]] = loop.create_future()
-        self._wecom_pending_requests[req_id] = fut
-        body = payload.get("body") or {}
-        logger.debug(
-            "wecom request send cmd=%s req_id=%s body_keys=%s",
-            payload.get("cmd"),
-            req_id,
-            sorted(body.keys()),
-        )
-        try:
-            async with self._wecom_send_lock:
-                await ws.send(json.dumps(payload, ensure_ascii=False))
-            response = await asyncio.wait_for(fut, timeout=timeout)
-        except TimeoutError as exc:
-            raise RuntimeError(
-                f"WeCom request timed out: cmd={payload.get('cmd')} req_id={req_id}"
-            ) from exc
-        finally:
-            self._wecom_pending_requests.pop(req_id, None)
-
-        errcode = response.get("errcode", 0)
-        resp_body = response.get("body") or {}
-        logger.debug(
-            "wecom request response cmd=%s req_id=%s errcode=%s errmsg=%s body_keys=%s",
-            payload.get("cmd"),
-            req_id,
-            errcode,
-            response.get("errmsg", ""),
-            sorted(resp_body.keys()) if isinstance(resp_body, dict) else type(resp_body).__name__,
-        )
-        if errcode not in (0, None):
-            errmsg = response.get("errmsg", "")
-            raise RuntimeError(f"WeCom request failed: errcode={errcode} errmsg={errmsg}")
-        return response
+        return await self._wecom_bridge.send_request(payload, timeout=timeout)
 
     async def _wecom_upload_media(self, path: Path) -> str:
         """Upload one file through the WeCom long-connection media protocol."""
@@ -6577,7 +6350,8 @@ class DeepAgentsApp(App):
         if self._agent_running and self._agent_worker:
             self._agent_worker.cancel()
         if self._wecom_task and not self._wecom_task.done():
-            self._wecom_active = False
+            if self._wecom_bridge is not None:
+                self._wecom_bridge.stop()
             self._wecom_task.cancel()
 
         # Dispatch synchronously — the event loop is about to be torn down by

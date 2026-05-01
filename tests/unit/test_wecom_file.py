@@ -11,6 +11,12 @@ import pytest
 from langchain_core.messages import ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
+from invincat_cli.wecom_bridge import WeComBridge
+from invincat_cli.wecom_media import (
+    decrypt_wecom_media_payload,
+    validate_wecom_media_url,
+    wecom_filename_from_response,
+)
 from invincat_cli.wecom_file import (
     WECOM_CONTEXT_FLAG,
     WECOM_FILE_MAX_BYTES,
@@ -18,12 +24,20 @@ from invincat_cli.wecom_file import (
     WeComFileMiddleware,
     parse_wecom_file_request,
 )
+from invincat_cli.wecom_protocol import (
+    WeComInboundMedia,
+    build_wecom_agent_input,
+    build_wecom_file_frame,
+    build_wecom_ping_frame,
+    extract_wecom_inbound_media,
+    extract_wecom_mixed_text,
+    extract_wecom_voice_text,
+    is_supported_wecom_message_frame,
+)
 
 
 def test_wecom_ping_frame_uses_official_ping_command() -> None:
-    from invincat_cli.app import _wecom_build_ping_frame
-
-    frame = _wecom_build_ping_frame()
+    frame = build_wecom_ping_frame()
 
     assert frame["cmd"] == "ping"
     assert frame["headers"]["req_id"].startswith("ping_")
@@ -31,8 +45,6 @@ def test_wecom_ping_frame_uses_official_ping_command() -> None:
 
 
 def test_wecom_extract_inbound_file_media() -> None:
-    from invincat_cli.app import _wecom_extract_inbound_media
-
     frame = {
         "cmd": "aibot_msg_callback",
         "body": {
@@ -44,7 +56,7 @@ def test_wecom_extract_inbound_file_media() -> None:
         },
     }
 
-    media = _wecom_extract_inbound_media(frame)
+    media = extract_wecom_inbound_media(frame)
 
     assert len(media) == 1
     assert media[0].msgtype == "file"
@@ -53,8 +65,6 @@ def test_wecom_extract_inbound_file_media() -> None:
 
 
 def test_wecom_extract_inbound_file_media_accepts_sdk_aliases() -> None:
-    from invincat_cli.app import _wecom_extract_inbound_media
-
     frame = {
         "cmd": "aibot_msg_callback",
         "body": {
@@ -67,7 +77,7 @@ def test_wecom_extract_inbound_file_media_accepts_sdk_aliases() -> None:
         },
     }
 
-    media = _wecom_extract_inbound_media(frame)
+    media = extract_wecom_inbound_media(frame)
 
     assert len(media) == 1
     assert media[0].url == "https://example.com/download/report.docx"
@@ -76,8 +86,6 @@ def test_wecom_extract_inbound_file_media_accepts_sdk_aliases() -> None:
 
 
 def test_wecom_extract_inbound_mixed_text_and_image() -> None:
-    from invincat_cli.app import _wecom_extract_inbound_media, _wecom_extract_mixed_text
-
     frame = {
         "cmd": "aibot_msg_callback",
         "body": {
@@ -97,8 +105,8 @@ def test_wecom_extract_inbound_mixed_text_and_image() -> None:
         },
     }
 
-    assert _wecom_extract_mixed_text(frame) == "看下这张图"
-    media = _wecom_extract_inbound_media(frame)
+    assert extract_wecom_mixed_text(frame) == "看下这张图"
+    media = extract_wecom_inbound_media(frame)
     assert len(media) == 1
     assert media[0].msgtype == "image"
 
@@ -106,8 +114,6 @@ def test_wecom_extract_inbound_mixed_text_and_image() -> None:
 def test_wecom_decrypt_media_payload_roundtrip() -> None:
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     from cryptography.hazmat.primitives.padding import PKCS7
-
-    from invincat_cli.app import _wecom_decrypt_media_payload
 
     key = bytes(range(32))
     aeskey = base64.b64encode(key).decode("ascii").rstrip("=")
@@ -117,14 +123,12 @@ def test_wecom_decrypt_media_payload_roundtrip() -> None:
     encryptor = Cipher(algorithms.AES(key), modes.CBC(key[:16])).encryptor()
     encrypted = encryptor.update(padded) + encryptor.finalize()
 
-    assert _wecom_decrypt_media_payload(encrypted, aeskey) == plaintext
+    assert decrypt_wecom_media_payload(encrypted, aeskey) == plaintext
 
 
 def test_wecom_decrypt_media_payload_accepts_urlsafe_aeskey() -> None:
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     from cryptography.hazmat.primitives.padding import PKCS7
-
-    from invincat_cli.app import _wecom_decrypt_media_payload
 
     key = b"\xfb" * 32
     aeskey = base64.urlsafe_b64encode(key).decode("ascii").rstrip("=")
@@ -134,13 +138,11 @@ def test_wecom_decrypt_media_payload_accepts_urlsafe_aeskey() -> None:
     encryptor = Cipher(algorithms.AES(key), modes.CBC(key[:16])).encryptor()
     encrypted = encryptor.update(padded) + encryptor.finalize()
 
-    assert _wecom_decrypt_media_payload(encrypted, aeskey) == plaintext
+    assert decrypt_wecom_media_payload(encrypted, aeskey) == plaintext
 
 
 def test_wecom_decrypt_media_payload_accepts_wecom_32_byte_padding() -> None:
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-
-    from invincat_cli.app import _wecom_decrypt_media_payload
 
     key = bytes(range(32))
     aeskey = base64.b64encode(key).decode("ascii").rstrip("=")
@@ -149,12 +151,10 @@ def test_wecom_decrypt_media_payload_accepts_wecom_32_byte_padding() -> None:
     encryptor = Cipher(algorithms.AES(key), modes.CBC(key[:16])).encryptor()
     encrypted = encryptor.update(padded) + encryptor.finalize()
 
-    assert _wecom_decrypt_media_payload(encrypted, aeskey) == plaintext
+    assert decrypt_wecom_media_payload(encrypted, aeskey) == plaintext
 
 
 def test_wecom_extract_voice_text() -> None:
-    from invincat_cli.app import _wecom_extract_voice_text, _wecom_is_supported_message_frame
-
     frame = {
         "cmd": "aibot_msg_callback",
         "body": {
@@ -163,14 +163,82 @@ def test_wecom_extract_voice_text() -> None:
         },
     }
 
-    assert _wecom_is_supported_message_frame(frame) is True
-    assert _wecom_extract_voice_text(frame) == "帮我总结这个语音"
+    assert is_supported_wecom_message_frame(frame) is True
+    assert extract_wecom_voice_text(frame) == "帮我总结这个语音"
+
+
+def test_wecom_bridge_dispatches_supported_message_once() -> None:
+    seen: list[dict] = []
+
+    async def _noop(_message: str) -> None:
+        return None
+
+    async def _on_message(frame: dict) -> None:
+        seen.append(frame)
+
+    bridge = WeComBridge(
+        on_status=_noop,
+        on_error=_noop,
+        on_message=_on_message,
+        should_exit=lambda: False,
+    )
+    frame = {
+        "cmd": "aibot_msg_callback",
+        "headers": {"req_id": "req-1"},
+        "body": {
+            "msgtype": "text",
+            "msgid": "msg-1",
+            "text": {"content": "hello"},
+        },
+    }
+
+    async def _run() -> None:
+        await bridge._handle_callback_frame(frame)
+        await asyncio.sleep(0)
+        await bridge._handle_callback_frame(frame)
+        await asyncio.sleep(0)
+
+    asyncio.run(_run())
+
+    assert seen == [frame]
+
+
+def test_wecom_build_agent_input_for_mixed_media(tmp_path: Path) -> None:
+    frame = {
+        "cmd": "aibot_msg_callback",
+        "body": {
+            "msgtype": "mixed",
+            "mixed": {
+                "msg_item": [
+                    {"msgtype": "text", "text": {"content": "请看附件"}},
+                    {"msgtype": "image", "image": {"url": "https://example.com/i"}},
+                ]
+            },
+        },
+    }
+    path = tmp_path / "image.jpg"
+
+    text = build_wecom_agent_input(frame, saved_paths=[path])
+
+    assert "请看附件" in text
+    assert str(path) in text
+    assert "已下载到本地" in text
+
+
+def test_wecom_build_agent_input_for_voice() -> None:
+    frame = {
+        "cmd": "aibot_msg_callback",
+        "body": {
+            "msgtype": "voice",
+            "voice": {"recognition": "语音转文字"},
+        },
+    }
+
+    assert build_wecom_agent_input(frame, saved_paths=[]) == "语音转文字"
 
 
 def test_wecom_filename_prefers_content_disposition() -> None:
-    from invincat_cli.app import _wecom_filename_from_response
-
-    filename = _wecom_filename_from_response(
+    filename = wecom_filename_from_response(
         url="https://example.com/download",
         filename_hint="",
         content_disposition='attachment; filename="report final.txt"',
@@ -183,14 +251,12 @@ def test_wecom_filename_prefers_content_disposition() -> None:
 
 
 def test_wecom_validate_media_url_rejects_non_http() -> None:
-    from invincat_cli.app import _wecom_validate_media_url
-
     with pytest.raises(ValueError, match="Invalid WeCom media URL"):
-        _wecom_validate_media_url("file:///etc/passwd")
+        validate_wecom_media_url("file:///etc/passwd")
 
 
 def test_wecom_download_inbound_media_streams_and_writes_file(tmp_path: Path) -> None:
-    from invincat_cli.app import _WeComInboundMedia, DeepAgentsApp
+    from invincat_cli.app import DeepAgentsApp
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     from cryptography.hazmat.primitives.padding import PKCS7
 
@@ -221,7 +287,7 @@ def test_wecom_download_inbound_media_streams_and_writes_file(tmp_path: Path) ->
 
     async def _run() -> Path:
         return await app._wecom_download_inbound_media(
-            _WeComInboundMedia(
+            WeComInboundMedia(
                 msgtype="file",
                 url="https://example.com/media",
                 aeskey=aeskey,
@@ -240,7 +306,7 @@ def test_wecom_download_inbound_media_streams_and_writes_file(tmp_path: Path) ->
 def test_wecom_download_inbound_media_rejects_stream_over_limit(
     tmp_path: Path,
 ) -> None:
-    from invincat_cli.app import _WeComInboundMedia, DeepAgentsApp
+    from invincat_cli.app import DeepAgentsApp
 
     class _OversizedStream(httpx.AsyncByteStream):
         async def __aiter__(self):
@@ -263,7 +329,7 @@ def test_wecom_download_inbound_media_rejects_stream_over_limit(
 
     async def _run() -> None:
         await app._wecom_download_inbound_media(
-            _WeComInboundMedia(
+            WeComInboundMedia(
                 msgtype="file",
                 url="https://example.com/media",
                 aeskey=aeskey,
@@ -278,14 +344,14 @@ def test_wecom_download_inbound_media_rejects_stream_over_limit(
 
 
 def test_wecom_download_inbound_media_requires_aeskey(tmp_path: Path) -> None:
-    from invincat_cli.app import _WeComInboundMedia, DeepAgentsApp
+    from invincat_cli.app import DeepAgentsApp
 
     app = DeepAgentsApp()
     app._cwd = str(tmp_path)
 
     async def _run() -> None:
         await app._wecom_download_inbound_media(
-            _WeComInboundMedia(
+            WeComInboundMedia(
                 msgtype="file",
                 url="https://example.com/media",
                 aeskey="",
@@ -300,11 +366,9 @@ def test_wecom_download_inbound_media_requires_aeskey(tmp_path: Path) -> None:
 
 
 def test_wecom_file_frame_uses_active_send_when_chatid_present() -> None:
-    from invincat_cli.app import _wecom_build_file_frame
-
     frame = {"headers": {"req_id": "inbound-1"}, "body": {"chatid": "chat-1"}}
 
-    payload = _wecom_build_file_frame(frame, "media-1")
+    payload = build_wecom_file_frame(frame, "media-1")
 
     assert payload["cmd"] == "aibot_send_msg"
     assert payload["headers"]["req_id"].startswith("aibot_send_msg_")
@@ -316,14 +380,12 @@ def test_wecom_file_frame_uses_active_send_when_chatid_present() -> None:
 
 
 def test_wecom_file_frame_uses_from_userid_for_single_chat() -> None:
-    from invincat_cli.app import _wecom_build_file_frame
-
     frame = {
         "headers": {"req_id": "inbound-1"},
         "body": {"chattype": "single", "from": {"userid": "user-1"}},
     }
 
-    payload = _wecom_build_file_frame(frame, "media-1")
+    payload = build_wecom_file_frame(frame, "media-1")
 
     assert payload["cmd"] == "aibot_send_msg"
     assert payload["body"] == {
@@ -334,12 +396,10 @@ def test_wecom_file_frame_uses_from_userid_for_single_chat() -> None:
 
 
 def test_wecom_file_frame_requires_active_send_target() -> None:
-    from invincat_cli.app import _wecom_build_file_frame
-
     frame = {"headers": {"req_id": "inbound-1"}, "body": {}}
 
     try:
-        _wecom_build_file_frame(frame, "media-1")
+        build_wecom_file_frame(frame, "media-1")
     except RuntimeError as exc:
         assert "missing active-send target" in str(exc)
     else:

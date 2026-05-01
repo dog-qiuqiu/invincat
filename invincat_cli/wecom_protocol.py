@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from invincat_cli.wecom_media import WECOM_INBOUND_MEDIA_TYPES
@@ -208,3 +209,34 @@ def resolve_wecom_active_chat_id(inbound_frame: dict[str, Any]) -> str:
 
 def wecom_frame_req_id(frame: dict[str, Any]) -> str:
     return str((frame.get("headers") or {}).get("req_id") or "")
+
+
+def build_wecom_agent_input(
+    frame: dict[str, Any],
+    *,
+    saved_paths: list[Path],
+) -> str:
+    """Build the user text injected into the agent for an inbound WeCom frame."""
+    text = extract_wecom_text_message(frame)
+    if text is not None:
+        return text
+    voice_text = extract_wecom_voice_text(frame)
+    if voice_text is not None:
+        return voice_text
+
+    body = frame.get("body") or {}
+    msgtype = body.get("msgtype")
+    mixed_text = extract_wecom_mixed_text(frame) if msgtype == "mixed" else ""
+    if not saved_paths:
+        return mixed_text or f"收到企业微信 {msgtype or 'unknown'} 消息，但当前无法提取内容。"
+
+    lines: list[str] = []
+    if mixed_text:
+        lines.append(mixed_text)
+        lines.append("")
+    noun = "文件" if msgtype == "file" else "附件"
+    lines.append(f"用户通过企业微信发送了{noun}，已下载到本地：")
+    lines.extend(f"- {path}" for path in saved_paths)
+    lines.append("")
+    lines.append("请根据用户需求处理这些本地文件；如需查看内容，可以直接读取上述路径。")
+    return "\n".join(lines)
