@@ -214,6 +214,82 @@ def test_wecom_bridge_dispatches_supported_message_once() -> None:
     assert seen == [frame]
 
 
+def test_wecom_recv_closes_stale_connection(monkeypatch) -> None:
+    import invincat_cli.wecom_bridge as bridge_module
+
+    monkeypatch.setattr(bridge_module, "WECOM_STALE_CONNECTION_SECONDS", 0)
+
+    class _Ws:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def recv(self) -> str:
+            await asyncio.sleep(1)
+            return "{}"
+
+        async def close(self) -> None:
+            self.closed = True
+
+    async def _noop(_message: str) -> None:
+        return None
+
+    async def _on_message(_frame: dict) -> None:
+        return None
+
+    ws = _Ws()
+    bridge = WeComBridge(
+        on_status=_noop,
+        on_error=_noop,
+        on_message=_on_message,
+        should_exit=lambda: False,
+    )
+
+    async def _run() -> None:
+        with pytest.raises(RuntimeError, match="stale"):
+            await asyncio.wait_for(bridge._recv_raw(ws), timeout=1)
+
+    asyncio.run(_run())
+
+    assert ws.closed is True
+
+
+def test_wecom_heartbeat_closes_on_send_failure(monkeypatch) -> None:
+    import invincat_cli.wecom_bridge as bridge_module
+
+    monkeypatch.setattr(bridge_module, "WECOM_HEARTBEAT_INTERVAL", 0)
+
+    class _Ws:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def send(self, raw: str) -> None:
+            raise OSError("offline")
+
+        async def close(self) -> None:
+            self.closed = True
+
+    async def _noop(_message: str) -> None:
+        return None
+
+    async def _on_message(_frame: dict) -> None:
+        return None
+
+    ws = _Ws()
+    bridge = WeComBridge(
+        on_status=_noop,
+        on_error=_noop,
+        on_message=_on_message,
+        should_exit=lambda: False,
+    )
+
+    async def _run() -> None:
+        await asyncio.wait_for(bridge._heartbeat(ws), timeout=1)
+
+    asyncio.run(_run())
+
+    assert ws.closed is True
+
+
 def test_wecom_build_agent_input_for_mixed_media(tmp_path: Path) -> None:
     frame = {
         "cmd": "aibot_msg_callback",

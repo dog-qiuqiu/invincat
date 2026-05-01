@@ -20,6 +20,9 @@ from invincat_cli.wecom_protocol import (
 
 logger = logging.getLogger(__name__)
 
+WECOM_HEARTBEAT_INTERVAL = 30.0
+WECOM_STALE_CONNECTION_SECONDS = 90.0
+
 
 class WeComBridge:
     """Manage the WeCom websocket, outbox, request matching, and reconnects."""
@@ -70,6 +73,7 @@ class WeComBridge:
                     # WeCom does not respond to RFC-6455 Ping frames reliably;
                     # use the application-level ping command instead.
                     ping_interval=None,
+                    close_timeout=5,
                 ) as ws:
                     self._ws = ws
                     await ws.send(
@@ -83,7 +87,8 @@ class WeComBridge:
                     await self.flush_outbox()
                     heartbeat_task = asyncio.create_task(self._heartbeat(ws))
                     saw_subscribe_ack = False
-                    async for raw in ws:
+                    while self.active and not self._should_exit():
+                        raw = await self._recv_raw(ws)
                         if not self.active or self._should_exit():
                             break
                         try:
@@ -217,13 +222,38 @@ class WeComBridge:
             raise RuntimeError(f"WeCom request failed: errcode={errcode} errmsg={errmsg}")
         return response
 
+    async def _recv_raw(self, ws: Any) -> str:  # noqa: ANN401
+        try:
+            return await asyncio.wait_for(
+                ws.recv(),
+                timeout=WECOM_STALE_CONNECTION_SECONDS,
+            )
+        except TimeoutError as exc:
+            logger.warning(
+                "wecom connection received no frames for %.1fs; reconnecting",
+                WECOM_STALE_CONNECTION_SECONDS,
+            )
+            await self._close_ws(ws)
+            raise RuntimeError("WeCom connection stale; reconnecting") from exc
+
     async def _heartbeat(self, ws: Any) -> None:  # noqa: ANN401
         while True:
-            await asyncio.sleep(30)
+            await asyncio.sleep(WECOM_HEARTBEAT_INTERVAL)
             try:
                 await ws.send(json.dumps(build_wecom_ping_frame(), ensure_ascii=False))
-            except Exception:
+            except Exception as exc:
+                logger.warning("wecom heartbeat send failed: %s", exc, exc_info=True)
+                await self._close_ws(ws)
                 return
+
+    async def _close_ws(self, ws: Any) -> None:  # noqa: ANN401
+        with suppress(Exception):
+            await asyncio.wait_for(ws.close(), timeout=5)
+            return
+        transport = getattr(ws, "transport", None)
+        if transport is not None:
+            with suppress(Exception):
+                transport.abort()
 
     async def _handle_control_frame(
         self,
