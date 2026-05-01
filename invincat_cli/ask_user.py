@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Annotated, Any, cast
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from langgraph.prebuilt.tool_node import ToolCallRequest
+
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -22,8 +24,16 @@ from langchain_core.tools import tool
 from langgraph.types import Command, interrupt
 
 from invincat_cli._ask_user_types import AskUserRequest, Question
+from invincat_cli.wecom_file import WECOM_CONTEXT_FLAG
 
 logger = logging.getLogger(__name__)
+
+ASK_USER_TOOL_NAME = "ask_user"
+
+
+def _is_wecom_context(runtime: Any) -> bool:  # noqa: ANN401
+    ctx = getattr(runtime, "context", None)
+    return isinstance(ctx, dict) and bool(ctx.get(WECOM_CONTEXT_FLAG))
 
 
 ASK_USER_TOOL_DESCRIPTION = """Ask the user one or more questions when you need clarification or input before proceeding.
@@ -251,19 +261,20 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             response = interrupt(ask_request)
             return _parse_answers(response, questions, tool_call_id)
 
-        _ask_user.name = "ask_user"
+        _ask_user.name = ASK_USER_TOOL_NAME
         self.tools = [_ask_user]
 
-    def wrap_model_call(
+    def _apply_model_request(
         self,
         request: ModelRequest[ContextT],
-        handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
-    ) -> ModelResponse[ResponseT] | AIMessage:
-        """Inject the ask_user system prompt.
-
-        Returns:
-            Model response from the wrapped handler.
-        """
+    ) -> ModelRequest[ContextT]:
+        """Return a modified request, stripping ask_user in WeCom turns."""
+        if _is_wecom_context(request.runtime):
+            tools = [
+                t for t in list(getattr(request, "tools", []))
+                if (t.name if hasattr(t, "name") else t.get("name", "")) != ASK_USER_TOOL_NAME
+            ]
+            return request.override(tools=tools)
         if request.system_message is not None:
             new_system_content = [
                 *request.system_message.content_blocks,
@@ -271,10 +282,30 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             ]
         else:
             new_system_content = [{"type": "text", "text": self.system_prompt}]
-        new_system_message = SystemMessage(
-            content=cast("list[str | dict[str, str]]", new_system_content)
+        return request.override(
+            system_message=SystemMessage(
+                content=cast("list[str | dict[str, str]]", new_system_content)
+            )
         )
-        return handler(request.override(system_message=new_system_message))
+
+    def _reject_if_wecom(self, request: "ToolCallRequest") -> ToolMessage | None:
+        if request.tool_call.get("name") != ASK_USER_TOOL_NAME:
+            return None
+        if not _is_wecom_context(getattr(request, "runtime", None)):
+            return None
+        return ToolMessage(
+            content="ask_user is not available during WeCom bot turns.",
+            name=ASK_USER_TOOL_NAME,
+            tool_call_id=request.tool_call["id"],
+            status="error",
+        )
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
+    ) -> ModelResponse[ResponseT] | AIMessage:
+        return handler(self._apply_model_request(request))
 
     async def awrap_model_call(
         self,
@@ -283,19 +314,22 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             [ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]
         ],
     ) -> ModelResponse[ResponseT] | AIMessage:
-        """Inject the ask_user system prompt (async).
+        return await handler(self._apply_model_request(request))
 
-        Returns:
-            Model response from the wrapped handler.
-        """
-        if request.system_message is not None:
-            new_system_content = [
-                *request.system_message.content_blocks,
-                {"type": "text", "text": f"\n\n{self.system_prompt}"},
-            ]
-        else:
-            new_system_content = [{"type": "text", "text": self.system_prompt}]
-        new_system_message = SystemMessage(
-            content=cast("list[str | dict[str, str]]", new_system_content)
-        )
-        return await handler(request.override(system_message=new_system_message))
+    def wrap_tool_call(
+        self,
+        request: "ToolCallRequest",
+        handler: "Callable[[ToolCallRequest], ToolMessage]",
+    ) -> ToolMessage:
+        if (rejection := self._reject_if_wecom(request)) is not None:
+            return rejection
+        return handler(request)
+
+    async def awrap_tool_call(
+        self,
+        request: "ToolCallRequest",
+        handler: "Callable[[ToolCallRequest], Awaitable[ToolMessage]]",
+    ) -> ToolMessage:
+        if (rejection := self._reject_if_wecom(request)) is not None:
+            return rejection
+        return await handler(request)
