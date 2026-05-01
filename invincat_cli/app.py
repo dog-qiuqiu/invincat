@@ -714,7 +714,7 @@ def _wecom_format_progress_line(
     tick: int = 0,
 ) -> str:
     """Format the one-line in-place progress update shown before final output."""
-    dots = "." * (tick % 4)
+    dots = "." * (tick % 3 + 1)
     if running_tool:
         if completed_tools:
             return f"处理中：正在执行工具 `{running_tool}`，已完成 {completed_tools} 个{dots}"
@@ -4242,7 +4242,17 @@ class DeepAgentsApp(App):
                     await self._mount_message(
                         AppMessage("WeCom connected and subscribed.")
                     )
-                    # Best-effort flush of replies buffered while offline.
+                    # Discard stale finish=False progress frames accumulated while
+                    # offline; only retry finish=True final-answer frames.
+                    self._wecom_outbox = deque(
+                        f for f in self._wecom_outbox
+                        if not (
+                            f.get("cmd") == "aibot_respond_msg"
+                            and not (
+                                ((f.get("body") or {}).get("stream") or {}).get("finish", True)
+                            )
+                        )
+                    )
                     await self._wecom_flush_outbox()
                     heartbeat_task = asyncio.create_task(_heartbeat(ws))
                     saw_subscribe_ack = False
@@ -4597,7 +4607,11 @@ class DeepAgentsApp(App):
     # Seconds to wait for the agent to finish after injection.
     _WECOM_AGENT_TIMEOUT = 30 * 60.0
     # Maximum seconds before re-sending progress when the visible phase changes.
-    _WECOM_PROGRESS_MAX_INTERVAL = 0.5
+    _WECOM_PROGRESS_MAX_INTERVAL = 0.25
+    # Seconds to hold a file-send notification visible before resuming progress.
+    _WECOM_FILE_NOTIFY_HOLD = 2.0
+    # Seconds of streaming silence before sending a heartbeat cursor tick.
+    _WECOM_STREAM_HEARTBEAT_INTERVAL = 1.5
 
     async def _process_wecom_message_via_cli(
         self,
@@ -4614,6 +4628,9 @@ class DeepAgentsApp(App):
         """
         async with self._wecom_lock:
             answer_started = False
+            last_file_notified_mono: float = 0.0
+            last_delta_mono: float = 0.0
+            last_streamed_text: str = ""
             idle_waited = 0.0
             while (
                 self._connecting
@@ -4633,8 +4650,10 @@ class DeepAgentsApp(App):
             before_error_count = sum(1 for m in before if m.type == MessageType.ERROR)
 
             async def _on_text_delta(delta: str, accumulated: str) -> None:
-                nonlocal answer_started
+                nonlocal answer_started, last_delta_mono, last_streamed_text
                 answer_started = True
+                last_delta_mono = asyncio.get_event_loop().time()
+                last_streamed_text = accumulated
                 logger.debug(
                     "wecom text delta received chars=%d accumulated=%d",
                     len(delta),
@@ -4644,15 +4663,18 @@ class DeepAgentsApp(App):
                     await on_content(accumulated)
 
             async def _on_wecom_file_request(payload: dict[str, Any]) -> None:
+                nonlocal last_file_notified_mono
                 try:
                     await self._wecom_send_file_from_tool(inbound_frame, payload)
                     if on_content is not None:
                         filename = payload.get("filename") or payload.get("path") or "文件"
                         await on_content(f"已发送文件：{filename}")
+                    last_file_notified_mono = asyncio.get_event_loop().time()
                 except Exception as exc:
                     logger.warning("wecom file send failed: %s", exc, exc_info=True)
                     if on_content is not None:
                         await on_content(f"文件发送失败：{exc}")
+                    last_file_notified_mono = asyncio.get_event_loop().time()
 
             await self._handle_user_message(
                 text,
@@ -4706,23 +4728,37 @@ class DeepAgentsApp(App):
                     not answer_started or running_tool is not None
                 ):
                     now = asyncio.get_event_loop().time()
-                    progress_key = (running_tool, completed_tools, assistant_started)
+                    if (now - last_file_notified_mono) < self._WECOM_FILE_NOTIFY_HOLD:
+                        pass  # keep file-send notification visible
+                    else:
+                        progress_key = (running_tool, completed_tools, assistant_started)
+                        if (
+                            last_pushed == ""
+                            or progress_key != last_progress_key
+                            or (now - last_push_mono) >= self._WECOM_PROGRESS_MAX_INTERVAL
+                        ):
+                            display = _wecom_format_progress_line(
+                                running_tool=running_tool,
+                                completed_tools=completed_tools,
+                                assistant_started=assistant_started,
+                                tick=progress_tick,
+                            )
+                            # Defensive re-check: answer_started may have been set
+                            # by the worker task at a yield point above.
+                            if not answer_started or running_tool is not None:
+                                await on_content(display)
+                                last_pushed = display
+                                last_progress_key = progress_key
+                                last_push_mono = now
+                                progress_tick += 1
+                elif on_content is not None and answer_started and last_streamed_text:
+                    now = asyncio.get_event_loop().time()
                     if (
-                        last_pushed == ""
-                        or progress_key != last_progress_key
-                        or (now - last_push_mono) >= self._WECOM_PROGRESS_MAX_INTERVAL
+                        (now - last_delta_mono) >= self._WECOM_STREAM_HEARTBEAT_INTERVAL
+                        and (now - last_push_mono) >= self._WECOM_STREAM_HEARTBEAT_INTERVAL
                     ):
-                        display = _wecom_format_progress_line(
-                            running_tool=running_tool,
-                            completed_tools=completed_tools,
-                            assistant_started=assistant_started,
-                            tick=progress_tick,
-                        )
-                        await on_content(display)
-                        last_pushed = display
-                        last_progress_key = progress_key
+                        await on_content(last_streamed_text + " ▌")
                         last_push_mono = now
-                        progress_tick += 1
 
             after = self._message_store.get_all_messages()
 
