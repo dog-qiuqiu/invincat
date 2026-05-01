@@ -5,10 +5,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
-import email.message
 import json
 import logging
-import mimetypes
 import os
 import shlex
 import signal
@@ -60,7 +58,6 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
-from urllib.parse import unquote, urlparse
 
 from textual.app import App, ScreenStackError
 from textual.binding import Binding, BindingType
@@ -109,6 +106,27 @@ from invincat_cli.widgets.messages import (
 )
 from invincat_cli.widgets.status import StatusBar
 from invincat_cli.widgets.welcome import WelcomeBanner
+from invincat_cli.wecom_media import (
+    download_wecom_inbound_media,
+    decrypt_wecom_media_payload as _wecom_decrypt_media_payload,
+    validate_wecom_media_url as _wecom_validate_media_url,
+    wecom_filename_from_response as _wecom_filename_from_response,
+)
+from invincat_cli.wecom_protocol import (
+    WeComInboundMedia as _WeComInboundMedia,
+    build_wecom_file_frame as _wecom_build_file_frame,
+    build_wecom_ping_frame as _wecom_build_ping_frame,
+    build_wecom_stream_frame as _wecom_build_stream_frame,
+    build_wecom_subscribe_frame as _wecom_build_subscribe_frame,
+    extract_wecom_inbound_media as _wecom_extract_inbound_media,
+    extract_wecom_mixed_text as _wecom_extract_mixed_text,
+    extract_wecom_text_message as _wecom_extract_text_message,
+    extract_wecom_voice_text as _wecom_extract_voice_text,
+    is_supported_wecom_message_frame as _wecom_is_supported_message_frame,
+    resolve_wecom_active_chat_id as _wecom_resolve_active_chat_id,
+    wecom_frame_req_id as _wecom_frame_req_id,
+    wecom_req_id as _wecom_req_id,
+)
 
 logger = logging.getLogger(__name__)
 configure_debug_logging(logger)
@@ -593,316 +611,11 @@ _COMMAND_URLS: dict[str, str] = {
 }
 
 
-def _wecom_req_id(prefix: str) -> str:
-    return f"{prefix}_{uuid.uuid4().hex}"
-
-
-def _wecom_extract_text_message(frame: dict[str, Any]) -> str | None:
-    if frame.get("cmd") != "aibot_msg_callback":
-        return None
-    body = frame.get("body") or {}
-    if body.get("msgtype") != "text":
-        return None
-    text_obj = body.get("text") or {}
-    content = text_obj.get("content")
-    if isinstance(content, str) and content.strip():
-        return content.strip()
-    return None
-
-
-_WECOM_INBOUND_MEDIA_TYPES = {"file", "image"}
-_WECOM_INBOUND_MEDIA_MAX_BYTES = 20 * 1024 * 1024
-_WECOM_AES_CBC_PADDING_MAX_BYTES = 32
-
-
-@dataclass(frozen=True)
-class _WeComInboundMedia:
-    msgtype: str
-    url: str
-    aeskey: str
-    filename_hint: str
-
-
-def _wecom_is_supported_message_frame(frame: dict[str, Any]) -> bool:
-    if frame.get("cmd") != "aibot_msg_callback":
-        return False
-    body = frame.get("body") or {}
-    msgtype = body.get("msgtype")
-    return msgtype in {"text", "file", "image", "mixed", "voice"}
-
-
-def _wecom_extract_inbound_media(frame: dict[str, Any]) -> list[_WeComInboundMedia]:
-    """Extract downloadable media descriptors from a WeCom callback frame."""
-    if frame.get("cmd") != "aibot_msg_callback":
-        return []
-    body = frame.get("body") or {}
-    msgtype = body.get("msgtype")
-
-    def _from_payload(media_type: str, payload: Any) -> _WeComInboundMedia | None:  # noqa: ANN401
-        if not isinstance(payload, dict):
-            return None
-        url = (
-            payload.get("url")
-            or payload.get("download_url")
-            or payload.get("downloadUrl")
-            or payload.get("file_url")
-            or payload.get("fileUrl")
-        )
-        aeskey = payload.get("aeskey") or payload.get("aes_key") or payload.get("aesKey")
-        if not isinstance(url, str) or not url:
-            return None
-        filename_hint = payload.get("filename") or payload.get("name") or ""
-        return _WeComInboundMedia(
-            msgtype=media_type,
-            url=url,
-            aeskey=aeskey if isinstance(aeskey, str) else "",
-            filename_hint=str(filename_hint or ""),
-        )
-
-    if msgtype in _WECOM_INBOUND_MEDIA_TYPES:
-        media = _from_payload(str(msgtype), body.get(str(msgtype)))
-        return [media] if media is not None else []
-
-    if msgtype != "mixed":
-        return []
-    mixed = body.get("mixed") or {}
-    items = mixed.get("msg_item") if isinstance(mixed, dict) else None
-    if not isinstance(items, list):
-        return []
-    media_items: list[_WeComInboundMedia] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        item_type = item.get("msgtype")
-        if item_type in _WECOM_INBOUND_MEDIA_TYPES:
-            media = _from_payload(str(item_type), item.get(str(item_type)))
-            if media is not None:
-                media_items.append(media)
-    return media_items
-
-
-def _wecom_extract_mixed_text(frame: dict[str, Any]) -> str:
-    body = frame.get("body") or {}
-    mixed = body.get("mixed") or {}
-    items = mixed.get("msg_item") if isinstance(mixed, dict) else None
-    if not isinstance(items, list):
-        return ""
-    parts: list[str] = []
-    for item in items:
-        if not isinstance(item, dict) or item.get("msgtype") != "text":
-            continue
-        text_obj = item.get("text") or {}
-        content = text_obj.get("content") if isinstance(text_obj, dict) else None
-        if isinstance(content, str) and content.strip():
-            parts.append(content.strip())
-    return "\n".join(parts)
-
-
-def _wecom_extract_voice_text(frame: dict[str, Any]) -> str | None:
-    if frame.get("cmd") != "aibot_msg_callback":
-        return None
-    body = frame.get("body") or {}
-    if body.get("msgtype") != "voice":
-        return None
-    voice = body.get("voice") or {}
-    if not isinstance(voice, dict):
-        return None
-    for key in ("recognition", "content", "text"):
-        value = voice.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return None
-
-
-def _wecom_decode_media_aes_key(aeskey: str) -> bytes:
-    padded = aeskey + ("=" * ((4 - len(aeskey) % 4) % 4))
-    try:
-        key = base64.b64decode(padded, validate=True)
-    except Exception:
-        key = base64.urlsafe_b64decode(padded)
-    if len(key) != 32:  # noqa: PLR2004
-        raise ValueError("WeCom media aeskey must decode to 32 bytes")
-    return key
-
-
-def _wecom_decrypt_media_payload(data: bytes, aeskey: str) -> bytes:
-    """Decrypt WeCom inbound media encrypted with AES-256-CBC."""
-    if not aeskey:
-        return data
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-
-    key = _wecom_decode_media_aes_key(aeskey)
-    decryptor = Cipher(algorithms.AES(key), modes.CBC(key[:16])).decryptor()
-    decrypted = decryptor.update(data) + decryptor.finalize()
-    if not decrypted:
-        raise ValueError("WeCom media decrypted to empty payload")
-    pad_len = decrypted[-1]
-    if (
-        pad_len < 1
-        or pad_len > _WECOM_AES_CBC_PADDING_MAX_BYTES
-        or pad_len > len(decrypted)
-    ):
-        raise ValueError(f"Invalid WeCom media padding value: {pad_len}")
-    padding = decrypted[-pad_len:]
-    if any(byte != pad_len for byte in padding):
-        raise ValueError("Invalid WeCom media padding bytes")
-    return decrypted[:-pad_len]
-
-
-def _wecom_safe_filename(name: str, *, default: str) -> str:
-    candidate = unquote(name).split("?")[0].split("#")[0].strip()
-    candidate = Path(candidate).name
-    safe = "".join(ch if ch.isalnum() or ch in ".-_" else "_" for ch in candidate)
-    safe = safe.strip("._")
-    return safe or default
-
-
-def _wecom_filename_from_content_disposition(value: str) -> str:
-    if not value:
-        return ""
-    message = email.message.Message()
-    message["content-disposition"] = value
-    filename = message.get_filename()
-    return filename or ""
-
-
-def _wecom_filename_from_response(
-    *,
-    url: str,
-    filename_hint: str,
-    content_disposition: str,
-    content_type: str,
-    media_type: str,
-    fallback: str,
-) -> str:
-    if filename_hint:
-        return _wecom_safe_filename(filename_hint, default=fallback)
-    from_header = _wecom_safe_filename(
-        _wecom_filename_from_content_disposition(content_disposition),
-        default="",
-    )
-    if from_header:
-        return from_header
-    parsed = urlparse(url)
-    from_path = _wecom_safe_filename(Path(parsed.path).name, default="")
-    if from_path:
-        return from_path
-    ext = mimetypes.guess_extension(content_type.split(";", 1)[0].strip()) or ""
-    if media_type == "image" and not ext:
-        ext = ".jpg"
-    return _wecom_safe_filename(f"{fallback}{ext}", default=fallback)
-
-
-def _wecom_validate_media_url(url: str) -> None:
-    parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("Invalid WeCom media URL")
-
-
 def _wecom_user_facing_error(exc: Exception) -> str:
     text = str(exc).strip()
     if text:
         return text
     return type(exc).__name__
-
-
-def _wecom_build_subscribe_frame(bot_id: str, secret: str) -> dict[str, Any]:
-    return {
-        "cmd": "aibot_subscribe",
-        "headers": {"req_id": _wecom_req_id("aibot_subscribe")},
-        "body": {"bot_id": bot_id, "secret": secret},
-    }
-
-
-def _wecom_build_ping_frame() -> dict[str, Any]:
-    return {
-        "cmd": "ping",
-        "headers": {"req_id": _wecom_req_id("ping")},
-        "body": {},
-    }
-
-
-def _wecom_safe_content(content: str, max_bytes: int = 20480) -> str:
-    """Normalize content to valid UTF-8 and enforce the byte-size limit."""
-    safe = content.encode("utf-8", errors="ignore").decode("utf-8", errors="ignore")
-    safe = "".join(ch for ch in safe if (ch >= " " or ch in "\n\t\r"))
-    encoded = safe.encode("utf-8")
-    if len(encoded) > max_bytes:
-        safe = encoded[:max_bytes].decode("utf-8", errors="ignore") + "\n\n(输出过长，已截断)"
-    return safe if safe.strip() else "（空回复）"
-
-
-def _wecom_build_stream_frame(
-    inbound_frame: dict[str, Any],
-    stream_id: str,
-    content: str,
-    *,
-    finish: bool,
-) -> dict[str, Any]:
-    """Build a stream-type reply frame using the official WeCom streaming API.
-
-    Uses msgtype=stream with a stable stream_id so all updates (thinking,
-    tool notifications, final answer) are delivered as in-place edits of a
-    single message rather than separate chat bubbles.  finish=True marks the
-    message as complete; finish=False allows subsequent updates.
-
-    req_id is always transparently forwarded from the inbound callback frame
-    — WeCom routes replies by req_id, not by any field we generate.
-    """
-    inbound_req_id = ((inbound_frame.get("headers") or {}).get("req_id")) or ""
-    inbound_body = inbound_frame.get("body") or {}
-    chatid = inbound_body.get("chatid")
-    safe = _wecom_safe_content(content)
-    body: dict[str, Any] = {
-        "msgtype": "stream",
-        "stream": {"id": stream_id, "content": safe, "finish": finish},
-    }
-    if isinstance(chatid, str) and chatid:
-        body["chatid"] = chatid
-    return {"cmd": "aibot_respond_msg", "headers": {"req_id": inbound_req_id}, "body": body}
-
-
-def _wecom_build_file_frame(
-    inbound_frame: dict[str, Any],
-    media_id: str,
-) -> dict[str, Any]:
-    """Build an active file send frame for an uploaded WeCom media id."""
-    chatid = _wecom_resolve_active_chat_id(inbound_frame)
-    return {
-        "cmd": "aibot_send_msg",
-        "headers": {"req_id": _wecom_req_id("aibot_send_msg")},
-        "body": {
-            "msgtype": "file",
-            "file": {"media_id": media_id},
-            "chatid": chatid,
-        },
-    }
-
-
-def _wecom_resolve_active_chat_id(inbound_frame: dict[str, Any]) -> str:
-    """Resolve the active-send target from a WeCom message callback.
-
-    Group callbacks provide `chatid`. Some single-chat callbacks omit `chatid`
-    and only include `from.userid`; the SDK's active send method still names
-    the target parameter `chatID`, so use the sender userid for single chats.
-    """
-    inbound_body = inbound_frame.get("body") or {}
-    chatid = inbound_body.get("chatid")
-    if isinstance(chatid, str) and chatid:
-        return chatid
-    chattype = inbound_body.get("chattype")
-    from_obj = inbound_body.get("from") or {}
-    from_userid = from_obj.get("userid") if isinstance(from_obj, dict) else None
-    if chattype == "single" and isinstance(from_userid, str) and from_userid:
-        return from_userid
-    raise RuntimeError(
-        "WeCom callback missing active-send target: expected body.chatid or "
-        "body.from.userid for single chat"
-    )
-
-
-def _wecom_frame_req_id(frame: dict[str, Any]) -> str:
-    return str((frame.get("headers") or {}).get("req_id") or "")
 
 
 def _wecom_format_progress_line(
@@ -4691,77 +4404,18 @@ class DeepAgentsApp(App):
         index: int,
     ) -> Path:
         """Download and decrypt one inbound WeCom media item into the project."""
-        _wecom_validate_media_url(media.url)
-        if media.msgtype in _WECOM_INBOUND_MEDIA_TYPES and not media.aeskey:
-            raise ValueError(f"WeCom {media.msgtype} message is missing aeskey")
-
-        encrypted_parts: list[bytes] = []
-        encrypted_size = 0
-        encrypted_max_bytes = (
-            _WECOM_INBOUND_MEDIA_MAX_BYTES + _WECOM_AES_CBC_PADDING_MAX_BYTES
-            if media.aeskey
-            else _WECOM_INBOUND_MEDIA_MAX_BYTES
+        target = await download_wecom_inbound_media(
+            media,
+            inbound_frame=frame,
+            index=index,
+            cwd=self._cwd,
+            http_client_factory=self._wecom_media_http_client,
         )
-        content_type = ""
-        content_disposition = ""
-        async with self._wecom_media_http_client() as client:
-            async with client.stream("GET", media.url) as response:
-                response.raise_for_status()
-                content_type = response.headers.get("content-type", "")
-                content_disposition = response.headers.get("content-disposition", "")
-                content_length = response.headers.get("content-length")
-                if content_length is not None:
-                    try:
-                        declared_size = int(content_length)
-                    except ValueError:
-                        declared_size = 0
-                    if declared_size > encrypted_max_bytes:
-                        raise ValueError(
-                            "Inbound WeCom media is larger than the 20 MB limit"
-                        )
-                async for chunk in response.aiter_bytes():
-                    encrypted_size += len(chunk)
-                    if encrypted_size > encrypted_max_bytes:
-                        raise ValueError(
-                            "Inbound WeCom media is larger than the 20 MB limit"
-                        )
-                    encrypted_parts.append(chunk)
-
-        encrypted = b"".join(encrypted_parts)
-
-        data = await asyncio.to_thread(
-            _wecom_decrypt_media_payload,
-            encrypted,
-            media.aeskey,
-        )
-        if len(data) > _WECOM_INBOUND_MEDIA_MAX_BYTES:
-            raise ValueError("Inbound WeCom media is larger than the 20 MB limit")
-
-        body = frame.get("body") or {}
-        msgid = _wecom_safe_filename(str(body.get("msgid") or uuid.uuid4().hex), default="message")
-        fallback = f"{media.msgtype}_{msgid}_{index}"
-        filename = _wecom_filename_from_response(
-            url=media.url,
-            filename_hint=media.filename_hint,
-            content_disposition=content_disposition,
-            content_type=content_type,
-            media_type=media.msgtype,
-            fallback=fallback,
-        )
-        target_dir = Path(self._cwd).expanduser().resolve() / ".invincat" / "wecom_downloads"
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / filename
-        if target.exists():
-            stem = target.stem or fallback
-            suffix = target.suffix
-            target = target_dir / f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"
-
-        await asyncio.to_thread(target.write_bytes, data)
         logger.info(
             "wecom inbound media downloaded msgtype=%s path=%s size=%d",
             media.msgtype,
             target,
-            len(data),
+            target.stat().st_size,
         )
         return target
 
