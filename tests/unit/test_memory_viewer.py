@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+from invincat_cli.app import DeepAgentsApp
 from invincat_cli.command_registry import IMMEDIATE_UI, SLASH_COMMANDS
+from invincat_cli.config import settings
 from invincat_cli.widgets.memory_viewer import MemoryViewerScreen, load_memory_snapshot
 
 
@@ -15,6 +19,25 @@ def test_memory_command_registered_for_immediate_ui() -> None:
     assert "/memory" in IMMEDIATE_UI
     names = {entry[0] for entry in SLASH_COMMANDS}
     assert "/memory" in names
+
+
+def test_memory_viewer_project_store_falls_back_to_cwd(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(settings, "project_root", None)
+    app = DeepAgentsApp(
+        agent=None,
+        assistant_id="agent",
+        backend=None,
+        cwd=tmp_path,
+    )
+
+    paths = app._resolve_memory_store_paths()
+
+    assert paths["project"] == str(
+        (tmp_path / ".invincat" / "memory_project.json").resolve()
+    )
 
 
 def test_load_memory_snapshot_reads_valid_store(tmp_path: Path) -> None:

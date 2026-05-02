@@ -6445,10 +6445,14 @@ class DeepAgentsApp(App):
         )
 
         store_paths: dict[str, str] = {"user": str(user_store.expanduser().resolve())}
-        project_expected = settings.get_project_agent_md_expected_path()
-        if project_expected is not None:
-            project_store = project_expected.parent / "memory_project.json"
-            store_paths["project"] = str(project_store.expanduser().resolve())
+        project_root = settings.project_root
+        if project_root is not None:
+            project_store_dir = project_root / ".invincat"
+        else:
+            project_store_dir = Path(self._cwd).expanduser().resolve() / ".invincat"
+        store_paths["project"] = str(
+            (project_store_dir / "memory_project.json").expanduser().resolve()
+        )
         return store_paths
 
     async def _show_memory_viewer(self) -> None:
