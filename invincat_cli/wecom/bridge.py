@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from collections import OrderedDict, deque
 from contextlib import suppress
 from typing import Any
@@ -13,6 +14,7 @@ from collections.abc import Awaitable, Callable
 
 from invincat_cli.wecom.protocol import (
     build_wecom_ping_frame,
+    build_wecom_stream_frame,
     build_wecom_subscribe_frame,
     is_supported_wecom_message_frame,
     wecom_frame_req_id,
@@ -22,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 WECOM_HEARTBEAT_INTERVAL = 30.0
 WECOM_STALE_CONNECTION_SECONDS = 90.0
+WECOM_MAX_MESSAGE_TASKS = 20
 
 
 class WeComBridge:
@@ -169,6 +172,9 @@ class WeComBridge:
                     await ws.send(raw)
                 except Exception as send_exc:
                     logger.warning("wecom outbox send failed: %s", send_exc, exc_info=True)
+                    if self._ws is ws:
+                        self._ws = None
+                    await self._close_ws(ws)
                     return False
                 self._outbox.popleft()
         return True
@@ -201,9 +207,17 @@ class WeComBridge:
                 await ws.send(json.dumps(payload, ensure_ascii=False))
             response = await asyncio.wait_for(fut, timeout=timeout)
         except TimeoutError as exc:
+            if self._ws is ws:
+                self._ws = None
+            await self._close_ws(ws)
             raise RuntimeError(
                 f"WeCom request timed out: cmd={payload.get('cmd')} req_id={req_id}"
             ) from exc
+        except Exception:
+            if self._ws is ws:
+                self._ws = None
+            await self._close_ws(ws)
+            raise
         finally:
             self._pending_requests.pop(req_id, None)
 
@@ -295,15 +309,36 @@ class WeComBridge:
         if req_id and req_id in self._seen_req_ids:
             logger.debug("Skipping duplicate wecom req_id=%s", req_id)
             return
-        if req_id:
-            self._seen_req_ids[req_id] = None
-            if len(self._seen_req_ids) > 500:  # noqa: PLR2004
-                while len(self._seen_req_ids) > 300:
-                    self._seen_req_ids.popitem(last=False)
 
+        if len(self._message_tasks) >= WECOM_MAX_MESSAGE_TASKS:
+            logger.warning(
+                "wecom inbound message queue full size=%d req_id=%s",
+                len(self._message_tasks),
+                req_id,
+            )
+            self.enqueue(
+                build_wecom_stream_frame(
+                    frame,
+                    uuid.uuid4().hex,
+                    "当前企业微信消息队列繁忙，请稍后再试。",
+                    finish=True,
+                )
+            )
+            if await self.flush_outbox() and req_id:
+                self._remember_req_id(req_id)
+            return
+
+        if req_id:
+            self._remember_req_id(req_id)
         task = asyncio.create_task(self._on_message(frame))
         self._message_tasks.add(task)
         task.add_done_callback(self._on_message_task_done)
+
+    def _remember_req_id(self, req_id: str) -> None:
+        self._seen_req_ids[req_id] = None
+        if len(self._seen_req_ids) > 500:  # noqa: PLR2004
+            while len(self._seen_req_ids) > 300:
+                self._seen_req_ids.popitem(last=False)
 
     def _on_message_task_done(self, task: asyncio.Task[None]) -> None:
         self._message_tasks.discard(task)

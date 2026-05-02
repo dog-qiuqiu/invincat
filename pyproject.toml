@@ -53,6 +53,7 @@ dependencies = [
     "textual-autocomplete>=3.0.0,<5.0.0",
     "prompt-toolkit>=3.0.52,<4.0.0",
     "rich>=14.0.0,<15.0.0",
+    "websockets>=13.0,<16.0",
 
     # Tools and utilities
     "tavily-python>=0.7.21,<1.0.0",

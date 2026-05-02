@@ -290,6 +290,94 @@ def test_wecom_heartbeat_closes_on_send_failure(monkeypatch) -> None:
     assert ws.closed is True
 
 
+def test_wecom_flush_outbox_closes_on_send_failure() -> None:
+    class _Ws:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def send(self, raw: str) -> None:
+            raise OSError("offline")
+
+        async def close(self) -> None:
+            self.closed = True
+
+    async def _noop(_message: str) -> None:
+        return None
+
+    async def _on_message(_frame: dict) -> None:
+        return None
+
+    ws = _Ws()
+    bridge = WeComBridge(
+        on_status=_noop,
+        on_error=_noop,
+        on_message=_on_message,
+        should_exit=lambda: False,
+    )
+    bridge._ws = ws
+    bridge.enqueue({"cmd": "aibot_respond_msg", "body": {}})
+
+    async def _run() -> bool:
+        return await bridge.flush_outbox()
+
+    assert asyncio.run(_run()) is False
+    assert ws.closed is True
+    assert bridge._ws is None
+
+
+def test_wecom_bridge_rejects_message_when_queue_full(monkeypatch) -> None:
+    import invincat_cli.wecom.bridge as bridge_module
+
+    monkeypatch.setattr(bridge_module, "WECOM_MAX_MESSAGE_TASKS", 1)
+
+    async def _noop(_message: str) -> None:
+        return None
+
+    async def _on_message(_frame: dict) -> None:
+        await asyncio.sleep(1)
+
+    sent: list[str] = []
+
+    class _Ws:
+        async def send(self, raw: str) -> None:
+            sent.append(raw)
+
+        async def close(self) -> None:
+            return None
+
+    bridge = WeComBridge(
+        on_status=_noop,
+        on_error=_noop,
+        on_message=_on_message,
+        should_exit=lambda: False,
+    )
+    bridge._ws = _Ws()
+    first = {
+        "cmd": "aibot_msg_callback",
+        "headers": {"req_id": "req-1"},
+        "body": {"msgtype": "text", "text": {"content": "one"}},
+    }
+    second = {
+        "cmd": "aibot_msg_callback",
+        "headers": {"req_id": "req-2"},
+        "body": {"msgtype": "text", "text": {"content": "two"}},
+    }
+
+    async def _run() -> None:
+        await bridge._handle_callback_frame(first)
+        await bridge._handle_callback_frame(second)
+        bridge._cancel_message_tasks()
+
+    asyncio.run(_run())
+
+    assert len(bridge._message_tasks) == 0
+    assert len(sent) == 1
+    payload = json.loads(sent[0])
+    assert payload["headers"]["req_id"] == "req-2"
+    assert payload["body"]["stream"]["finish"] is True
+    assert "队列繁忙" in payload["body"]["stream"]["content"]
+
+
 def test_wecom_build_agent_input_for_mixed_media(tmp_path: Path) -> None:
     frame = {
         "cmd": "aibot_msg_callback",
