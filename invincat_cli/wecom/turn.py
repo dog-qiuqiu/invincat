@@ -73,7 +73,7 @@ class WeComTurnRunner:
             async def _on_text_delta(delta: str, accumulated: str) -> None:
                 nonlocal answer_started, last_delta_mono, last_streamed_text, cursor_visible
                 answer_started = True
-                last_delta_mono = asyncio.get_event_loop().time()
+                last_delta_mono = asyncio.get_running_loop().time()
                 last_streamed_text = accumulated
                 cursor_visible = False
                 logger.debug(
@@ -96,12 +96,12 @@ class WeComTurnRunner:
                     if self._on_content is not None:
                         filename = payload.get("filename") or payload.get("path") or "文件"
                         await self._on_content(f"已发送文件：{filename}")
-                    last_file_notified_mono = asyncio.get_event_loop().time()
+                    last_file_notified_mono = asyncio.get_running_loop().time()
                 except Exception as exc:
                     logger.warning("wecom file send failed: %s", exc, exc_info=True)
                     if self._on_content is not None:
                         await self._on_content(f"文件发送失败：{exc}")
-                    last_file_notified_mono = asyncio.get_event_loop().time()
+                    last_file_notified_mono = asyncio.get_running_loop().time()
 
             await self._handle_user_message(
                 text,
@@ -133,7 +133,7 @@ class WeComTurnRunner:
                 if self._on_content is not None and (
                     not answer_started or running_tool is not None
                 ):
-                    now = asyncio.get_event_loop().time()
+                    now = asyncio.get_running_loop().time()
                     if (now - last_file_notified_mono) < WECOM_FILE_NOTIFY_HOLD:
                         continue
                     progress_key = (running_tool, completed_tools, assistant_started)
@@ -155,7 +155,7 @@ class WeComTurnRunner:
                             last_push_mono = now
                             progress_tick += 1
                 elif self._on_content is not None and answer_started and last_streamed_text:
-                    now = asyncio.get_event_loop().time()
+                    now = asyncio.get_running_loop().time()
                     idle = now - last_delta_mono
                     if (
                         idle >= WECOM_STREAM_BLINK_DELAY

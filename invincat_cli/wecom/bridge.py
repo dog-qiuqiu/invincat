@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections import deque
+from collections import OrderedDict, deque
 from contextlib import suppress
 from typing import Any
 
@@ -44,7 +44,7 @@ class WeComBridge:
         self._ws: Any = None
         self._send_lock = asyncio.Lock()
         self._outbox: deque[dict[str, Any]] = deque()
-        self._seen_req_ids: set[str] = set()
+        self._seen_req_ids: OrderedDict[str, None] = OrderedDict()
         self._message_tasks: set[asyncio.Task[None]] = set()
         self._pending_requests: dict[str, asyncio.Future[dict[str, Any]]] = {}
 
@@ -276,9 +276,6 @@ class WeComBridge:
         return True
 
     async def _handle_callback_frame(self, frame: dict[str, Any]) -> None:
-        cmd = frame.get("cmd")
-        if cmd not in ("aibot_msg_callback", "aibot_event_callback"):
-            return
         if not is_supported_wecom_message_frame(frame):
             return
         req_id = wecom_frame_req_id(frame)
@@ -299,9 +296,10 @@ class WeComBridge:
             logger.debug("Skipping duplicate wecom req_id=%s", req_id)
             return
         if req_id:
-            self._seen_req_ids.add(req_id)
+            self._seen_req_ids[req_id] = None
             if len(self._seen_req_ids) > 500:  # noqa: PLR2004
-                self._seen_req_ids = set(list(self._seen_req_ids)[-300:])
+                while len(self._seen_req_ids) > 300:
+                    self._seen_req_ids.popitem(last=False)
 
         task = asyncio.create_task(self._on_message(frame))
         self._message_tasks.add(task)
