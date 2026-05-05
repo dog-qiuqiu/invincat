@@ -955,69 +955,44 @@ def test_short_memory_signal_is_not_trivial() -> None:
     assert _is_trivial_turn(msgs) is False
 
 
-def test_format_messages_includes_project_tool_evidence() -> None:
-    tool = _Msg(
-        "tool",
-        "pyproject.toml: [tool.ruff] line-length = 100; lint must run before commit.",
-    )
-    tool.name = "read_file"
-    rendered = MemoryAgentMiddleware._format_messages(
+def test_messages_to_plain_text_extracts_all_roles() -> None:
+    from invincat_cli.memory_agent import _messages_to_plain_text
+
+    tool = _Msg("tool", "lint must run before commit.")
+    tool.name = "bash"
+    text = _messages_to_plain_text(
         [
-            _Msg("human", "Please remember project conventions."),
-            _Msg("ai", "I checked the config.", tool_calls=[]),
+            _Msg("human", "Remember project conventions."),
+            _Msg("ai", "Got it."),
             tool,
         ]
     )
 
-    assert "tool_evidence:" in rendered
-    assert "tool[read_file]:" in rendered
-    assert "line-length = 100" in rendered
+    assert "Remember project conventions." in text
+    assert "Got it." in text
+    assert "lint must run before commit." in text
 
 
-def test_format_messages_skips_non_informative_tool_output() -> None:
-    tool = _Msg("tool", "Command exited with code 0.")
-    tool.name = "execute"
-    rendered = MemoryAgentMiddleware._format_messages(
+def test_messages_to_plain_text_skips_tool_use_blocks() -> None:
+    from invincat_cli.memory_agent import _messages_to_plain_text
+
+    msg = _Msg(
+        "ai",
         [
-            _Msg("human", "ok"),
-            _Msg("ai", "Done.", tool_calls=[]),
-            tool,
-        ]
+            {"type": "text", "text": "Running the command."},
+            {"type": "tool_use", "id": "call_1", "name": "bash", "input": {}},
+        ],
     )
+    text = _messages_to_plain_text([msg])
 
-    assert "tool_evidence:" not in rendered
-
-
-def test_format_messages_respects_tool_whitelist() -> None:
-    tool = _Msg("tool", "Lint must run before commit and tests must pass.")
-    tool.name = "web_search"
-    rendered = MemoryAgentMiddleware._format_messages(
-        [
-            _Msg("human", "remember project rules"),
-            _Msg("ai", "ok", tool_calls=[]),
-            tool,
-        ]
-    )
-
-    assert "tool_evidence:" not in rendered
+    assert "Running the command." in text
+    assert "tool_use" not in text
 
 
-def test_format_messages_redacts_sensitive_absolute_paths() -> None:
-    tool = _Msg(
-        "tool",
-        "Found rule in /Users/alice/work/repo/pyproject.toml: lint must run before commit.",
-    )
-    tool.name = "read_file"
-    rendered = MemoryAgentMiddleware._format_messages(
-        [
-            _Msg("human", "remember project conventions"),
-            _Msg("ai", "ok", tool_calls=[]),
-            tool,
-        ]
-    )
+def test_messages_to_plain_text_empty_input() -> None:
+    from invincat_cli.memory_agent import _messages_to_plain_text
 
-    assert "<ABS_PATH>" in rendered
-    assert "/Users/alice/work/repo/pyproject.toml" not in rendered
+    assert _messages_to_plain_text([]) == ""
 
 
 def test_invalid_schema_store_sets_read_error(tmp_path: Path) -> None:
@@ -1097,16 +1072,16 @@ def test_explicit_memory_request_detection() -> None:
 
 def test_system_prompt_contains_conservative_policy_contract() -> None:
     lowered = _SYSTEM_PROMPT.lower()
-    assert "conservative memory curator" in lowered
-    assert "if ambiguous, prefer project or noop" in lowered
+    assert "memory curator" in lowered
+    assert "prefer project" in lowered
     assert "do not store" in lowered
-    assert "first non-whitespace character must be \"{\"" in lowered
+    assert "at most 8 operations per run" in lowered
 
 
 def test_system_prompt_forbids_metadata_only_fact_corrections() -> None:
     lowered = _SYSTEM_PROMPT.lower()
-    assert "rescore/retier only change priority metadata" in lowered
-    assert "do not use them to record a changed fact" in lowered
+    assert "both change only priority metadata" in lowered
+    assert "do not use either to record a changed fact" in lowered
     assert "use update with" in lowered
     assert "corrected content" in lowered
     assert "delete the old item and create the replacement" in lowered

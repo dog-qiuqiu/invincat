@@ -37,17 +37,16 @@ from langchain.agents.middleware.types import (
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.config import get_config
 
+from invincat_cli.core.debug import configure_debug_logging
+
 logger = logging.getLogger(__name__)
+configure_debug_logging(logger)
 
 MAX_OPERATIONS_PER_RUN = 8
 MAX_ITEM_CONTENT_CHARS = 500
 MAX_SECTION_NAME_CHARS = 80
 MAX_SCORE_REASON_CHARS = 160
 _MAX_OUTPUT_TOKENS = 2000
-_MAX_CONVERSATION_CHARS = 1500
-_MAX_TOOL_EVIDENCE_ITEMS = 3
-_MAX_TOOL_EVIDENCE_CHARS = 600
-_MAX_TOTAL_TOOL_EVIDENCE_CHARS = 1200
 
 DEFAULT_TIER = "warm"
 DEFAULT_SCORE = 50
@@ -92,38 +91,6 @@ _TRIVIAL_RE = re.compile(
     re.IGNORECASE,
 )
 
-_PROJECT_MEMORY_EVIDENCE_RE = re.compile(
-    r"\b("
-    r"must|should|always|never|prefer|convention|rule|guideline|policy|"
-    r"architecture|workflow|tooling|framework|stack|directory|module|"
-    r"api|handler|schema|migration|lint|format|test|ci|build|deploy|"
-    r"pyproject\.toml|package\.json|cargo\.toml|go\.mod|makefile|dockerfile|"
-    r"ruff|eslint|prettier|pytest|vitest|uv|poetry|pnpm|npm|yarn"
-    r")\b|"
-    r"(必须|应当|应该|总是|不要|约定|规范|规则|策略|架构|工作流|工具链|"
-    r"框架|技术栈|目录|模块|接口|处理器|迁移|格式化|测试|构建|部署|"
-    r"代码风格|提交规范|分支策略|命名规范)",
-    re.IGNORECASE,
-)
-_PROJECT_MEMORY_TOOL_WHITELIST: frozenset[str] = frozenset(
-    {
-        "read_file",
-        "edit_file",
-        "write_file",
-        "execute",
-        "bash",
-        "shell",
-    }
-)
-_SENSITIVE_ABS_PATH_RE = re.compile(
-    r"(?<![\w.-])("
-    r"/Users/[^\s'\"`]+|"
-    r"/home/[^\s'\"`]+|"
-    r"/var/folders/[^\s'\"`]+|"
-    r"/private/var/[^\s'\"`]+|"
-    r"[A-Za-z]:\\\\Users\\\\[^\s'\"`]+"
-    r")"
-)
 
 _ITEM_ID_PATTERNS: dict[str, re.Pattern[str]] = {
     "user": re.compile(r"^mem_u_(\d{6})$"),
@@ -153,28 +120,46 @@ _INVALID_FACT_REASON_RE = re.compile(
 )
 
 _SYSTEM_PROMPT = """\
-You are a conservative memory curator for an AI assistant. Read the conversation
-and memory snapshot, then emit minimal operations that keep the store durable and
-reusable. Prefer precision over recall. When uncertain, emit noop.
+You are a memory curator for an AI assistant. Read the conversation and memory
+snapshot, then emit operations that keep the store accurate, durable, and reusable.
+For user scope: prefer precision over recall — noop when signal is ambiguous.
+For project scope: be proactive — capture stable facts even without explicit request.
 
 ====================================================================
 INPUT
 ====================================================================
-conversation — message history between user and assistant.
-memory_snapshot — JSON: {"user": {"items": [...], "rescore_candidates": [...]},
-                         "project": {"items": [...], "rescore_candidates": [...]}}
-Each item has: id, section, content, status, tier, score, score_reason, last_scored_at.
-rescore_candidates: IDs eligible for rescore/retier this turn only.
+The conversation history follows this system prompt as native multi-turn messages
+(human / ai / tool roles). Read all turns to understand the full context.
+Always use the MOST RECENT state of facts — earlier turns may be superseded by
+later ones; do not extract a fact that the conversation subsequently contradicts.
+
+For ai messages that contain tool_calls, inspect the args field as a signal source:
+  - write_file / edit_file args.content — the actual code written; reveals tech stack,
+    architecture, and design decisions even when the ToolMessage only says "file updated".
+  - execute / bash args — the command run; may reveal toolchain, build system, test runner.
+
+Appended to this system prompt:
+  current_date: YYYY-MM-DD — use this to evaluate last_scored_at age.
+  memory_snapshot — JSON:
+    {"user": {"items": [...], "rescore_candidates": [...]},
+     "project": {"items": [...], "rescore_candidates": [...]}}
+  Each item has: id, section, content, status, tier, score, score_reason, last_scored_at.
+  rescore_candidates: IDs eligible for rescore/retier this turn only.
+    Each candidate has a group field:
+      group=1: conversation-relevant items (hot-first, then by token overlap).
+      group=2: oldest last_scored_at items (warm/cold only).
+
+The final human message contains the turn_policy for this extraction run.
 
 ====================================================================
 OUTPUT
 ====================================================================
-Return STRICT JSON only. No prose, no markdown fences.
-First non-whitespace character must be "{".
+Return JSON only. No prose before or after. A ```json fence is acceptable if needed,
+but emit nothing outside the fence.
 
 {"operations": [<op>, ...]}
 
-Allowed op shapes (optional fields may be omitted):
+At most 8 operations per run. Allowed op shapes (optional fields may be omitted):
 
   create:  {"op": "create", "scope": "user"|"project",
              "section": "...", "content": "...",
@@ -205,12 +190,15 @@ Allowed op shapes (optional fields may be omitted):
 
   noop:    {"op": "noop"}
 
+All ops that reference an id: the id must exist in the memory_snapshot.
+Operations referencing unknown ids are silently dropped.
+
 ====================================================================
 SCOPE
 ====================================================================
 user    — cross-project traits: communication style, coding habits, preferred tools.
 project — repo-specific: conventions, architecture, stack, constraints, domain rules.
-If ambiguous, prefer project or noop (never guess user scope).
+If ambiguous between user and project, prefer project. Never guess user scope.
 
 ====================================================================
 WHAT TO STORE
@@ -218,73 +206,101 @@ WHAT TO STORE
 Store facts that are durable (true next week), specific (actionable), and reusable
 (would meaningfully shape future responses).
 
-Do NOT store: ephemeral states/errors/paths/tokens/secrets, short-lived todos/metrics,
-  obvious facts derivable from code or git history, reasoning steps, session narration.
+Do NOT store: ephemeral runtime values/transient errors/tokens/secrets,
+  absolute system paths (e.g. /tmp/…, /home/…), short-lived todos/metrics,
+  reasoning steps, session narration.
 
-Project exception: stable reusable conventions (lint rules, architecture, enforced repo
-  workflows) are worth storing even without an explicit request — hard to re-derive
-  from raw tool output each session.
+User scope — store when clearly stated or consistently observed:
+  - Communication preferences: response length, format (markdown vs plain text), tone.
+  - Coding habits: preferred tools, testing frameworks, workflow patterns.
+  - A single unambiguous explicit statement is enough to create; noop if ambiguous.
+
+Project scope — proactively store the following even without explicit request,
+  as they are expensive to re-derive each session:
+  - Conventions: lint rules, commit rules, code style, enforced workflows.
+  - Tech stack and frameworks identified from code, config files, or implementation.
+  - Architecture: class design, module layout, key data structures, design patterns.
+  - Known bugs or issues found during code review — stable unfixed problems worth
+    flagging in future sessions. These are NOT transient errors; they are project facts.
+  - Implementation decisions made during project/feature creation: the framework chosen,
+    the structural approach taken, key design choices. The assistant's completion summary
+    after a creation task often contains these facts — they are NOT session narration.
 
 ====================================================================
 OPERATION RULES
 ====================================================================
-- Sparse operations. At most one op per item id per run.
-- Prefer update over create when an existing item already matches. Never near-duplicate.
+- Sparse operations. At most 8 ops per run; at most one op per item id.
+- Prefer update over create when an existing item already matches. Never near-duplicate:
+  same or equivalent fact, even if worded differently or placed in a different section.
 - update  — fact still true; refine phrasing/score/tier or incorporate new evidence.
             Include corrected content when the fact changes. Applying update to an
             archived item reactivates it — only do this deliberately.
 - delete  — fact is actively wrong: contradicted by evidence, superseded by explicit
             statement, or would mislead future turns. Use only with clear evidence of
             falsity. Prefer archive when uncertain.
-- archive — confidence retirement: rescore_candidate with low score and old
-            last_scored_at, with no new supporting evidence this turn. No explicit
-            contradiction needed — persistent low confidence is sufficient. Archive is
-            reversible; always prefer over delete when uncertain.
-- rescore/retier require clear new evidence this turn; only valid for rescore_candidate IDs.
-  rescore/retier only change priority metadata — not content.
-  Do not use them to record a changed fact, contradiction, migration, or correction.
+- archive — use in either case; not restricted to rescore_candidates:
+            (a) Low confidence: any active item with score < 40 and last_scored_at
+                older than ~14 days (relative to current_date), no new supporting
+                evidence this turn.
+            (b) No longer relevant: fact was valid but the context it applied to is gone
+                (deprecated module, migrated tooling, resolved constraint). No contradiction
+                needed — irrelevance alone is sufficient.
+            Archive is always reversible; prefer it over delete when uncertain.
+- rescore/retier require supporting evidence from this turn; only valid for rescore_candidate IDs.
+  Both change only priority metadata — not content.
+  Behavioral difference:
+    rescore: score is the input → tier auto-derives from the new score.
+             Use when evidence this turn changes how durable/useful the fact is.
+    retier:  tier is the input → score is clamped into the new tier's band.
+             Use to adjust injection priority without asserting new evidence strength
+             (e.g. demote a hot item that hasn't appeared in recent turns).
+  Do not use either to record a changed fact, contradiction, migration, or correction.
   If content would remain false after the op, use update with corrected content,
   or delete the old item and create the replacement.
-- rescore_candidates has two groups:
-  1. Conversation-relevant items — assess whether this turn supports, contradicts, or
-     refines them.
-  2. Oldest last_scored_at items — rescore up if confirmed; archive if score < 40 and
-     no new evidence. Noop if unrelated and the item seems fine.
+- rescore_candidates (group field indicates origin):
+  group=1 (conversation-relevant): assess whether this turn supports, contradicts, or
+    refines the item. Rescore up if confirmed; delete/archive if contradicted.
+  group=2 (oldest last_scored_at, warm/cold only): rescore up if confirmed this turn;
+    archive if score < 40 and last_scored_at older than ~14 days with no new evidence;
+    noop if unrelated and item still appears valid.
 
 ====================================================================
 FIELDS
 ====================================================================
-Language: write section, content, and score_reason in the same language as the
-conversation (Chinese conversation → Chinese fields). Never translate.
+Language: follow the language of the last human message. Never split a single field
+  across two languages. Never translate existing item fields when updating them.
 
 section (≤80 chars) — short reusable Title Case category.
-  Good: "Code Style", "Testing Conventions", "代码风格", "部署流程"
-  Bad:  "general", "user info", "notes"
+  Good:            "Code Style", "Testing Conventions", "代码风格", "部署流程"
+  Bad (too vague): "general", "user info", "notes"
+  Bad (too specific): "Fix for Scheduler Race Condition", "Response to PR #42"
 
 content (≤500 chars) — one self-contained durable fact. Declarative, no meta-language
-  ("the user said" / "用户说").
+  ("the user said" / "用户说"). Code snippets are fine when they add precision.
   Good: "Prefers concise bullet-style responses over prose."
   Good: "所有 API 处理器放在 src/api/ 下，必须返回带类型的 Response 对象。"
   Bad:  "User mentioned they like short answers."
 
 confidence — high: explicitly stated or strongly repeated; medium: inferred from
-             consistent behavior; low: single weak signal (usually prefer noop).
+             consistent behavior; low: single weak signal worth tracking (use with
+             score <30, cold tier; prefer noop if the fact adds no value even at cold).
 
 score (0-100 integer) — durability and cross-turn usefulness.
   Bands: hot ≥70, warm 30–69, cold <30.
   Anchors: 90=explicit standing rule, 75=strong repeated preference,
-           55=observed habit, 35=niche convention, 20=weak/fading signal.
+           55=observed habit, 35=rarely-applicable convention (warm, low end),
+           20=weak/fading signal.
   Keep score consistent with tier.
 
 score_reason (≤160 chars) — one sentence citing specific evidence. Same language as
-  conversation.
+  the last human message.
   Good: "User explicitly asked to always prefer bullet lists over prose."
   Bad:  "User preference."
 
 ====================================================================
 EXAMPLES
 ====================================================================
-A — routine task (no durable signal):
+A — routine one-off task, no preference or convention revealed:
   {"operations": [{"op": "noop"}]}
 
 B — explicit standing rule:
@@ -313,25 +329,64 @@ E — Chinese conversation (language must match):
    "content": "提交代码前必须先执行 `make lint`，否则不允许合并。",
    "confidence": "high", "tier": "hot", "score": 88,
    "score_reason": "用户明确要求将 lint 检查作为合并前的强制步骤。"}]}
+
+F — code review: assistant reads source files and identifies architecture + unfixed bugs:
+  {"operations": [
+    {"op": "create", "scope": "project", "section": "Architecture",
+     "content": "Service layer is stateless; all DB access goes through a repository interface. Controllers must not call the ORM directly.",
+     "confidence": "high", "tier": "warm", "score": 65,
+     "score_reason": "Observed consistently across multiple source files during code review."},
+    {"op": "create", "scope": "project", "section": "Known Issues",
+     "content": "Race condition in job scheduler: two workers can pick up the same task if claimed within the same second due to a non-atomic check-then-update.",
+     "confidence": "high", "tier": "warm", "score": 68,
+     "score_reason": "Bug identified during code review; not yet fixed — relevant context for future work on the scheduler."}]}
+
+G — user scope: user states a personal preference for the first time (no existing item to update):
+  {"operations": [{"op": "create", "scope": "user", "section": "Response Style",
+   "content": "Prefers responses in plain text without markdown formatting.",
+   "confidence": "high", "tier": "warm", "score": 65,
+   "score_reason": "User explicitly asked to stop using markdown; clear stated preference."}]}
+
+H — rescore_candidates: mem_u_000005 "Uses pytest" (group=1, score 45) confirmed this turn;
+    mem_u_000009 "Prefers verbose logs" (group=2, score 32) has no new evidence:
+  {"operations": [
+    {"op": "rescore", "scope": "user", "id": "mem_u_000005",
+     "score": 72,
+     "score_reason": "User ran pytest again this turn, confirming consistent usage pattern."},
+    {"op": "archive", "scope": "user", "id": "mem_u_000009",
+     "reason": "Score 32 with no supporting evidence across recent turns; archiving on low confidence."}]}
+
+I — weak signal: user used camelCase once in a snippet — single occurrence, no explicit
+    statement, too weak to infer a naming convention; noop until repeated or confirmed:
+  {"operations": [{"op": "noop"}]}
+
+J — project creation: user asks to build something; extract tech stack and design choices
+    from write_file args or the assistant's completion summary (not session narration):
+  {"operations": [
+    {"op": "create", "scope": "project", "section": "Tech Stack",
+     "content": "Uses Pygame for rendering; single-file architecture with one Game class owning the loop, state, and drawing.",
+     "confidence": "high", "tier": "warm", "score": 65,
+     "score_reason": "Directly implemented this session; stable structural facts about the project."}]}
+
+K — retier: mem_u_000006 "Avoids verbose explanations" (score 72, tier hot) has not appeared
+    as a relevant factor in recent turns; demote injection priority without changing the fact:
+  {"operations": [{"op": "retier", "scope": "user", "id": "mem_u_000006",
+   "tier": "warm",
+   "score_reason": "Preference confirmed but not prominent in recent sessions; reducing injection priority."}]}
 """
 
-_USER_TEMPLATE = """\
-conversation:
-{conversation}
+_FINAL_INSTRUCTION_TEMPLATE = """\
+Based on the conversation above, extract memory operations following the rules in the system prompt.
 
-memory_snapshot:
-{snapshot}
-"""
-
-_USER_POLICY_TEMPLATE = """\
 turn_policy:
 - explicit_memory_request: {explicit_memory_request}
 - true  → user directly asked to record; create with confidence "high" and score ≥70.
   Still avoid near-duplicates — prefer update when an existing item matches.
 - false →
-  * user scope: conservative — prefer update over create; noop when signal is ambiguous.
+  * user scope: prefer update over create; noop when signal is ambiguous.
   * project scope: proactive — create if the conversation reveals a clear stable project
-    fact (tooling, architecture, conventions, workflow rules) not in the store yet.
+    fact (tooling, architecture, conventions, workflow rules, known bugs,
+    implementation decisions from creation tasks) not in the store yet.
     Project facts are hard to re-derive each session; worth capturing proactively.
     Still avoid near-duplicates and transient runtime details.
 """
@@ -489,31 +544,53 @@ def _normalize_text(value: Any, *, max_chars: int) -> str:
     return re.sub(r"\s+", " ", value.strip())[:max_chars]
 
 
-def _redact_sensitive_paths(text: str) -> str:
-    if not text:
-        return text
-    return _SENSITIVE_ABS_PATH_RE.sub("<ABS_PATH>", text)
+def _format_call_messages_for_log(messages: list[Any]) -> str:
+    sep = "\n" + "-" * 60 + "\n"
+    parts: list[str] = []
+    for msg in messages:
+        role = getattr(msg, "type", "unknown")
+        name = getattr(msg, "name", None)
+        tool_call_id = getattr(msg, "tool_call_id", None)
+
+        header_parts = [f"[{role}]"]
+        if name:
+            header_parts.append(f"name={name}")
+        if tool_call_id:
+            header_parts.append(f"tool_call_id={tool_call_id}")
+        role_label = " ".join(header_parts)
+
+        content = getattr(msg, "content", "")
+        if isinstance(content, list):
+            text_parts = [
+                p.get("text", "") if isinstance(p, dict) else str(p) for p in content
+            ]
+            content = "\n".join(filter(None, text_parts))
+
+        body = str(content)
+        tool_calls = getattr(msg, "tool_calls", None)
+        if tool_calls:
+            tool_calls_str = json.dumps(tool_calls, ensure_ascii=False, indent=2)
+            body = (body + "\n" if body else "") + f"tool_calls: {tool_calls_str}"
+
+        parts.append(f"{role_label}\n{body}")
+    return sep.join(parts)
 
 
-def _extract_tool_evidence(message: Any) -> str:
-    """Extract a compact, durable snippet from a tool result."""
-    tool_name = str(getattr(message, "name", "")).strip().lower()
-    if tool_name not in _PROJECT_MEMORY_TOOL_WHITELIST:
-        return ""
-    content = getattr(message, "content", "")
-    if isinstance(content, list):
-        text_parts = [
-            p.get("text", "") if isinstance(p, dict) else str(p)
-            for p in content
-            if not (isinstance(p, dict) and p.get("type") in ("tool_use", "tool_result"))
-        ]
-        content = " ".join(filter(None, text_parts))
-    text = _normalize_text(_redact_sensitive_paths(str(content)), max_chars=_MAX_TOOL_EVIDENCE_CHARS)
-    if len(text) < 20:
-        return ""
-    if not _PROJECT_MEMORY_EVIDENCE_RE.search(text):
-        return ""
-    return f"tool[{tool_name}]: {text}"
+def _messages_to_plain_text(messages: list[Any]) -> str:
+    """Extract plain text from messages for rescore candidate relevance scoring."""
+    parts: list[str] = []
+    for msg in messages:
+        content = getattr(msg, "content", "")
+        if isinstance(content, list):
+            text_parts = [
+                p.get("text", "") if isinstance(p, dict) else str(p)
+                for p in content
+                if not (isinstance(p, dict) and p.get("type") in ("tool_use", "tool_result"))
+            ]
+            content = " ".join(filter(None, text_parts))
+        if content:
+            parts.append(str(content))
+    return " ".join(parts)
 
 
 def _normalize_hash(section: str, content: str) -> str:
@@ -600,9 +677,10 @@ def _select_rescoring_candidates(
         ),
     )[:review_cap]
 
-    def _format(item: dict[str, Any]) -> dict[str, Any]:
+    def _format(item: dict[str, Any], group: int) -> dict[str, Any]:
         return {
             "id": item.get("id"),
+            "group": group,
             "section": item.get("section"),
             "content": item.get("content"),
             "tier": _normalize_tier(
@@ -615,7 +693,9 @@ def _select_rescoring_candidates(
         }
 
     return [
-        _format(item) for item in relevant + review if isinstance(item.get("id"), str)
+        _format(item, 1) for item in relevant if isinstance(item.get("id"), str)
+    ] + [
+        _format(item, 2) for item in review if isinstance(item.get("id"), str)
     ]
 
 
@@ -1553,46 +1633,6 @@ class MemoryAgentMiddleware(AgentMiddleware):
         )
         return False
 
-    @staticmethod
-    def _format_messages(messages: list[Any]) -> str:
-        lines: list[str] = []
-        tool_evidence: list[str] = []
-        tool_evidence_chars = 0
-        for msg in messages:
-            role = getattr(msg, "type", "unknown")
-            if role == "tool":
-                if len(tool_evidence) >= _MAX_TOOL_EVIDENCE_ITEMS:
-                    continue
-                evidence = _extract_tool_evidence(msg)
-                if not evidence:
-                    continue
-                remaining = _MAX_TOTAL_TOOL_EVIDENCE_CHARS - tool_evidence_chars
-                if remaining <= 0:
-                    continue
-                clipped = evidence[:remaining].strip()
-                if not clipped:
-                    continue
-                tool_evidence.append(clipped)
-                tool_evidence_chars += len(clipped) + 1
-                continue
-            content = getattr(msg, "content", "")
-            if isinstance(content, list):
-                text_parts = [
-                    p.get("text", "") if isinstance(p, dict) else str(p)
-                    for p in content
-                    if not (
-                        isinstance(p, dict)
-                        and p.get("type") in ("tool_use", "tool_result")
-                    )
-                ]
-                content = " ".join(filter(None, text_parts))
-            if content:
-                lines.append(f"{role}: {str(content)[:_MAX_CONVERSATION_CHARS]}")
-        if tool_evidence:
-            lines.append("tool_evidence:")
-            lines.extend(f"- {item}" for item in tool_evidence)
-        return "\n".join(lines)
-
     def _load_or_recover_store(
         self, scope: str, thread_id: str, source_anchor: str
     ) -> dict[str, Any] | None:
@@ -1744,7 +1784,7 @@ class MemoryAgentMiddleware(AgentMiddleware):
     ) -> list[str] | None:
         written_store_paths: list[str] = []
         try:
-            conversation = self._format_messages(messages)
+            conversation_text = _messages_to_plain_text(messages)
             last_human = self._last_human_text(messages)
             explicit_memory_request = _is_explicit_memory_request(last_human)
 
@@ -1801,24 +1841,34 @@ class MemoryAgentMiddleware(AgentMiddleware):
             snapshot = _build_memory_snapshot(
                 user_store,
                 project_store,
-                conversation=conversation,
+                conversation=conversation_text,
+            )
+
+            system_content = (
+                _SYSTEM_PROMPT
+                + f"\ncurrent_date: {_iso_now()[:10]}\n"
+                + "memory_snapshot:\n"
+                + json.dumps(snapshot, ensure_ascii=False, indent=2)
+            )
+            call_messages: list[Any] = [SystemMessage(content=system_content)]
+            call_messages += list(messages)
+            call_messages.append(
+                HumanMessage(
+                    content=_FINAL_INSTRUCTION_TEMPLATE.format(
+                        explicit_memory_request=str(explicit_memory_request).lower(),
+                    )
+                )
+            )
+
+            logger.debug(
+                "Memory agent input (%d messages):\n%s",
+                len(call_messages),
+                _format_call_messages_for_log(call_messages),
             )
 
             try:
                 response = await model.bind(max_tokens=_MAX_OUTPUT_TOKENS).ainvoke(
-                    [
-                        SystemMessage(content=_SYSTEM_PROMPT),
-                        HumanMessage(
-                            content=_USER_TEMPLATE.format(
-                                conversation=conversation,
-                                snapshot=json.dumps(snapshot, ensure_ascii=False, indent=2),
-                            )
-                            + "\n"
-                            + _USER_POLICY_TEMPLATE.format(
-                                explicit_memory_request=str(explicit_memory_request).lower(),
-                            )
-                        ),
-                    ],
+                    call_messages,
                     config={"metadata": {"lc_source": "memory_agent"}},
                 )
             except Exception:
@@ -1835,9 +1885,11 @@ class MemoryAgentMiddleware(AgentMiddleware):
                     p.get("text", "") if isinstance(p, dict) else str(p) for p in raw
                 )
             raw = raw.lstrip()
+            logger.debug("Memory agent output: %s", raw)
             data: Any = {"operations": []}
-            start = raw.find("{")
-            if not raw.startswith("{") or start == -1:
+            fence_match = re.search(r"```(?:json)?\s*(\{)", raw, re.DOTALL)
+            start = fence_match.start(1) if fence_match else raw.find("{")
+            if start == -1:
                 logger.debug("Memory agent: model response has no JSON object")
             else:
                 try:
