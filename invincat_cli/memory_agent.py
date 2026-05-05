@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 import os
 import re
 import tempfile
@@ -57,7 +56,6 @@ _RELEVANT_RESCORE_COUNT = 8   # conversation-relevant items
 _REVIEW_RESCORE_COUNT = 8     # oldest-unconfirmed items for proactive review
 MAX_HOT_ITEMS_PER_SCOPE = 8
 MAX_WARM_ITEMS_PER_SCOPE = 6
-MAX_SNAPSHOT_ITEMS_PER_SCOPE = 80
 MAX_ARCHIVED_ITEMS_PER_SCOPE = 50
 
 _MEMORY_SIGNAL_RE = re.compile(
@@ -109,13 +107,37 @@ _INVALID_FACT_REASON_RE = re.compile(
     r"no longer valid|no longer true|not valid|not true|contradict(?:ed|s)?|"
     r"false|incorrect|wrong|superseded|replaced|obsolete|outdated|stale|"
     r"invalid|misleading|inaccurate|no longer accurate|no longer applies|"
-    r"conflict(?:s|ed)? with|conflicts current facts|changed facts|latest facts"
+    r"conflict(?:s|ed)? with|conflicts current facts|changed facts|latest facts|"
+    r"fixed|resolved|repaired|patched|addressed|closed|no longer reproducible|"
+    r"bug fixed|issue resolved"
     r")\b|"
     r"(事实不符|不符合事实|不符合当前事实|与事实不符|与当前事实不符|"
     r"事实不一致|与事实不一致|与当前事实不一致|当前事实不一致|"
     r"不再有效|不再适用|不再正确|不再准确|不准确|不成立|"
     r"已过期|过时|被替代|已替代|矛盾|冲突|错误|不正确|会误导|失效|"
-    r"事实已变|事实变化|事实改变|当前事实已变|最新事实)",
+    r"事实已变|事实变化|事实改变|当前事实已变|最新事实|"
+    r"已修复|修复了|已经修复|已解决|解决了|已经解决|已处理|处理了|"
+    r"已关闭|不再复现|问题已修复|bug已修复|缺陷已修复)",
+    re.IGNORECASE,
+)
+_RESOLUTION_SIGNAL_RE = re.compile(
+    r"\b("
+    r"fix(?:ed|es)?|resolve(?:d|s)?|repair(?:ed|s)?|patch(?:ed|es)?|"
+    r"correct(?:ed|s)?|address(?:ed|es)?|close(?:d|s)?|"
+    r"no longer reproduc(?:e|es|ible)|tests? pass(?:ed|es)?|"
+    r"bug(?:s)? fixed|issue(?:s)? resolved"
+    r")\b|"
+    r"(已修复|修复了|已经修复|已解决|解决了|已经解决|已处理|处理了|"
+    r"已关闭|不再复现|测试通过|问题已修复|bug已修复|缺陷已修复)",
+    re.IGNORECASE,
+)
+_KNOWN_ISSUE_ITEM_RE = re.compile(
+    r"\b("
+    r"known issues?|bug(?:s)?|defect(?:s)?|regression(?:s)?|"
+    r"race condition|crash(?:es)?|failure(?:s)?|error(?:s)?|"
+    r"incorrect|broken|unfixed|not yet fixed"
+    r")\b|"
+    r"(已知问题|问题|缺陷|错误|故障|异常|崩溃|回归|竞态|未修复|尚未修复)",
     re.IGNORECASE,
 )
 
@@ -246,6 +268,10 @@ OPERATION RULES
                 (deprecated module, migrated tooling, resolved constraint). No contradiction
                 needed — irrelevance alone is sufficient.
             Archive is always reversible; prefer it over delete when uncertain.
+- Known issue lifecycle: if this turn fixes, resolves, or otherwise removes a bug
+  that is currently stored as an active Known Issues memory, do not leave that
+  memory active. Use delete when the old bug statement would now be false or
+  misleading; use archive when the bug was real but is now resolved historical context.
 - rescore/retier require supporting evidence from this turn; only valid for rescore_candidate IDs.
   Both change only priority metadata — not content.
   Behavioral difference:
@@ -380,6 +406,11 @@ Based on the conversation above, extract memory operations following the rules i
 
 turn_policy:
 - explicit_memory_request: {explicit_memory_request}
+- target_language: {target_language}
+- All newly written natural-language fields (section, content, reason, score_reason)
+  must use target_language, except code identifiers, commands, file paths, API names,
+  and quoted literals. Do not follow the language of the examples above when it
+  differs from target_language.
 - true  → user directly asked to record; create with confidence "high" and score ≥70.
   Still avoid near-duplicates — prefer update when an existing item matches.
 - false →
@@ -437,6 +468,19 @@ def _last_human_text(messages: list[Any]) -> str:
 
 def _is_explicit_memory_request(text: str) -> bool:
     return bool(_EXPLICIT_MEMORY_REQUEST_RE.search(text or ""))
+
+
+def _detect_target_language(text: str) -> str:
+    """Return a coarse language label for memory-field generation."""
+    if not text:
+        return "the language of the last human message"
+    cjk_chars = len(re.findall(r"[\u4e00-\u9fff]", text))
+    latin_words = len(re.findall(r"[A-Za-z]{2,}", text))
+    if cjk_chars >= 2 and cjk_chars >= latin_words:
+        return "Chinese"
+    if latin_words > 0:
+        return "English"
+    return "the language of the last human message"
 
 
 def _is_task_complete(messages: list[Any]) -> bool:
@@ -619,6 +663,17 @@ def _item_relevance_score(item: dict[str, Any], terms: set[str]) -> int:
     return sum(1 for term in terms if term and term in corpus)
 
 
+def _is_known_issue_item(item: dict[str, Any]) -> bool:
+    corpus = " ".join(
+        [
+            str(item.get("section", "")),
+            str(item.get("content", "")),
+            str(item.get("score_reason", "")),
+        ]
+    )
+    return bool(_KNOWN_ISSUE_ITEM_RE.search(corpus))
+
+
 def _select_rescoring_candidates(
     store: dict[str, Any] | None,
     *,
@@ -640,7 +695,7 @@ def _select_rescoring_candidates(
 
     # Group 1: conversation-relevant items (hot-first, then by token overlap)
     terms = _extract_terms(conversation)
-    relevant = sorted(
+    relevant_pool = sorted(
         items,
         key=lambda item: (
             1
@@ -655,7 +710,38 @@ def _select_rescoring_candidates(
             str(item.get("id", "")).casefold(),
         ),
         reverse=True,
-    )[:relevant_cap]
+    )
+
+    relevant: list[dict[str, Any]] = []
+    relevant_ids: set[Any] = set()
+    if _RESOLUTION_SIGNAL_RE.search(conversation or ""):
+        issue_candidates = sorted(
+            [item for item in items if _is_known_issue_item(item)],
+            key=lambda item: (
+                _item_relevance_score(item, terms),
+                _normalize_score(item.get("score")),
+                str(item.get("updated_at", "")),
+                str(item.get("id", "")).casefold(),
+            ),
+            reverse=True,
+        )
+        for item in issue_candidates:
+            if len(relevant) >= relevant_cap:
+                break
+            item_id = item.get("id")
+            if item_id in relevant_ids:
+                continue
+            relevant.append(item)
+            relevant_ids.add(item_id)
+
+    for item in relevant_pool:
+        if len(relevant) >= relevant_cap:
+            break
+        item_id = item.get("id")
+        if item_id in relevant_ids:
+            continue
+        relevant.append(item)
+        relevant_ids.add(item_id)
     relevant_ids = {item.get("id") for item in relevant}
 
     # Group 2: oldest-unconfirmed warm/cold items not already in group 1
@@ -856,8 +942,6 @@ def _build_memory_snapshot(
                 str(x.get("id", "")),
             )
         )
-        if len(items) > MAX_SNAPSHOT_ITEMS_PER_SCOPE:
-            items = items[:MAX_SNAPSHOT_ITEMS_PER_SCOPE]
         candidates = _select_rescoring_candidates(
             store,
             conversation=conversation,
@@ -1105,7 +1189,7 @@ def _build_invalid_fact_cleanup_operations(
 ) -> list[dict[str, Any]]:
     """Build deterministic deletes for active memories already marked invalid.
 
-    This scans the full store, not the truncated model snapshot, so previously
+    This scans the full store independently of the model snapshot, so previously
     mis-scored invalid facts do not linger just because the model returned noop.
     """
     operations: list[dict[str, Any]] = []
@@ -1177,29 +1261,6 @@ def _build_archived_overflow_operations(
     return operations
 
 
-def _cleanup_deletes_all_active(
-    store: dict[str, Any] | None,
-    operations: list[dict[str, Any]],
-    scope: str,
-) -> bool:
-    active_ids = {
-        str(item.get("id"))
-        for item in _active_items(store)
-        if isinstance(item.get("id"), str)
-    }
-    if not active_ids:
-        return False
-    cleanup_delete_ids = {
-        str(op.get("id"))
-        for op in operations
-        if op.get("op") == "delete"
-        and op.get("scope") == scope
-        and op.get("_cleanup") is True
-        and isinstance(op.get("id"), str)
-    }
-    return active_ids.issubset(cleanup_delete_ids)
-
-
 def _apply_operations(
     user_store: dict[str, Any] | None,
     project_store: dict[str, Any] | None,
@@ -1220,39 +1281,13 @@ def _apply_operations(
         if isinstance(item_id, str) and item_id:
             id_touch_count[item_id] = id_touch_count.get(item_id, 0) + 1
     conflicted_ids = {item_id for item_id, count in id_touch_count.items() if count > 1}
-
-    # Delete ratio guard (per-scope). Applies to physical delete only — archive
-    # is reversible and is intentionally exempt so proactive confidence-retirement
-    # isn't blocked. Ops that cite a contradiction/invalid-fact reason are also
-    # exempt: blocking them leaves the contradicted memory alongside its replacement.
-    delete_target_count: dict[str, int] = {"user": 0, "project": 0}
-    for op in operations:
-        if op.get("op") != "delete":
-            continue
-        if op.get("_cleanup") is True:
-            continue
-        if _score_reason_implies_invalid_fact(str(op.get("reason") or "")):
-            continue
-        scope = op.get("scope")
-        item_id = op.get("id")
-        if not isinstance(scope, str) or not isinstance(item_id, str):
-            continue
-        if item_id in conflicted_ids:
-            continue
-        store = user_store if scope == "user" else project_store
-        item = _find_item(store, item_id)
-        if item is not None and item.get("status") == "active":
-            delete_target_count[scope] += 1
-
-    delete_blocked_scope: set[str] = set()
-    for scope in ("user", "project"):
-        store = user_store if scope == "user" else project_store
-        active_total = len(_active_items(store))
-        if active_total <= 0:
-            continue
-        allowed = max(1, math.floor(active_total * 0.2))
-        if delete_target_count[scope] > allowed:
-            delete_blocked_scope.add(scope)
+    invalid_fact_delete_ids = {
+        str(op.get("id"))
+        for op in operations
+        if op.get("op") == "delete"
+        and isinstance(op.get("id"), str)
+        and _score_reason_implies_invalid_fact(str(op.get("reason") or ""))
+    }
 
     def _get_or_create_store(scope: str) -> dict[str, Any]:
         nonlocal user_store, project_store
@@ -1270,13 +1305,6 @@ def _apply_operations(
             continue
         scope = op.get("scope")
         if not isinstance(scope, str) or scope not in _ALLOWED_SCOPE:
-            continue
-        if (
-            op_name == "delete"
-            and scope in delete_blocked_scope
-            and not op.get("_cleanup")
-            and not _score_reason_implies_invalid_fact(str(op.get("reason") or ""))
-        ):
             continue
 
         store = _get_or_create_store(scope)
@@ -1318,7 +1346,11 @@ def _apply_operations(
             continue
 
         item_id = op.get("id")
-        if not isinstance(item_id, str) or item_id in conflicted_ids:
+        if not isinstance(item_id, str):
+            continue
+        if item_id in conflicted_ids and item_id not in invalid_fact_delete_ids:
+            continue
+        if item_id in invalid_fact_delete_ids and op_name != "delete":
             continue
         item = _find_item(store, item_id)
         if item is None:
@@ -1670,6 +1702,7 @@ class MemoryAgentMiddleware(AgentMiddleware):
         now_iso: str,
     ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, list[str]]:
         """Apply operations and write changed memory stores."""
+        del user_before, project_before
         if not operations:
             return user_store, project_store, []
 
@@ -1687,7 +1720,6 @@ class MemoryAgentMiddleware(AgentMiddleware):
         written_store_paths: list[str] = []
         for scope in changed_scopes:
             store = new_user if scope == "user" else new_project
-            before_store = user_before if scope == "user" else project_before
             if store is None:
                 continue
 
@@ -1697,18 +1729,6 @@ class MemoryAgentMiddleware(AgentMiddleware):
             store_path = Path(store_path_raw).expanduser().resolve()
             if not self._is_authorized_path(store_path):
                 logger.warning("Memory agent: rejected unauthorized write for %s scope", scope)
-                continue
-
-            before_active_items = _active_items(before_store)
-            if (
-                len(before_active_items) > 1
-                and not _active_items(store)
-                and not _cleanup_deletes_all_active(before_store, operations, scope)
-            ):
-                logger.warning(
-                    "Memory agent: refusing bulk full-active wipe for %s store",
-                    scope,
-                )
                 continue
 
             await asyncio.to_thread(_write_memory_store, store_path, store)
@@ -1787,6 +1807,7 @@ class MemoryAgentMiddleware(AgentMiddleware):
             conversation_text = _messages_to_plain_text(messages)
             last_human = self._last_human_text(messages)
             explicit_memory_request = _is_explicit_memory_request(last_human)
+            target_language = _detect_target_language(last_human)
 
             if preloaded_stores is not None:
                 # Caller (aafter_agent) already loaded and cleaned the stores — skip both
@@ -1856,6 +1877,7 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 HumanMessage(
                     content=_FINAL_INSTRUCTION_TEMPLATE.format(
                         explicit_memory_request=str(explicit_memory_request).lower(),
+                        target_language=target_language,
                     )
                 )
             )

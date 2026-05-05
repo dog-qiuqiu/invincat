@@ -13,12 +13,12 @@ from invincat_cli.memory_agent import (
     DEFAULT_TIER,
     COLD_THRESHOLD,
     HOT_THRESHOLD,
-    MAX_SNAPSHOT_ITEMS_PER_SCOPE,
     MAX_ITEM_CONTENT_CHARS,
     MemoryAgentMiddleware,
     _build_invalid_fact_cleanup_operations,
     _build_memory_snapshot,
     _derive_tier_from_score,
+    _detect_target_language,
     _apply_operations,
     _atomic_write_text,
     _backup_corrupt_store,
@@ -28,6 +28,7 @@ from invincat_cli.memory_agent import (
     _normalize_score,
     _normalize_and_validate_operations,
     _read_memory_store,
+    _select_rescoring_candidates,
     _write_memory_store,
 )
 
@@ -230,8 +231,7 @@ def test_conflicting_operations_on_same_id_rejected() -> None:
     assert new_project["items"][0]["content"] == "Use snake_case."
 
 
-def test_removal_ratio_guard_blocks_excessive_deletes() -> None:
-    # Ratio guard fires for delete ops without a contradiction reason.
+def test_multiple_delete_ops_are_applied_without_ratio_guard() -> None:
     project_store = _new_store("project")
     for idx in range(5):
         project_store["items"].append(_item(f"mem_p_{idx+1:06d}", content=f"Rule {idx}"))
@@ -247,13 +247,13 @@ def test_removal_ratio_guard_blocks_excessive_deletes() -> None:
         now_iso="2026-04-22T10:10:00Z",
     )
     assert new_project is not None
-    assert changed == []
-    assert all(item["status"] == "active" for item in new_project["items"])
+    assert changed == ["project"]
+    remaining_ids = {item["id"] for item in new_project["items"]}
+    assert "mem_p_000001" not in remaining_ids
+    assert "mem_p_000002" not in remaining_ids
 
 
-def test_removal_ratio_guard_does_not_block_archive() -> None:
-    # Archive is reversible — it is intentionally exempt from the ratio guard so
-    # proactive confidence-retirement is never blocked.
+def test_multiple_archive_ops_are_applied() -> None:
     project_store = _new_store("project")
     for idx in range(5):
         project_store["items"].append(_item(f"mem_p_{idx+1:06d}", content=f"Rule {idx}"))
@@ -276,11 +276,7 @@ def test_removal_ratio_guard_does_not_block_archive() -> None:
     assert statuses["mem_p_000003"] == "active"
 
 
-def test_removal_ratio_guard_allows_contradiction_deletes() -> None:
-    # Contradiction-based deletes must NOT be blocked by the ratio guard.
-    # The model follows "delete old + create new" for contradicted facts;
-    # blocking the delete while allowing the create would leave both the
-    # contradicted and the replacement memory in the store simultaneously.
+def test_multiple_contradiction_deletes_are_applied() -> None:
     project_store = _new_store("project")
     for idx in range(5):
         project_store["items"].append(_item(f"mem_p_{idx+1:06d}", content=f"Rule {idx}"))
@@ -350,6 +346,84 @@ def test_contradiction_delete_plus_create_no_duplicate() -> None:
     assert changed == ["project"]
     assert len(new_project["items"]) == 1
     assert new_project["items"][0]["content"] == "Uses `uv` for dependency management."
+
+
+def test_fixed_issue_delete_ops_are_applied() -> None:
+    project_store = _new_store("project")
+    for idx in range(5):
+        project_store["items"].append(
+            _item(
+                f"mem_p_{idx+1:06d}",
+                section="Known Issues",
+                content=f"Known bug {idx}",
+            )
+        )
+
+    _, new_project, changed = _apply_operations(
+        None,
+        project_store,
+        [
+            {
+                "op": "delete",
+                "scope": "project",
+                "id": "mem_p_000001",
+                "reason": "Bug fixed this turn.",
+            },
+            {
+                "op": "delete",
+                "scope": "project",
+                "id": "mem_p_000002",
+                "reason": "该问题已修复。",
+            },
+        ],
+        thread_id="t1",
+        source_anchor="a1",
+        now_iso="2026-04-22T10:10:00Z",
+    )
+
+    assert new_project is not None
+    assert changed == ["project"]
+    remaining_ids = {item["id"] for item in new_project["items"]}
+    assert "mem_p_000001" not in remaining_ids
+    assert "mem_p_000002" not in remaining_ids
+
+
+def test_invalid_fact_delete_wins_over_same_id_metadata_conflict() -> None:
+    project_store = _new_store("project")
+    project_store["items"].append(
+        _item(
+            "mem_p_000001",
+            section="Known Issues",
+            content="Login form can submit duplicate requests.",
+        )
+    )
+
+    _, new_project, changed = _apply_operations(
+        None,
+        project_store,
+        [
+            {
+                "op": "rescore",
+                "scope": "project",
+                "id": "mem_p_000001",
+                "score": 10,
+                "score_reason": "Issue fixed this turn.",
+            },
+            {
+                "op": "delete",
+                "scope": "project",
+                "id": "mem_p_000001",
+                "reason": "Issue fixed this turn.",
+            },
+        ],
+        thread_id="t1",
+        source_anchor="a1",
+        now_iso="2026-04-22T10:10:00Z",
+    )
+
+    assert new_project is not None
+    assert changed == ["project"]
+    assert new_project["items"] == []
 
 
 def test_atomic_write_and_whitelist_authorization(tmp_path: Path) -> None:
@@ -532,17 +606,17 @@ def test_retier_with_invalid_fact_reason_deletes_item() -> None:
     ]
 
 
-def test_invalid_fact_cleanup_scans_full_store_beyond_snapshot_cap() -> None:
+def test_invalid_fact_cleanup_scans_full_store() -> None:
     project_store = _new_store("project")
-    for idx in range(MAX_SNAPSHOT_ITEMS_PER_SCOPE + 20):
+    for idx in range(100):
         project_store["items"].append(
             _item(
                 f"mem_p_{idx + 1:06d}",
                 content=f"Valid rule {idx}",
             )
         )
-    hidden_invalid_id = f"mem_p_{MAX_SNAPSHOT_ITEMS_PER_SCOPE + 21:06d}"
-    invalid = _item(hidden_invalid_id, content="Old incorrect fact")
+    invalid_id = "mem_p_000101"
+    invalid = _item(invalid_id, content="Old incorrect fact")
     invalid["tier"] = "cold"
     invalid["score"] = 5
     invalid["score_reason"] = "Existing memory is contradicted by current facts."
@@ -553,17 +627,14 @@ def test_invalid_fact_cleanup_scans_full_store_beyond_snapshot_cap() -> None:
         project_store,
         conversation="unrelated turn",
     )
-    assert all(
-        item["id"] != hidden_invalid_id
-        for item in snapshot["project"]["items"]
-    )
+    assert any(item["id"] == invalid_id for item in snapshot["project"]["items"])
 
     cleanup = _build_invalid_fact_cleanup_operations(None, project_store)
     assert cleanup == [
         {
             "op": "delete",
             "scope": "project",
-            "id": hidden_invalid_id,
+            "id": invalid_id,
             "reason": "Existing memory is contradicted by current facts.",
             "_cleanup": True,
         }
@@ -675,9 +746,9 @@ def test_create_aligns_score_with_explicit_tier() -> None:
     assert item["score"] >= HOT_THRESHOLD
 
 
-def test_memory_snapshot_caps_items_per_scope() -> None:
+def test_memory_snapshot_includes_all_items_per_scope() -> None:
     project_store = _new_store("project")
-    for idx in range(MAX_SNAPSHOT_ITEMS_PER_SCOPE + 20):
+    for idx in range(120):
         project_store["items"].append(
             _item(
                 f"mem_p_{idx + 1:06d}",
@@ -691,7 +762,37 @@ def test_memory_snapshot_caps_items_per_scope() -> None:
     )
     project_snapshot = snapshot["project"]
     assert isinstance(project_snapshot, dict)
-    assert len(project_snapshot["items"]) == MAX_SNAPSHOT_ITEMS_PER_SCOPE
+    assert len(project_snapshot["items"]) == 120
+
+
+def test_resolution_turn_promotes_known_issue_for_review() -> None:
+    project_store = _new_store("project")
+    for idx in range(8):
+        item = _item(
+            f"mem_p_{idx + 1:06d}",
+            section="Architecture",
+            content=f"Hot architectural rule {idx}",
+        )
+        item["tier"] = "hot"
+        item["score"] = 90
+        project_store["items"].append(item)
+    issue = _item(
+        "mem_p_000099",
+        section="Known Issues",
+        content="Login form can submit duplicate requests under rapid clicks.",
+    )
+    issue["tier"] = "cold"
+    issue["score"] = 10
+    project_store["items"].append(issue)
+
+    candidates = _select_rescoring_candidates(
+        project_store,
+        conversation="本轮已经修复了登录重复提交问题，相关测试通过。",
+        max_items=4,
+    )
+
+    assert candidates
+    assert candidates[0]["id"] == "mem_p_000099"
 
 
 def test_store_read_write_roundtrip(tmp_path: Path) -> None:
@@ -732,6 +833,18 @@ class _NoopMemoryModel:
         return self
 
     async def ainvoke(self, *_args: Any, **_kwargs: Any) -> Any:
+        return type("Response", (), {"content": '{"operations": [{"op": "noop"}]}'})()
+
+
+class _CapturingMemoryModel:
+    def __init__(self) -> None:
+        self.messages: list[Any] = []
+
+    def bind(self, **_kwargs: Any) -> "_CapturingMemoryModel":
+        return self
+
+    async def ainvoke(self, messages: list[Any], **_kwargs: Any) -> Any:
+        self.messages = list(messages)
         return type("Response", (), {"content": '{"operations": [{"op": "noop"}]}'})()
 
 
@@ -1068,6 +1181,38 @@ def test_explicit_memory_request_detection() -> None:
     assert _is_explicit_memory_request("Please remember this preference.") is True
     assert _is_explicit_memory_request("请记住这条规则") is True
     assert _is_explicit_memory_request("thanks") is False
+
+
+def test_target_language_detection() -> None:
+    assert _detect_target_language("请记住以后用中文总结这个项目") == "Chinese"
+    assert _detect_target_language("Please remember this preference") == "English"
+
+
+def test_extract_includes_target_language_instruction_for_chinese_turn(tmp_path: Path) -> None:
+    store = tmp_path / "memory_project.json"
+    model = _CapturingMemoryModel()
+    middleware = MemoryAgentMiddleware(
+        memory_paths=[],
+        memory_store_paths={"project": str(store)},
+    )
+
+    written = asyncio.run(
+        middleware._extract_and_write(
+            model=model,
+            messages=[
+                _Msg("human", "请记住：这个项目提交前必须运行 pytest。"),
+                _Msg("ai", "好的。", tool_calls=[]),
+            ],
+            thread_id="thread-lang",
+            source_anchor="a1",
+        )
+    )
+
+    assert written == []
+    assert model.messages
+    final_instruction = model.messages[-1].content
+    assert "target_language: Chinese" in final_instruction
+    assert "must use target_language" in final_instruction
 
 
 def test_system_prompt_contains_conservative_policy_contract() -> None:

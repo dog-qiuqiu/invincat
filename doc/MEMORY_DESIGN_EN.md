@@ -180,12 +180,10 @@ Signal-based early trigger:
 - Operation count and field length limits.
 - Scope and op schema validation.
 - Duplicate create suppression.
-- Conflict guard: same id touched multiple times in one batch is rejected.
-- Removal-ratio guard: blocks over-aggressive archive/delete batches.
-- Empty-wipe guard: prevents bulk clearing of active memory in one write.
+- Conflict guard: same id touched multiple times in one batch is rejected; `delete` wins when it clearly removes an invalid fact.
 - `rescore/retier` are restricted to local candidates only (max 16 per scope).
 - `delete` removes memory that conflicts with current facts, has been superseded, or would mislead future turns.
-- On each completed turn, the full store is scanned first and active memories with a `score_reason` that clearly says the fact is invalid, outdated, superseded, or misleading are deterministically deleted; this cleanup does not depend on the truncated model snapshot, memory-agent model output, trivial-turn detection, or extraction throttles.
+- On each completed turn, the full store is scanned first and active memories with a `score_reason` that clearly says the fact is invalid, outdated, superseded, or misleading are deterministically deleted; this cleanup does not depend on memory-agent model output, trivial-turn detection, or extraction throttles.
 - `rescore/retier` may only adjust priority metadata; if the fact changed or the old content would mislead, the agent must use `update` with corrected `content`, or `delete + create`.
 - Path whitelist: writes allowed only for configured memory store paths.
 - Atomic write: temp file + `os.replace`.
