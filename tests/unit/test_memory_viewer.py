@@ -59,7 +59,7 @@ def test_load_memory_snapshot_reads_valid_store(tmp_path: Path) -> None:
                     "status": "active",
                     "tier": "hot",
                     "score": 91,
-                    "score_reason": "Stable preference",
+                    "reason": "Stable preference",
                     "last_scored_at": "2026-04-22T10:05:00Z",
                     "updated_at": "2026-04-22T10:00:00Z",
                 },
@@ -84,6 +84,30 @@ def test_load_memory_snapshot_reads_valid_store(tmp_path: Path) -> None:
     assert user.latest_updated_at == "2026-04-22T11:00:00Z"
     assert user.items[0].tier in {"hot", "warm", "cold"}
     assert isinstance(user.items[0].score, int)
+    assert user.items[0].reason == "Stable preference"
+
+
+def test_load_memory_snapshot_reads_legacy_score_reason(tmp_path: Path) -> None:
+    user_store = tmp_path / "memory_user.json"
+    _write_store(
+        user_store,
+        {
+            "version": 1,
+            "scope": "user",
+            "items": [
+                {
+                    "id": "mem_u_000001",
+                    "section": "User Preferences",
+                    "content": "Prefer concise Chinese answers.",
+                    "status": "active",
+                    "score_reason": "Legacy preference rationale",
+                }
+            ],
+        },
+    )
+
+    snapshot = load_memory_snapshot({"user": str(user_store)})
+    assert snapshot["user"].items[0].reason == "Legacy preference rationale"
 
 
 def test_memory_viewer_status_colors() -> None:

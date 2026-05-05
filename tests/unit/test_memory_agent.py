@@ -28,7 +28,6 @@ from invincat_cli.memory_agent import (
     _normalize_score,
     _normalize_and_validate_operations,
     _read_memory_store,
-    _select_rescoring_candidates,
     _write_memory_store,
 )
 
@@ -55,7 +54,7 @@ def _item(
         "confidence": "high",
         "tier": "warm",
         "score": 50,
-        "score_reason": "",
+        "reason": "",
         "last_scored_at": "2026-04-22T10:00:00Z",
         "norm_hash": f"{section.casefold()}::{content.casefold()}",
     }
@@ -72,7 +71,7 @@ def test_empty_store_create() -> None:
             "confidence": "high",
             "tier": "hot",
             "score": 90,
-            "score_reason": "Explicit stable preference.",
+            "reason": "Explicit stable preference.",
         }
     ]
     new_user, _, changed = _apply_operations(
@@ -134,6 +133,7 @@ def test_archive_existing_item() -> None:
     assert changed == ["project"]
     assert new_project["items"][0]["status"] == "archived"
     assert new_project["items"][0]["archived_at"] == "2026-04-22T10:10:00Z"
+    assert new_project["items"][0]["reason"] == "superseded"
 
 
 def test_delete_existing_item() -> None:
@@ -335,7 +335,7 @@ def test_contradiction_delete_plus_create_no_duplicate() -> None:
                 "confidence": "high",
                 "tier": "hot",
                 "score": 80,
-                "score_reason": "User confirmed migration from Poetry to uv.",
+                "reason": "User confirmed migration from Poetry to uv.",
             },
         ],
         thread_id="t1",
@@ -407,7 +407,7 @@ def test_invalid_fact_delete_wins_over_same_id_metadata_conflict() -> None:
                 "scope": "project",
                 "id": "mem_p_000001",
                 "score": 10,
-                "score_reason": "Issue fixed this turn.",
+                "reason": "Issue fixed this turn.",
             },
             {
                 "op": "delete",
@@ -465,7 +465,7 @@ def test_update_metadata_only_invalid_fact_deletes_item() -> None:
                     "scope": "project",
                     "id": "mem_p_000001",
                     "score": 20,
-                    "score_reason": "The memory is no longer accurate.",
+                    "reason": "The memory is no longer accurate.",
                 }
             ]
         }
@@ -494,7 +494,7 @@ def test_rescore_does_not_modify_content_or_updated_at() -> None:
                 "scope": "project",
                 "id": "mem_p_000001",
                 "score": 12,
-                "score_reason": "Stale",
+                "reason": "Stale",
             }
         ],
         thread_id="t1",
@@ -519,11 +519,10 @@ def test_rescore_with_invalid_fact_reason_deletes_item() -> None:
                     "scope": "project",
                     "id": "mem_p_000001",
                     "score": 10,
-                    "score_reason": "Existing memory is contradicted by current facts.",
+                    "reason": "Existing memory is contradicted by current facts.",
                 }
             ]
-        },
-        rescoring_candidate_ids_by_scope={"project": {"mem_p_000001"}},
+        }
     )
 
     assert ops == [
@@ -564,7 +563,7 @@ def test_retier_does_not_modify_content_or_updated_at() -> None:
                 "scope": "project",
                 "id": "mem_p_000001",
                 "tier": "cold",
-                "score_reason": "History only",
+                "reason": "History only",
             }
         ],
         thread_id="t1",
@@ -589,11 +588,10 @@ def test_retier_with_invalid_fact_reason_deletes_item() -> None:
                     "scope": "project",
                     "id": "mem_p_000001",
                     "tier": "cold",
-                    "score_reason": "这条记忆与当前事实不符，已被替代。",
+                    "reason": "这条记忆与当前事实不符，已被替代。",
                 }
             ]
-        },
-        rescoring_candidate_ids_by_scope={"project": {"mem_p_000001"}},
+        }
     )
 
     assert ops == [
@@ -619,14 +617,10 @@ def test_invalid_fact_cleanup_scans_full_store() -> None:
     invalid = _item(invalid_id, content="Old incorrect fact")
     invalid["tier"] = "cold"
     invalid["score"] = 5
-    invalid["score_reason"] = "Existing memory is contradicted by current facts."
+    invalid["reason"] = "Existing memory is contradicted by current facts."
     project_store["items"].append(invalid)
 
-    snapshot = _build_memory_snapshot(
-        None,
-        project_store,
-        conversation="unrelated turn",
-    )
+    snapshot = _build_memory_snapshot(None, project_store)
     assert any(item["id"] == invalid_id for item in snapshot["project"]["items"])
 
     cleanup = _build_invalid_fact_cleanup_operations(None, project_store)
@@ -646,7 +640,7 @@ def test_invalid_fact_cleanup_deletes_warm_item_when_reason_is_clear() -> None:
     invalid = _item("mem_p_000001", content="Old incorrect fact")
     invalid["tier"] = "warm"
     invalid["score"] = 45
-    invalid["score_reason"] = "该记忆与当前事实不一致，内容不准确。"
+    invalid["reason"] = "该记忆与当前事实不一致，内容不准确。"
     project_store["items"].append(invalid)
 
     cleanup = _build_invalid_fact_cleanup_operations(None, project_store)
@@ -677,6 +671,21 @@ def test_old_schema_items_are_backfilled_with_default_tier_score(tmp_path: Path)
     assert item["tier"] == DEFAULT_TIER
     assert item["score"] == DEFAULT_SCORE
     assert item["last_scored_at"] == "2026-04-22T10:00:00Z"
+
+
+def test_legacy_score_reason_is_read_as_reason(tmp_path: Path) -> None:
+    store_path = tmp_path / "memory_project.json"
+    _atomic_write_text(
+        store_path,
+        (
+            '{"version":1,"scope":"project","items":[{"id":"mem_p_000001","scope":"project",'
+            '"section":"Rules","content":"Use uv.","status":"active","created_at":"2026-04-22T10:00:00Z",'
+            '"updated_at":"2026-04-22T10:00:00Z","score_reason":"Legacy rationale."}]}\n'
+        ),
+    )
+    loaded = _read_memory_store(store_path, "project")
+    assert loaded["items"][0]["reason"] == "Legacy rationale."
+    assert "score_reason" not in loaded["items"][0]
 
 
 def test_operation_validation_rejects_invalid_tier() -> None:
@@ -712,10 +721,7 @@ def test_score_clamp_and_tier_derivation() -> None:
             },
         ]
     }
-    ops = _normalize_and_validate_operations(
-        payload,
-        rescoring_candidate_ids_by_scope={"project": {"mem_p_000001"}},
-    )
+    ops = _normalize_and_validate_operations(payload)
     assert ops[0]["score"] == 100
     assert ops[1]["score"] == 0
     assert _derive_tier_from_score(_normalize_score(88)) == "hot"
@@ -755,44 +761,10 @@ def test_memory_snapshot_includes_all_items_per_scope() -> None:
                 content=f"Rule {idx}",
             )
         )
-    snapshot = _build_memory_snapshot(
-        None,
-        project_store,
-        conversation="use uv and keep tests green",
-    )
+    snapshot = _build_memory_snapshot(None, project_store)
     project_snapshot = snapshot["project"]
     assert isinstance(project_snapshot, dict)
     assert len(project_snapshot["items"]) == 120
-
-
-def test_resolution_turn_promotes_known_issue_for_review() -> None:
-    project_store = _new_store("project")
-    for idx in range(8):
-        item = _item(
-            f"mem_p_{idx + 1:06d}",
-            section="Architecture",
-            content=f"Hot architectural rule {idx}",
-        )
-        item["tier"] = "hot"
-        item["score"] = 90
-        project_store["items"].append(item)
-    issue = _item(
-        "mem_p_000099",
-        section="Known Issues",
-        content="Login form can submit duplicate requests under rapid clicks.",
-    )
-    issue["tier"] = "cold"
-    issue["score"] = 10
-    project_store["items"].append(issue)
-
-    candidates = _select_rescoring_candidates(
-        project_store,
-        conversation="本轮已经修复了登录重复提交问题，相关测试通过。",
-        max_items=4,
-    )
-
-    assert candidates
-    assert candidates[0]["id"] == "mem_p_000099"
 
 
 def test_store_read_write_roundtrip(tmp_path: Path) -> None:
@@ -920,7 +892,7 @@ def test_aafter_agent_runs_cleanup_even_for_trivial_turn(
     store = tmp_path / "memory_project.json"
     project_store = _new_store("project")
     invalid = _item("mem_p_000001", content="Old incorrect fact")
-    invalid["score_reason"] = "该记忆与当前事实不一致，内容不准确。"
+    invalid["reason"] = "该记忆与当前事实不一致，内容不准确。"
     project_store["items"].append(invalid)
     _write_memory_store(store, project_store)
 
@@ -976,7 +948,7 @@ def test_extract_deletes_existing_invalid_fact_even_when_model_noops(tmp_path: P
     invalid = _item("mem_p_000001", content="Old incorrect fact")
     invalid["tier"] = "cold"
     invalid["score"] = 8
-    invalid["score_reason"] = "这条记忆与当前事实不符，已被替代。"
+    invalid["reason"] = "这条记忆与当前事实不符，已被替代。"
     project_store["items"].append(invalid)
     _write_memory_store(store, project_store)
 
@@ -1007,7 +979,7 @@ def test_extract_cleanup_is_written_before_model_failure(tmp_path: Path) -> None
     invalid = _item("mem_p_000001", content="Old incorrect fact")
     invalid["tier"] = "warm"
     invalid["score"] = 45
-    invalid["score_reason"] = "该记忆不符合当前事实。"
+    invalid["reason"] = "该记忆不符合当前事实。"
     project_store["items"].append(invalid)
     _write_memory_store(store, project_store)
 
@@ -1038,7 +1010,7 @@ def test_extract_cleanup_runs_when_model_returns_malformed_json(tmp_path: Path) 
     invalid = _item("mem_p_000001", content="Old incorrect fact")
     invalid["tier"] = "cold"
     invalid["score"] = 8
-    invalid["score_reason"] = "Existing memory is contradicted by current facts."
+    invalid["reason"] = "Existing memory is contradicted by current facts."
     project_store["items"].append(invalid)
     _write_memory_store(store, project_store)
 
@@ -1066,46 +1038,6 @@ def test_extract_cleanup_runs_when_model_returns_malformed_json(tmp_path: Path) 
 def test_short_memory_signal_is_not_trivial() -> None:
     msgs = [_Msg("human", "记住用中文回答"), _Msg("ai", "好的", tool_calls=[])]
     assert _is_trivial_turn(msgs) is False
-
-
-def test_messages_to_plain_text_extracts_all_roles() -> None:
-    from invincat_cli.memory_agent import _messages_to_plain_text
-
-    tool = _Msg("tool", "lint must run before commit.")
-    tool.name = "bash"
-    text = _messages_to_plain_text(
-        [
-            _Msg("human", "Remember project conventions."),
-            _Msg("ai", "Got it."),
-            tool,
-        ]
-    )
-
-    assert "Remember project conventions." in text
-    assert "Got it." in text
-    assert "lint must run before commit." in text
-
-
-def test_messages_to_plain_text_skips_tool_use_blocks() -> None:
-    from invincat_cli.memory_agent import _messages_to_plain_text
-
-    msg = _Msg(
-        "ai",
-        [
-            {"type": "text", "text": "Running the command."},
-            {"type": "tool_use", "id": "call_1", "name": "bash", "input": {}},
-        ],
-    )
-    text = _messages_to_plain_text([msg])
-
-    assert "Running the command." in text
-    assert "tool_use" not in text
-
-
-def test_messages_to_plain_text_empty_input() -> None:
-    from invincat_cli.memory_agent import _messages_to_plain_text
-
-    assert _messages_to_plain_text([]) == ""
 
 
 def test_invalid_schema_store_sets_read_error(tmp_path: Path) -> None:
@@ -1215,12 +1147,47 @@ def test_extract_includes_target_language_instruction_for_chinese_turn(tmp_path:
     assert "must use target_language" in final_instruction
 
 
+def test_extract_passes_plain_transcript_instead_of_native_tool_call_messages(tmp_path: Path) -> None:
+    store = tmp_path / "memory_project.json"
+    model = _CapturingMemoryModel()
+    middleware = MemoryAgentMiddleware(
+        memory_paths=[],
+        memory_store_paths={"project": str(store)},
+    )
+    tool_call = {
+        "name": "read_file",
+        "args": {"file_path": "/tmp/example.py", "offset": 10, "limit": 5},
+        "id": "call_1",
+    }
+
+    written = asyncio.run(
+        middleware._extract_and_write(
+            model=model,
+            messages=[
+                _Msg("human", "Please remember: inspect tool calls as context."),
+                _Msg("ai", "I will inspect the file.", tool_calls=[tool_call]),
+                _Msg("tool", "file contents"),
+            ],
+            thread_id="thread-transcript",
+            source_anchor="a1",
+        )
+    )
+
+    assert written == []
+    assert len(model.messages) == 3
+    assert all(not isinstance(message, _Msg) for message in model.messages)
+    transcript = model.messages[1].content
+    assert "conversation_transcript" in transcript
+    assert "assistant_tool_calls_json" in transcript
+    assert '"read_file"' in transcript
+
+
 def test_system_prompt_contains_conservative_policy_contract() -> None:
     lowered = _SYSTEM_PROMPT.lower()
     assert "memory curator" in lowered
     assert "prefer project" in lowered
     assert "do not store" in lowered
-    assert "at most 8 operations per run" in lowered
+    assert "at most one op per item id" in lowered
 
 
 def test_system_prompt_forbids_metadata_only_fact_corrections() -> None:

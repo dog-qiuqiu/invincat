@@ -41,19 +41,15 @@ from invincat_cli.core.debug import configure_debug_logging
 logger = logging.getLogger(__name__)
 configure_debug_logging(logger)
 
-MAX_OPERATIONS_PER_RUN = 8
 MAX_ITEM_CONTENT_CHARS = 500
 MAX_SECTION_NAME_CHARS = 80
-MAX_SCORE_REASON_CHARS = 160
+MAX_REASON_CHARS = 160
 _MAX_OUTPUT_TOKENS = 2000
 
 DEFAULT_TIER = "warm"
 DEFAULT_SCORE = 50
 HOT_THRESHOLD = 70
 COLD_THRESHOLD = 30
-MAX_RESCORING_CANDIDATES_PER_SCOPE = 16
-_RELEVANT_RESCORE_COUNT = 8   # conversation-relevant items
-_REVIEW_RESCORE_COUNT = 8     # oldest-unconfirmed items for proactive review
 MAX_HOT_ITEMS_PER_SCOPE = 8
 MAX_WARM_ITEMS_PER_SCOPE = 6
 MAX_ARCHIVED_ITEMS_PER_SCOPE = 50
@@ -120,27 +116,6 @@ _INVALID_FACT_REASON_RE = re.compile(
     r"已关闭|不再复现|问题已修复|bug已修复|缺陷已修复)",
     re.IGNORECASE,
 )
-_RESOLUTION_SIGNAL_RE = re.compile(
-    r"\b("
-    r"fix(?:ed|es)?|resolve(?:d|s)?|repair(?:ed|s)?|patch(?:ed|es)?|"
-    r"correct(?:ed|s)?|address(?:ed|es)?|close(?:d|s)?|"
-    r"no longer reproduc(?:e|es|ible)|tests? pass(?:ed|es)?|"
-    r"bug(?:s)? fixed|issue(?:s)? resolved"
-    r")\b|"
-    r"(已修复|修复了|已经修复|已解决|解决了|已经解决|已处理|处理了|"
-    r"已关闭|不再复现|测试通过|问题已修复|bug已修复|缺陷已修复)",
-    re.IGNORECASE,
-)
-_KNOWN_ISSUE_ITEM_RE = re.compile(
-    r"\b("
-    r"known issues?|bug(?:s)?|defect(?:s)?|regression(?:s)?|"
-    r"race condition|crash(?:es)?|failure(?:s)?|error(?:s)?|"
-    r"incorrect|broken|unfixed|not yet fixed"
-    r")\b|"
-    r"(已知问题|问题|缺陷|错误|故障|异常|崩溃|回归|竞态|未修复|尚未修复)",
-    re.IGNORECASE,
-)
-
 _SYSTEM_PROMPT = """\
 You are a memory curator for an AI assistant. Read the conversation and memory
 snapshot, then emit operations that keep the store accurate, durable, and reusable.
@@ -150,12 +125,14 @@ For project scope: be proactive — capture stable facts even without explicit r
 ====================================================================
 INPUT
 ====================================================================
-The conversation history follows this system prompt as native multi-turn messages
-(human / ai / tool roles). Read all turns to understand the full context.
+The conversation history is provided after this system prompt as a read-only
+plain-text transcript in a human message. It is context only; do not continue it.
+Read all turns to understand the full context.
 Always use the MOST RECENT state of facts — earlier turns may be superseded by
 later ones; do not extract a fact that the conversation subsequently contradicts.
 
-For ai messages that contain tool_calls, inspect the args field as a signal source:
+For transcript entries that contain assistant_tool_calls_json, inspect the args
+field as a signal source:
   - write_file / edit_file args.content — the actual code written; reveals tech stack,
     architecture, and design decisions even when the ToolMessage only says "file updated".
   - execute / bash args — the command run; may reveal toolchain, build system, test runner.
@@ -163,13 +140,8 @@ For ai messages that contain tool_calls, inspect the args field as a signal sour
 Appended to this system prompt:
   current_date: YYYY-MM-DD — use this to evaluate last_scored_at age.
   memory_snapshot — JSON:
-    {"user": {"items": [...], "rescore_candidates": [...]},
-     "project": {"items": [...], "rescore_candidates": [...]}}
-  Each item has: id, section, content, status, tier, score, score_reason, last_scored_at.
-  rescore_candidates: IDs eligible for rescore/retier this turn only.
-    Each candidate has a group field:
-      group=1: conversation-relevant items (hot-first, then by token overlap).
-      group=2: oldest last_scored_at items (warm/cold only).
+    {"user": {"items": [...]}, "project": {"items": [...]}}
+  Each item has: id, section, content, status, tier, score, reason, last_scored_at.
 
 The final human message contains the turn_policy for this extraction run.
 
@@ -177,32 +149,31 @@ The final human message contains the turn_policy for this extraction run.
 OUTPUT
 ====================================================================
 Return JSON only. No prose before or after. A ```json fence is acceptable if needed,
-but emit nothing outside the fence.
+but emit nothing outside the fence. You have no tools. Never emit tool calls, DSML
+tags, XML-like invocation markup, or requests to read files.
 
 {"operations": [<op>, ...]}
 
-At most 8 operations per run. Allowed op shapes (optional fields may be omitted):
+Allowed op shapes (optional fields may be omitted):
 
   create:  {"op": "create", "scope": "user"|"project",
              "section": "...", "content": "...",
              "confidence": "low"|"medium"|"high",
              "tier": "hot"|"warm"|"cold", "score": <0-100>,
-             "score_reason": "..."}
+             "reason": "..."}
              Omit id — the store assigns it.
 
   update:  {"op": "update", "scope": "...", "id": "mem_u_000001",
              "content": "..." (opt), "confidence": "..." (opt),
              "tier": "..." (opt), "score": <int> (opt),
-             "score_reason": "..." (opt)}
+             "reason": "..." (opt)}
              At least one non-id field required.
 
   rescore: {"op": "rescore", "scope": "...", "id": "mem_u_000001",
-             "score": <0-100>, "score_reason": "..."}
+             "score": <0-100>, "reason": "..."}
 
   retier:  {"op": "retier", "scope": "...", "id": "mem_u_000001",
-             "tier": "hot"|"warm"|"cold", "score_reason": "..."}
-
-  rescore/retier: only IDs in rescore_candidates are valid.
+             "tier": "hot"|"warm"|"cold", "reason": "..."}
 
   archive: {"op": "archive", "scope": "...", "id": "mem_p_000031",
              "reason": "..."}
@@ -251,7 +222,7 @@ Project scope — proactively store the following even without explicit request,
 ====================================================================
 OPERATION RULES
 ====================================================================
-- Sparse operations. At most 8 ops per run; at most one op per item id.
+- Sparse operations. At most one op per item id.
 - Prefer update over create when an existing item already matches. Never near-duplicate:
   same or equivalent fact, even if worded differently or placed in a different section.
 - update  — fact still true; refine phrasing/score/tier or incorporate new evidence.
@@ -260,7 +231,7 @@ OPERATION RULES
 - delete  — fact is actively wrong: contradicted by evidence, superseded by explicit
             statement, or would mislead future turns. Use only with clear evidence of
             falsity. Prefer archive when uncertain.
-- archive — use in either case; not restricted to rescore_candidates:
+- archive — use in either case:
             (a) Low confidence: any active item with score < 40 and last_scored_at
                 older than ~14 days (relative to current_date), no new supporting
                 evidence this turn.
@@ -272,7 +243,7 @@ OPERATION RULES
   that is currently stored as an active Known Issues memory, do not leave that
   memory active. Use delete when the old bug statement would now be false or
   misleading; use archive when the bug was real but is now resolved historical context.
-- rescore/retier require supporting evidence from this turn; only valid for rescore_candidate IDs.
+- rescore/retier require supporting evidence from this turn.
   Both change only priority metadata — not content.
   Behavioral difference:
     rescore: score is the input → tier auto-derives from the new score.
@@ -283,12 +254,10 @@ OPERATION RULES
   Do not use either to record a changed fact, contradiction, migration, or correction.
   If content would remain false after the op, use update with corrected content,
   or delete the old item and create the replacement.
-- rescore_candidates (group field indicates origin):
-  group=1 (conversation-relevant): assess whether this turn supports, contradicts, or
-    refines the item. Rescore up if confirmed; delete/archive if contradicted.
-  group=2 (oldest last_scored_at, warm/cold only): rescore up if confirmed this turn;
-    archive if score < 40 and last_scored_at older than ~14 days with no new evidence;
-    noop if unrelated and item still appears valid.
+- When reviewing existing items, assess whether this turn supports, contradicts, or
+  refines the item. Rescore up if confirmed; delete/archive if contradicted.
+  Archive if score < 40 and last_scored_at is older than ~14 days with no new
+  evidence; noop if unrelated and item still appears valid.
 
 ====================================================================
 FIELDS
@@ -318,7 +287,7 @@ score (0-100 integer) — durability and cross-turn usefulness.
            20=weak/fading signal.
   Keep score consistent with tier.
 
-score_reason (≤160 chars) — one sentence citing specific evidence. Same language as
+reason (≤160 chars) — one sentence citing specific evidence. Same language as
   the last human message.
   Good: "User explicitly asked to always prefer bullet lists over prose."
   Bad:  "User preference."
@@ -333,7 +302,7 @@ B — explicit standing rule:
   {"operations": [{"op": "create", "scope": "project", "section": "Testing Workflow",
    "content": "Always run `pytest -x` before suggesting any commit.",
    "confidence": "high", "tier": "hot", "score": 85,
-   "score_reason": "User explicitly stated this as a standing rule."}]}
+   "reason": "User explicitly stated this as a standing rule."}]}
 
 C — existing item contradicted (snapshot has mem_p_000007 "Uses Poetry"):
   {"operations": [
@@ -342,43 +311,43 @@ C — existing item contradicted (snapshot has mem_p_000007 "Uses Poetry"):
     {"op": "create", "scope": "project", "section": "Tooling",
      "content": "Uses `uv` for dependency management.",
      "confidence": "high", "tier": "hot", "score": 80,
-     "score_reason": "User confirmed migration from Poetry to uv."}]}
+     "reason": "User confirmed migration from Poetry to uv."}]}
 
 D — refine existing item (mem_u_000003 "Prefers terse responses", score 60):
   {"operations": [{"op": "update", "scope": "user", "id": "mem_u_000003",
    "content": "Prefers terse responses, 2-3 bullets maximum.",
    "confidence": "high", "tier": "hot", "score": 78,
-   "score_reason": "User reinforced and quantified the preference."}]}
+   "reason": "User reinforced and quantified the preference."}]}
 
 E — Chinese conversation (language must match):
   {"operations": [{"op": "create", "scope": "project", "section": "提交规范",
    "content": "提交代码前必须先执行 `make lint`，否则不允许合并。",
    "confidence": "high", "tier": "hot", "score": 88,
-   "score_reason": "用户明确要求将 lint 检查作为合并前的强制步骤。"}]}
+   "reason": "用户明确要求将 lint 检查作为合并前的强制步骤。"}]}
 
 F — code review: assistant reads source files and identifies architecture + unfixed bugs:
   {"operations": [
     {"op": "create", "scope": "project", "section": "Architecture",
      "content": "Service layer is stateless; all DB access goes through a repository interface. Controllers must not call the ORM directly.",
      "confidence": "high", "tier": "warm", "score": 65,
-     "score_reason": "Observed consistently across multiple source files during code review."},
+     "reason": "Observed consistently across multiple source files during code review."},
     {"op": "create", "scope": "project", "section": "Known Issues",
      "content": "Race condition in job scheduler: two workers can pick up the same task if claimed within the same second due to a non-atomic check-then-update.",
      "confidence": "high", "tier": "warm", "score": 68,
-     "score_reason": "Bug identified during code review; not yet fixed — relevant context for future work on the scheduler."}]}
+     "reason": "Bug identified during code review; not yet fixed — relevant context for future work on the scheduler."}]}
 
 G — user scope: user states a personal preference for the first time (no existing item to update):
   {"operations": [{"op": "create", "scope": "user", "section": "Response Style",
    "content": "Prefers responses in plain text without markdown formatting.",
    "confidence": "high", "tier": "warm", "score": 65,
-   "score_reason": "User explicitly asked to stop using markdown; clear stated preference."}]}
+   "reason": "User explicitly asked to stop using markdown; clear stated preference."}]}
 
-H — rescore_candidates: mem_u_000005 "Uses pytest" (group=1, score 45) confirmed this turn;
-    mem_u_000009 "Prefers verbose logs" (group=2, score 32) has no new evidence:
+H — existing items: mem_u_000005 "Uses pytest" (score 45) confirmed this turn;
+    mem_u_000009 "Prefers verbose logs" (score 32) has no new evidence:
   {"operations": [
     {"op": "rescore", "scope": "user", "id": "mem_u_000005",
      "score": 72,
-     "score_reason": "User ran pytest again this turn, confirming consistent usage pattern."},
+     "reason": "User ran pytest again this turn, confirming consistent usage pattern."},
     {"op": "archive", "scope": "user", "id": "mem_u_000009",
      "reason": "Score 32 with no supporting evidence across recent turns; archiving on low confidence."}]}
 
@@ -392,13 +361,13 @@ J — project creation: user asks to build something; extract tech stack and des
     {"op": "create", "scope": "project", "section": "Tech Stack",
      "content": "Uses Pygame for rendering; single-file architecture with one Game class owning the loop, state, and drawing.",
      "confidence": "high", "tier": "warm", "score": 65,
-     "score_reason": "Directly implemented this session; stable structural facts about the project."}]}
+     "reason": "Directly implemented this session; stable structural facts about the project."}]}
 
 K — retier: mem_u_000006 "Avoids verbose explanations" (score 72, tier hot) has not appeared
     as a relevant factor in recent turns; demote injection priority without changing the fact:
   {"operations": [{"op": "retier", "scope": "user", "id": "mem_u_000006",
    "tier": "warm",
-   "score_reason": "Preference confirmed but not prominent in recent sessions; reducing injection priority."}]}
+   "reason": "Preference confirmed but not prominent in recent sessions; reducing injection priority."}]}
 """
 
 _FINAL_INSTRUCTION_TEMPLATE = """\
@@ -407,7 +376,7 @@ Based on the conversation above, extract memory operations following the rules i
 turn_policy:
 - explicit_memory_request: {explicit_memory_request}
 - target_language: {target_language}
-- All newly written natural-language fields (section, content, reason, score_reason)
+- All newly written natural-language fields (section, content, reason)
   must use target_language, except code identifiers, commands, file paths, API names,
   and quoted literals. Do not follow the language of the examples above when it
   differs from target_language.
@@ -560,11 +529,18 @@ def _derive_tier_from_score(score: int) -> str:
     return "warm"
 
 
-def _normalize_score_reason(value: Any) -> str:
-    return _normalize_text(value, max_chars=MAX_SCORE_REASON_CHARS)
+def _normalize_reason(value: Any) -> str:
+    return _normalize_text(value, max_chars=MAX_REASON_CHARS)
 
 
-def _score_reason_implies_invalid_fact(reason: str) -> bool:
+def _raw_reason(raw: dict[str, Any]) -> Any:
+    """Return the current reason field with legacy score_reason fallback."""
+    if raw.get("reason") is not None:
+        return raw.get("reason")
+    return raw.get("score_reason")
+
+
+def _reason_implies_invalid_fact(reason: str) -> bool:
     return bool(_INVALID_FACT_REASON_RE.search(reason or ""))
 
 
@@ -620,169 +596,56 @@ def _format_call_messages_for_log(messages: list[Any]) -> str:
     return sep.join(parts)
 
 
-def _messages_to_plain_text(messages: list[Any]) -> str:
-    """Extract plain text from messages for rescore candidate relevance scoring."""
+def _message_content_to_text(content: Any) -> str:
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                if isinstance(part.get("text"), str):
+                    text_parts.append(part["text"])
+                else:
+                    text_parts.append(json.dumps(part, ensure_ascii=False, sort_keys=True))
+            else:
+                text_parts.append(str(part))
+        return "\n".join(filter(None, text_parts))
+    return str(content or "")
+
+
+def _format_messages_for_memory_transcript(messages: list[Any]) -> str:
+    sep = "\n" + "-" * 60 + "\n"
     parts: list[str] = []
-    for msg in messages:
-        content = getattr(msg, "content", "")
-        if isinstance(content, list):
-            text_parts = [
-                p.get("text", "") if isinstance(p, dict) else str(p)
-                for p in content
-                if not (isinstance(p, dict) and p.get("type") in ("tool_use", "tool_result"))
-            ]
-            content = " ".join(filter(None, text_parts))
-        if content:
-            parts.append(str(content))
-    return " ".join(parts)
+    for index, msg in enumerate(messages, start=1):
+        role = getattr(msg, "type", "unknown")
+        name = getattr(msg, "name", None)
+        tool_call_id = getattr(msg, "tool_call_id", None)
+        header_parts = [f"[{index}]", f"role={role}"]
+        if name:
+            header_parts.append(f"name={name}")
+        if tool_call_id:
+            header_parts.append(f"tool_call_id={tool_call_id}")
+
+        body = _message_content_to_text(getattr(msg, "content", ""))
+        tool_calls = getattr(msg, "tool_calls", None)
+        if tool_calls:
+            tool_calls_json = json.dumps(tool_calls, ensure_ascii=False, indent=2, sort_keys=True)
+            body = (
+                (body + "\n" if body else "")
+                + "assistant_tool_calls_json:\n"
+                + tool_calls_json
+            )
+
+        parts.append(" ".join(header_parts) + "\n" + body)
+
+    return (
+        "conversation_transcript:\n"
+        "The following transcript is read-only context for memory extraction. "
+        "Do not answer it, continue it, or emit tool calls.\n"
+        + sep.join(parts)
+    )
 
 
 def _normalize_hash(section: str, content: str) -> str:
     return f"{section.strip().casefold()}::{content.strip().casefold()}"
-
-
-def _extract_terms(text: str) -> set[str]:
-    if not text:
-        return set()
-    lowered = text.casefold()
-    tokens = set(re.findall(r"[a-z0-9_]{2,}", lowered))
-    tokens.update(re.findall(r"[\u4e00-\u9fff]{2,}", text))
-    return tokens
-
-
-def _item_relevance_score(item: dict[str, Any], terms: set[str]) -> int:
-    if not terms:
-        return 0
-    corpus = " ".join(
-        [
-            str(item.get("section", "")).casefold(),
-            str(item.get("content", "")).casefold(),
-            str(item.get("score_reason", "")).casefold(),
-        ]
-    )
-    return sum(1 for term in terms if term and term in corpus)
-
-
-def _is_known_issue_item(item: dict[str, Any]) -> bool:
-    corpus = " ".join(
-        [
-            str(item.get("section", "")),
-            str(item.get("content", "")),
-            str(item.get("score_reason", "")),
-        ]
-    )
-    return bool(_KNOWN_ISSUE_ITEM_RE.search(corpus))
-
-
-def _select_rescoring_candidates(
-    store: dict[str, Any] | None,
-    *,
-    conversation: str,
-    max_items: int = MAX_RESCORING_CANDIDATES_PER_SCOPE,
-) -> list[dict[str, Any]]:
-    if store is None:
-        return []
-    items = [
-        item
-        for item in store.get("items", [])
-        if isinstance(item, dict) and item.get("status") == "active"
-    ]
-    if not items:
-        return []
-
-    relevant_cap = max(1, max_items // 2)
-    review_cap = max(0, max_items - relevant_cap)
-
-    # Group 1: conversation-relevant items (hot-first, then by token overlap)
-    terms = _extract_terms(conversation)
-    relevant_pool = sorted(
-        items,
-        key=lambda item: (
-            1
-            if _normalize_tier(
-                item.get("tier"),
-                default=_derive_tier_from_score(_normalize_score(item.get("score"))),
-            )
-            == "hot"
-            else 0,
-            _item_relevance_score(item, terms),
-            str(item.get("updated_at", "")),
-            str(item.get("id", "")).casefold(),
-        ),
-        reverse=True,
-    )
-
-    relevant: list[dict[str, Any]] = []
-    relevant_ids: set[Any] = set()
-    if _RESOLUTION_SIGNAL_RE.search(conversation or ""):
-        issue_candidates = sorted(
-            [item for item in items if _is_known_issue_item(item)],
-            key=lambda item: (
-                _item_relevance_score(item, terms),
-                _normalize_score(item.get("score")),
-                str(item.get("updated_at", "")),
-                str(item.get("id", "")).casefold(),
-            ),
-            reverse=True,
-        )
-        for item in issue_candidates:
-            if len(relevant) >= relevant_cap:
-                break
-            item_id = item.get("id")
-            if item_id in relevant_ids:
-                continue
-            relevant.append(item)
-            relevant_ids.add(item_id)
-
-    for item in relevant_pool:
-        if len(relevant) >= relevant_cap:
-            break
-        item_id = item.get("id")
-        if item_id in relevant_ids:
-            continue
-        relevant.append(item)
-        relevant_ids.add(item_id)
-    relevant_ids = {item.get("id") for item in relevant}
-
-    # Group 2: oldest-unconfirmed warm/cold items not already in group 1
-    # (hot items are rarely stale enough to need proactive review)
-    review = sorted(
-        [
-            item
-            for item in items
-            if item.get("id") not in relevant_ids
-            and _normalize_tier(
-                item.get("tier"),
-                default=_derive_tier_from_score(_normalize_score(item.get("score"))),
-            )
-            != "hot"
-        ],
-        key=lambda item: (
-            str(item.get("last_scored_at", "")),
-            str(item.get("id", "")),
-        ),
-    )[:review_cap]
-
-    def _format(item: dict[str, Any], group: int) -> dict[str, Any]:
-        return {
-            "id": item.get("id"),
-            "group": group,
-            "section": item.get("section"),
-            "content": item.get("content"),
-            "tier": _normalize_tier(
-                item.get("tier"),
-                default=_derive_tier_from_score(_normalize_score(item.get("score"))),
-            ),
-            "score": _normalize_score(item.get("score")),
-            "created_at": item.get("created_at"),
-            "last_scored_at": item.get("last_scored_at"),
-        }
-
-    return [
-        _format(item, 1) for item in relevant if isinstance(item.get("id"), str)
-    ] + [
-        _format(item, 2) for item in review if isinstance(item.get("id"), str)
-    ]
 
 
 def _read_memory_store(path: Path, scope: str) -> dict[str, Any]:
@@ -848,7 +711,7 @@ def _read_memory_store(path: Path, scope: str) -> dict[str, Any]:
         confidence = _normalize_confidence(raw.get("confidence"), default="medium")
         score = _normalize_score(raw.get("score"), default=DEFAULT_SCORE)
         tier = _normalize_tier(raw.get("tier"), default=_derive_tier_from_score(score))
-        score_reason = _normalize_score_reason(raw.get("score_reason"))
+        reason = _normalize_reason(_raw_reason(raw))
         last_scored_at = (
             raw.get("last_scored_at")
             if isinstance(raw.get("last_scored_at"), str)
@@ -870,7 +733,7 @@ def _read_memory_store(path: Path, scope: str) -> dict[str, Any]:
                 "confidence": confidence,
                 "tier": tier,
                 "score": score,
-                "score_reason": score_reason,
+                "reason": reason,
                 "last_scored_at": last_scored_at,
                 "norm_hash": _normalize_hash(section, content),
             }
@@ -905,12 +768,10 @@ def _next_memory_id(store: dict[str, Any], scope: str) -> str:
 def _build_memory_snapshot(
     user_store: dict[str, Any] | None,
     project_store: dict[str, Any] | None,
-    *,
-    conversation: str,
 ) -> dict[str, Any]:
     def _scope_snapshot(store: dict[str, Any] | None) -> dict[str, Any]:
         if store is None:
-            return {"items": [], "rescore_candidates": []}
+            return {"items": []}
         items: list[dict[str, Any]] = []
         for item in store.get("items", []):
             if not isinstance(item, dict):
@@ -928,7 +789,7 @@ def _build_memory_snapshot(
                     "status": item.get("status"),
                     "tier": tier,
                     "score": score,
-                    "score_reason": _normalize_score_reason(item.get("score_reason")),
+                    "reason": _normalize_reason(_raw_reason(item)),
                     "created_at": item.get("created_at"),
                     "last_scored_at": item.get("last_scored_at"),
                 }
@@ -942,12 +803,7 @@ def _build_memory_snapshot(
                 str(x.get("id", "")),
             )
         )
-        candidates = _select_rescoring_candidates(
-            store,
-            conversation=conversation,
-            max_items=MAX_RESCORING_CANDIDATES_PER_SCOPE,
-        )
-        return {"items": items, "rescore_candidates": candidates}
+        return {"items": items}
 
     return {
         "user": _scope_snapshot(user_store),
@@ -957,16 +813,12 @@ def _build_memory_snapshot(
 
 def _normalize_and_validate_operations(
     payload: Any,
-    *,
-    rescoring_candidate_ids_by_scope: dict[str, set[str]] | None = None,
 ) -> list[dict[str, Any]]:
     if not isinstance(payload, dict):
         return []
     raw_ops = payload.get("operations", [])
     if not isinstance(raw_ops, list):
         return []
-    if len(raw_ops) > MAX_OPERATIONS_PER_RUN:
-        raw_ops = raw_ops[:MAX_OPERATIONS_PER_RUN]
 
     normalized: list[dict[str, Any]] = []
     for raw in raw_ops:
@@ -1001,7 +853,7 @@ def _normalize_and_validate_operations(
                 continue
             score = _normalize_score(raw.get("score"), default=DEFAULT_SCORE)
             tier = _normalize_tier(raw.get("tier"), default=_derive_tier_from_score(score))
-            score_reason = _normalize_score_reason(raw.get("score_reason"))
+            reason = _normalize_reason(_raw_reason(raw))
             normalized.append(
                 {
                     "op": "create",
@@ -1011,7 +863,7 @@ def _normalize_and_validate_operations(
                     "confidence": confidence,
                     "tier": tier,
                     "score": score,
-                    "score_reason": score_reason,
+                    "reason": reason,
                 }
             )
             continue
@@ -1025,8 +877,8 @@ def _normalize_and_validate_operations(
             has_confidence = raw.get("confidence") is not None
             has_tier = raw.get("tier") is not None
             has_score = raw.get("score") is not None
-            has_score_reason = raw.get("score_reason") is not None
-            if not any((has_content, has_confidence, has_tier, has_score, has_score_reason)):
+            has_reason = raw.get("reason") is not None or raw.get("score_reason") is not None
+            if not any((has_content, has_confidence, has_tier, has_score, has_reason)):
                 continue
             if has_tier and (
                 not isinstance(raw.get("tier"), str)
@@ -1035,11 +887,11 @@ def _normalize_and_validate_operations(
                 continue
             score = _normalize_score(raw.get("score"), default=DEFAULT_SCORE)
             tier = _normalize_tier(raw.get("tier"), default=_derive_tier_from_score(score))
-            score_reason = _normalize_score_reason(raw.get("score_reason"))
+            reason = _normalize_reason(_raw_reason(raw))
             confidence = _normalize_confidence(raw.get("confidence"), default="high")
             if (
                 not has_content
-                and _score_reason_implies_invalid_fact(score_reason)
+                and _reason_implies_invalid_fact(reason)
                 and (
                     (has_score and score < COLD_THRESHOLD)
                     or (has_tier and tier == "cold")
@@ -1050,7 +902,7 @@ def _normalize_and_validate_operations(
                         "op": "delete",
                         "scope": scope,
                         "id": item_id.strip(),
-                        "reason": score_reason or "Existing memory is no longer valid.",
+                        "reason": reason or "Existing memory is no longer valid.",
                     }
                 )
                 continue
@@ -1067,8 +919,8 @@ def _normalize_and_validate_operations(
                 op_payload["tier"] = tier
             if has_score:
                 op_payload["score"] = score
-            if has_score_reason:
-                op_payload["score_reason"] = score_reason
+            if has_reason:
+                op_payload["reason"] = reason
             normalized.append(op_payload)
             continue
 
@@ -1078,22 +930,15 @@ def _normalize_and_validate_operations(
                 continue
             if raw.get("score") is None:
                 continue
-            scope_candidates = (
-                (rescoring_candidate_ids_by_scope or {}).get(scope)
-                if rescoring_candidate_ids_by_scope is not None
-                else None
-            )
-            if scope_candidates is not None and item_id.strip() not in scope_candidates:
-                continue
             score = _normalize_score(raw.get("score"), default=DEFAULT_SCORE)
-            score_reason = _normalize_score_reason(raw.get("score_reason"))
-            if score < COLD_THRESHOLD and _score_reason_implies_invalid_fact(score_reason):
+            reason = _normalize_reason(_raw_reason(raw))
+            if score < COLD_THRESHOLD and _reason_implies_invalid_fact(reason):
                 normalized.append(
                     {
                         "op": "delete",
                         "scope": scope,
                         "id": item_id.strip(),
-                        "reason": score_reason or "Existing memory is no longer valid.",
+                        "reason": reason or "Existing memory is no longer valid.",
                     }
                 )
                 continue
@@ -1103,7 +948,7 @@ def _normalize_and_validate_operations(
                     "scope": scope,
                     "id": item_id.strip(),
                     "score": score,
-                    "score_reason": score_reason,
+                    "reason": reason,
                 }
             )
             continue
@@ -1117,22 +962,15 @@ def _normalize_and_validate_operations(
             tier_raw = raw.get("tier")
             if not isinstance(tier_raw, str) or tier_raw.strip().lower() not in _ALLOWED_TIER:
                 continue
-            scope_candidates = (
-                (rescoring_candidate_ids_by_scope or {}).get(scope)
-                if rescoring_candidate_ids_by_scope is not None
-                else None
-            )
-            if scope_candidates is not None and item_id.strip() not in scope_candidates:
-                continue
-            score_reason = _normalize_score_reason(raw.get("score_reason"))
+            reason = _normalize_reason(_raw_reason(raw))
             tier = _normalize_tier(tier_raw)
-            if tier == "cold" and _score_reason_implies_invalid_fact(score_reason):
+            if tier == "cold" and _reason_implies_invalid_fact(reason):
                 normalized.append(
                     {
                         "op": "delete",
                         "scope": scope,
                         "id": item_id.strip(),
-                        "reason": score_reason or "Existing memory is no longer valid.",
+                        "reason": reason or "Existing memory is no longer valid.",
                     }
                 )
                 continue
@@ -1142,7 +980,7 @@ def _normalize_and_validate_operations(
                     "scope": scope,
                     "id": item_id.strip(),
                     "tier": tier,
-                    "score_reason": score_reason,
+                    "reason": reason,
                 }
             )
             continue
@@ -1151,7 +989,7 @@ def _normalize_and_validate_operations(
             item_id = raw.get("id")
             if not isinstance(item_id, str) or not item_id.strip():
                 continue
-            reason = _normalize_text(raw.get("reason"), max_chars=120)
+            reason = _normalize_text(_raw_reason(raw), max_chars=MAX_REASON_CHARS)
             normalized.append(
                 {
                     "op": op,
@@ -1173,16 +1011,6 @@ def _find_item(store: dict[str, Any] | None, item_id: str) -> dict[str, Any] | N
     return None
 
 
-def _active_items(store: dict[str, Any] | None) -> list[dict[str, Any]]:
-    if store is None:
-        return []
-    return [
-        item
-        for item in store.get("items", [])
-        if isinstance(item, dict) and item.get("status") == "active"
-    ]
-
-
 def _build_invalid_fact_cleanup_operations(
     user_store: dict[str, Any] | None,
     project_store: dict[str, Any] | None,
@@ -1199,11 +1027,11 @@ def _build_invalid_fact_cleanup_operations(
         for item in store.get("items", []):
             if not isinstance(item, dict) or item.get("status") != "active":
                 continue
-            reason = _normalize_score_reason(item.get("score_reason"))
+            reason = _normalize_reason(_raw_reason(item))
             item_id = item.get("id")
             if not isinstance(item_id, str) or not item_id.strip():
                 continue
-            if _score_reason_implies_invalid_fact(reason):
+            if _reason_implies_invalid_fact(reason):
                 operations.append(
                     {
                         "op": "delete",
@@ -1286,7 +1114,7 @@ def _apply_operations(
         for op in operations
         if op.get("op") == "delete"
         and isinstance(op.get("id"), str)
-        and _score_reason_implies_invalid_fact(str(op.get("reason") or ""))
+        and _reason_implies_invalid_fact(str(op.get("reason") or ""))
     }
 
     def _get_or_create_store(scope: str) -> dict[str, Any]:
@@ -1337,7 +1165,7 @@ def _apply_operations(
                     "confidence": _normalize_confidence(op.get("confidence"), default="high"),
                     "tier": tier,
                     "score": score,
-                    "score_reason": _normalize_score_reason(op.get("score_reason")),
+                    "reason": _normalize_reason(op.get("reason")),
                     "last_scored_at": now_iso,
                     "norm_hash": _normalize_hash(section, content),
                 }
@@ -1398,8 +1226,8 @@ def _apply_operations(
                     _normalize_score(item.get("score")),
                     str(item["tier"]),
                 )
-            if "score_reason" in op:
-                item["score_reason"] = _normalize_score_reason(op.get("score_reason"))
+            if "reason" in op:
+                item["reason"] = _normalize_reason(op.get("reason"))
             if has_score or has_tier:
                 item["last_scored_at"] = now_iso
             if item.get("status") == "archived":
@@ -1410,7 +1238,7 @@ def _apply_operations(
             score = _normalize_score(op.get("score"), default=_normalize_score(item.get("score")))
             item["score"] = score
             item["tier"] = _derive_tier_from_score(score)
-            item["score_reason"] = _normalize_score_reason(op.get("score_reason"))
+            item["reason"] = _normalize_reason(op.get("reason"))
             item["last_scored_at"] = now_iso
             changed_scopes.add(scope)
         elif op_name == "retier":
@@ -1423,7 +1251,7 @@ def _apply_operations(
                 _normalize_score(item.get("score")),
                 str(item["tier"]),
             )
-            item["score_reason"] = _normalize_score_reason(op.get("score_reason"))
+            item["reason"] = _normalize_reason(op.get("reason"))
             item["last_scored_at"] = now_iso
             changed_scopes.add(scope)
         elif op_name == "archive":
@@ -1434,6 +1262,8 @@ def _apply_operations(
             item["archived_at"] = now_iso
             item["source_thread_id"] = thread_id
             item["source_anchor"] = source_anchor
+            if "reason" in op:
+                item["reason"] = _normalize_reason(op.get("reason"))
             changed_scopes.add(scope)
         elif op_name == "delete":
             items = store.get("items", [])
@@ -1745,7 +1575,7 @@ class MemoryAgentMiddleware(AgentMiddleware):
         """Run all deterministic cleanup passes and return the post-cleanup stores.
 
         Two passes run in sequence:
-        1. Invalid-fact cleanup: deletes active items whose score_reason already
+        1. Invalid-fact cleanup: deletes active items whose reason already
            marks them as factually wrong (written by the model in a prior turn).
         2. Archived overflow: physically deletes the oldest archived items when the
            archived cap is exceeded, preventing unbounded store growth from proactive
@@ -1804,7 +1634,6 @@ class MemoryAgentMiddleware(AgentMiddleware):
     ) -> list[str] | None:
         written_store_paths: list[str] = []
         try:
-            conversation_text = _messages_to_plain_text(messages)
             last_human = self._last_human_text(messages)
             explicit_memory_request = _is_explicit_memory_request(last_human)
             target_language = _detect_target_language(last_human)
@@ -1862,7 +1691,6 @@ class MemoryAgentMiddleware(AgentMiddleware):
             snapshot = _build_memory_snapshot(
                 user_store,
                 project_store,
-                conversation=conversation_text,
             )
 
             system_content = (
@@ -1872,7 +1700,9 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 + json.dumps(snapshot, ensure_ascii=False, indent=2)
             )
             call_messages: list[Any] = [SystemMessage(content=system_content)]
-            call_messages += list(messages)
+            call_messages.append(
+                HumanMessage(content=_format_messages_for_memory_transcript(list(messages)))
+            )
             call_messages.append(
                 HumanMessage(
                     content=_FINAL_INSTRUCTION_TEMPLATE.format(
@@ -1918,22 +1748,7 @@ class MemoryAgentMiddleware(AgentMiddleware):
                     data, _ = json.JSONDecoder().raw_decode(raw, start)
                 except json.JSONDecodeError:
                     logger.debug("Memory agent: model returned malformed JSON", exc_info=True)
-            rescoring_candidate_ids_by_scope = {
-                scope: {
-                    str(candidate.get("id"))
-                    for candidate in (
-                        ((snapshot.get(scope) or {}).get("rescore_candidates") or [])
-                        if isinstance(snapshot.get(scope), dict)
-                        else []
-                    )
-                    if isinstance(candidate, dict) and isinstance(candidate.get("id"), str)
-                }
-                for scope in ("user", "project")
-            }
-            operations = _normalize_and_validate_operations(
-                data,
-                rescoring_candidate_ids_by_scope=rescoring_candidate_ids_by_scope,
-            )
+            operations = _normalize_and_validate_operations(data)
             if not operations:
                 if written_store_paths:
                     self._last_run_turn = self._turn_index

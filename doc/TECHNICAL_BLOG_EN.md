@@ -96,7 +96,7 @@ Long-term memory in the system is divided into two scopes:
 
 If the project root cannot be identified, project-level memory falls back to `.invincat/memory_project.json` in the current working directory. This design accommodates both Git repositories and plain directories, ensuring project memory remains available.
 
-Memory entries are not plain text fragments — they are structured objects with metadata. Each entry contains `id`, `section`, `content`, `status`, `confidence`, `tier`, `score`, `score_reason`, timestamps, and a source anchor. This gives every memory item the governance capabilities of being traceable, scorable, archivable, and deletable.
+Memory entries are not plain text fragments — they are structured objects with metadata. Each entry contains `id`, `section`, `content`, `status`, `confidence`, `tier`, `score`, `reason`, timestamps, and a source anchor. This gives every memory item the governance capabilities of being traceable, scorable, archivable, and deletable.
 
 ### Tiered Memory Strategy: Why Tiering Is Necessary
 
@@ -123,7 +123,7 @@ The key to memory governance is not "whether something was stored," but "whether
 | `confidence` | `low/medium/high` | Records factual reliability | Auxiliary signal for tiering and cleanup |
 | `tier` | `hot/warm/cold` usage priority | Controls injection budget and recall order | Improves hit quality within a fixed context window |
 | `score` | 0-100 strength score | Continuous expression of value strength | Supports automatic promotion/demotion and threshold governance |
-| `score_reason` | Scoring rationale | Makes score changes explainable | Supports auditing and deterministic cleanup |
+| `reason` | Evidence or lifecycle rationale | Makes memory changes explainable | Supports auditing and deterministic cleanup |
 | `created_at` / `updated_at` | Creation/update timestamps | Supports lifecycle judgments | Helps identify long-unconfirmed entries |
 | `archived_at` | Archive timestamp | Distinguishes "never activated" from "retired" | Supports future reactivation strategies |
 | `source_thread_id` | Source session | Tracks context origin | Facilitates post-incident review |
@@ -137,11 +137,11 @@ To prevent "fields can be arbitrarily overwritten," the system enforces field-le
 
 | Operation | Mutable Fields | Immutable Fields | Notes |
 |---|---|---|---|
-| `create` | `section`, `content`, `confidence`, `tier`, `score`, `score_reason` | `id`, `created_at`, `updated_at`, `source_*` | System-assigned identifiers and audit metadata |
-| `update` | `content`, `confidence`, `tier`, `score`, `score_reason` | `id`, `created_at` | For corrections and enhancements to the same fact |
-| `rescore` | `score`, `score_reason` | `content`, `section` | Changes strength only, not factual semantics |
-| `retier` | `tier`, `score_reason` | `content`, `section` | Changes injection priority only, not the fact itself |
-| `archive` | `status`, `archived_at` | `content` | Retires an entry without directly altering the fact |
+| `create` | `section`, `content`, `confidence`, `tier`, `score`, `reason` | `id`, `created_at`, `updated_at`, `source_*` | System-assigned identifiers and audit metadata |
+| `update` | `content`, `confidence`, `tier`, `score`, `reason` | `id`, `created_at` | For corrections and enhancements to the same fact |
+| `rescore` | `score`, `reason` | `content`, `section` | Changes strength only, not factual semantics |
+| `retier` | `tier`, `reason` | `content`, `section` | Changes injection priority only, not the fact itself |
+| `archive` | `status`, `archived_at`, `reason` | `content` | Retires an entry without directly altering the fact |
 | `delete` | Item deletion | All other fields | For factually wrong, conflicting, or misleading memories |
 
 This matrix transforms memory governance from a "semantic convention" into a "system constraint," preventing the model from corrupting critical metadata along incorrect code paths.
@@ -223,7 +223,7 @@ Memory quality control manifests across four dimensions: admission, scoring, tie
 
 On admission, the system stores only durable, reusable, and specific information. Temporary states, one-off errors, short-term plans, sensitive data, and ordinary reasoning steps should not enter long-term memory.
 
-On scoring, every memory item has a `score` and `score_reason`. On tiering, memories are classified as `hot`, `warm`, or `cold`. During injection, `hot` items are used first, then `warm`; `cold` items are not injected by default. This prevents low-value memories from diluting the model context.
+Every memory item has a `score` and `reason`. On tiering, memories are classified as `hot`, `warm`, or `cold`. During injection, `hot` items are used first, then `warm`; `cold` items are not injected by default. This prevents low-value memories from diluting the model context.
 
 On cleanup, the system scans active memories explicitly marked as factually inconsistent, outdated, superseded, or misleading, and performs deterministic deletion. This cleanup does not depend on whether the model successfully extracted memories in the current turn, nor on whether throttling is enabled. It is an important mechanism for preventing incorrect memories from persisting indefinitely.
 

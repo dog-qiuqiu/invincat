@@ -95,7 +95,7 @@ Each store is a JSON object:
       "confidence": "low|medium|high",
       "tier": "hot|warm|cold",
       "score": 0,
-      "score_reason": "",
+      "reason": "",
       "last_scored_at": "2026-04-22T10:00:00Z"
     }
   ]
@@ -130,7 +130,7 @@ Score/tier policy:
 - `30 <= score < 70` -> `warm`
 - `score < 30` -> `cold`
 - Backward compatibility for old stores: missing fields are backfilled as
-  `tier=warm`, `score=50`, `score_reason=""`, `last_scored_at=updated_at|created_at`.
+  `tier=warm`, `score=50`, `reason=""`, `last_scored_at=updated_at|created_at`.
 
 ## 5. Runtime Flow
 
@@ -177,13 +177,13 @@ Signal-based early trigger:
 
 ## 7. Safety Guards
 
-- Operation count and field length limits.
+- Field length limits.
 - Scope and op schema validation.
 - Duplicate create suppression.
 - Conflict guard: same id touched multiple times in one batch is rejected; `delete` wins when it clearly removes an invalid fact.
-- `rescore/retier` are restricted to local candidates only (max 16 per scope).
+- `rescore/retier` are guided by the full `items` list in memory snapshot; runtime no longer maintains a local candidate set.
 - `delete` removes memory that conflicts with current facts, has been superseded, or would mislead future turns.
-- On each completed turn, the full store is scanned first and active memories with a `score_reason` that clearly says the fact is invalid, outdated, superseded, or misleading are deterministically deleted; this cleanup does not depend on memory-agent model output, trivial-turn detection, or extraction throttles.
+- On each completed turn, the full store is scanned first and active memories with a `reason` that clearly says the fact is invalid, outdated, superseded, or misleading are deterministically deleted; this cleanup does not depend on memory-agent model output, trivial-turn detection, or extraction throttles.
 - `rescore/retier` may only adjust priority metadata; if the fact changed or the old content would mislead, the agent must use `update` with corrected `content`, or `delete + create`.
 - Path whitelist: writes allowed only for configured memory store paths.
 - Atomic write: temp file + `os.replace`.
@@ -210,7 +210,7 @@ Signal-based early trigger:
 - Internal memory-agent model output is not rendered in assistant chat
 - `/memory` opens a full-screen memory manager:
   - dedicated pages for user/project scope (`1`/`2`, `Tab` to switch)
-  - field-focused item rendering with emphasis on `status/tier/score/id/section/content/score_reason`
+  - field-focused item rendering with emphasis on `status/tier/score/id/section/content/reason`
   - supports `r` refresh, `a` show/hide archived, `Esc` close
 
 ## 10. Known Boundary
@@ -283,7 +283,7 @@ Example A: create -> strengthen -> archive
 ```json
 {
   "operations": [
-    {"op": "create", "scope": "project", "section": "Code Style", "content": "Use Ruff for linting and formatting.", "confidence": "high", "tier": "warm", "score": 66, "score_reason": "Repeated repository convention in tool evidence"}
+    {"op": "create", "scope": "project", "section": "Code Style", "content": "Use Ruff for linting and formatting.", "confidence": "high", "tier": "warm", "score": 66, "reason": "Repeated repository convention in tool evidence"}
   ]
 }
 ```
@@ -291,7 +291,7 @@ Example A: create -> strengthen -> archive
 ```json
 {
   "operations": [
-    {"op": "rescore", "scope": "project", "id": "mem_p_000021", "score": 78, "score_reason": "Confirmed across multiple recent turns"}
+    {"op": "rescore", "scope": "project", "id": "mem_p_000021", "score": 78, "reason": "Confirmed across multiple recent turns"}
   ]
 }
 ```
@@ -310,7 +310,7 @@ Example B: invalid fact cleanup + replacement
 {
   "operations": [
     {"op": "delete", "scope": "project", "id": "mem_p_000031", "reason": "Superseded by current repository convention"},
-    {"op": "create", "scope": "project", "section": "Testing", "content": "Use pytest with marker-based test selection.", "confidence": "high", "tier": "warm", "score": 70, "score_reason": "Current workflow evidence from recent tool outputs"}
+    {"op": "create", "scope": "project", "section": "Testing", "content": "Use pytest with marker-based test selection.", "confidence": "high", "tier": "warm", "score": 70, "reason": "Current workflow evidence from recent tool outputs"}
   ]
 }
 ```

@@ -48,7 +48,7 @@ class MemoryItemView:
     content: str
     tier: str
     score: int
-    score_reason: str
+    reason: str
     last_scored_at: str
     updated_at: str
 
@@ -177,7 +177,12 @@ def _load_scope_snapshot(scope: str, path: str) -> MemoryScopeView:
         updated_at = _trim(raw_item.get("updated_at"), max_chars=64)
         tier = _normalize_tier(raw_item.get("tier"))
         score = _normalize_score(raw_item.get("score"))
-        score_reason = _trim(raw_item.get("score_reason"), max_chars=160)
+        reason_source = (
+            raw_item.get("reason")
+            if raw_item.get("reason") is not None
+            else raw_item.get("score_reason")
+        )
+        reason = _trim(reason_source, max_chars=160)
         last_scored_at = _trim(raw_item.get("last_scored_at"), max_chars=64)
         if not last_scored_at:
             last_scored_at = updated_at
@@ -190,7 +195,7 @@ def _load_scope_snapshot(scope: str, path: str) -> MemoryScopeView:
                 content=content,
                 tier=tier,
                 score=score,
-                score_reason=score_reason,
+                reason=reason,
                 last_scored_at=last_scored_at,
                 updated_at=updated_at,
             )
@@ -483,10 +488,10 @@ class MemoryViewerScreen(ModalScreen[None]):
                             f"    [bold #AF7AC5]{escape(t('memory.viewer.label.content'))}[/bold #AF7AC5]="
                             f"{escape(item.content)}"
                         )
-                        if item.score_reason:
+                        if item.reason:
                             lines.append(
-                                f"    [bold #AF7AC5]{escape(t('memory.viewer.label.score_reason'))}[/bold #AF7AC5]="
-                                f"{escape(item.score_reason)}"
+                                f"    [bold #AF7AC5]{escape(t('memory.viewer.label.reason'))}[/bold #AF7AC5]="
+                                f"{escape(item.reason)}"
                             )
                         lines.append(
                             f"    [bold #AF7AC5]{escape(t('memory.viewer.label.last_scored_at'))}[/bold #AF7AC5]="
