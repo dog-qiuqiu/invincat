@@ -27,6 +27,7 @@ _MAX_CONTENT_PREVIEW_CHARS = 140
 _REFRESH_INTERVAL_SECONDS = 1.5
 _ALLOWED_STATUS = frozenset({"active", "archived"})
 _ALLOWED_TIER = frozenset({"hot", "warm", "cold"})
+_STATUS_COLORS: dict[str, str] = {"active": "#58D68D", "archived": "#EC7063"}
 _SORT_MODES: tuple[str, ...] = (
     "score_desc",
     "score_asc",
@@ -108,6 +109,11 @@ def _normalize_score(value: Any) -> int:
 
 def _markup_text(lines: list[str]) -> Content:
     return Content.from_markup("\n".join(lines))
+
+
+def _format_item_status(status: str) -> str:
+    color = _STATUS_COLORS.get(status, "#F5B041")
+    return f"[bold {color}]{escape(status)}[/bold {color}]"
 
 
 def _load_scope_snapshot(scope: str, path: str) -> MemoryScopeView:
@@ -463,7 +469,7 @@ class MemoryViewerScreen(ModalScreen[None]):
                         lines.append(
                             f"{cursor}{sel_open}"
                             f"[bold #AF7AC5]{escape(t('memory.viewer.label.status'))}[/bold #AF7AC5]="
-                            f"{escape(item.status)}  "
+                            f"{_format_item_status(item.status)}  "
                             f"[bold #AF7AC5]{escape(t('memory.viewer.label.id'))}[/bold #AF7AC5]="
                             f"{escape(item.item_id)}  "
                             f"[bold #AF7AC5]{escape(t('memory.viewer.label.section'))}[/bold #AF7AC5]="

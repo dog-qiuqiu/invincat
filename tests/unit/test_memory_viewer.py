@@ -8,7 +8,11 @@ import pytest
 from invincat_cli.app import DeepAgentsApp
 from invincat_cli.command_registry import IMMEDIATE_UI, SLASH_COMMANDS
 from invincat_cli.config import settings
-from invincat_cli.widgets.memory_viewer import MemoryViewerScreen, load_memory_snapshot
+from invincat_cli.widgets.memory_viewer import (
+    MemoryViewerScreen,
+    _format_item_status,
+    load_memory_snapshot,
+)
 
 
 def _write_store(path: Path, payload: dict) -> None:
@@ -80,6 +84,11 @@ def test_load_memory_snapshot_reads_valid_store(tmp_path: Path) -> None:
     assert user.latest_updated_at == "2026-04-22T11:00:00Z"
     assert user.items[0].tier in {"hot", "warm", "cold"}
     assert isinstance(user.items[0].score, int)
+
+
+def test_memory_viewer_status_colors() -> None:
+    assert _format_item_status("active") == "[bold #58D68D]active[/bold #58D68D]"
+    assert _format_item_status("archived") == "[bold #EC7063]archived[/bold #EC7063]"
 
 
 def test_load_memory_snapshot_marks_invalid_schema(tmp_path: Path) -> None:
