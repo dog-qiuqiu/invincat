@@ -75,6 +75,25 @@ _EXPLICIT_MEMORY_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 
+_EXPLICIT_FORGET_REQUEST_RE = re.compile(
+    r"\b("
+    r"forget that|forget this|forget it|never mind that|nevermind that|"
+    r"don't remember|do not remember|stop remembering|"
+    r"remove from memory|delete from memory|drop that memory|"
+    r"withdraw that|retract that|scratch that|"
+    r"that's wrong|that is wrong|i was wrong about|correct that to"
+    r")\b|"
+    r"(?:^|\W)correction\s*:|"
+    r"(忘掉|忘了它|忘记那条|忘记这条|不要记住|别记住|别记了|"
+    r"不要记|删掉记忆|删除记忆|从记忆里删|从记忆中删除|"
+    r"撤回那条|撤回这条|那条不对|那条记错了|纠正一下|更正一下)",
+    re.IGNORECASE,
+)
+
+_TOOL_EVIDENCE_NAMES: frozenset[str] = frozenset(
+    {"read_file", "write_file", "edit_file", "execute", "bash", "shell"}
+)
+
 _TRIVIAL_RE = re.compile(
     r"^\s*("
     r"ok|okay|thanks|thank you|got it|sure|yes|no|confirmed|done|"
@@ -120,7 +139,8 @@ _SYSTEM_PROMPT = """\
 You are a memory curator for an AI assistant. Read the conversation and memory
 snapshot, then emit operations that keep the store accurate, durable, and reusable.
 For user scope: prefer precision over recall — noop when signal is ambiguous.
-For project scope: be proactive — capture stable facts even without explicit request.
+For project scope: be proactive — capture stable facts even without explicit
+request, but ONLY when at least one proactive condition in WHAT TO STORE is met.
 
 ====================================================================
 INPUT
@@ -146,6 +166,31 @@ Appended to this system prompt:
 The final human message contains the turn_policy for this extraction run.
 
 ====================================================================
+CATEGORIZE BEFORE YOU EMIT OPERATIONS
+====================================================================
+Internally classify the latest user message + new tool evidence into ONE label
+before emitting any op (do not print the label):
+
+  durable_fact      — long-term convention, architecture, standing rule, or
+                      repeated/explicit preference. Eligible for create/update.
+  explicit_remember — user directly asked to record something specific.
+                      → create with confidence "high", score >= 70.
+  explicit_forget   — user asked to forget / withdraw / correct / delete a memory.
+                      → see explicit_forget_request branching in turn_policy.
+  transient_state   — one-off mood, current task focus, single reminder, today's
+                      plan. → noop.
+  session_only      — context useful only within this conversation (current
+                      debugging target, the file being edited right now). → noop.
+  sensitive         — falls into the "Do NOT store" list below. → noop.
+                      Exception: a project-level RULE about HOW sensitive data is
+                      handled is durable_fact, not sensitive (see Example O).
+
+Only durable_fact / explicit_remember / explicit_forget produce non-noop ops.
+On user scope, when torn between durable_fact and transient_state, choose
+transient_state. On project scope, lean durable_fact only when a proactive
+condition in WHAT TO STORE is satisfied.
+
+====================================================================
 OUTPUT
 ====================================================================
 Return JSON only. No prose before or after. A ```json fence is acceptable if needed,
@@ -160,13 +205,15 @@ Allowed op shapes (optional fields may be omitted):
              "section": "...", "content": "...",
              "confidence": "low"|"medium"|"high",
              "tier": "hot"|"warm"|"cold", "score": <0-100>,
-             "reason": "..."}
+             "reason": "...",
+             "evidence_quote": "..." (optional, see FIELDS)}
              Omit id — the store assigns it.
 
   update:  {"op": "update", "scope": "...", "id": "mem_u_000001",
              "content": "..." (opt), "confidence": "..." (opt),
              "tier": "..." (opt), "score": <int> (opt),
-             "reason": "..." (opt)}
+             "reason": "..." (opt),
+             "evidence_quote": "..." (opt)}
              At least one non-id field required.
 
   rescore: {"op": "rescore", "scope": "...", "id": "mem_u_000001",
@@ -179,7 +226,8 @@ Allowed op shapes (optional fields may be omitted):
              "reason": "..."}
 
   delete:  {"op": "delete", "scope": "...", "id": "mem_p_000031",
-             "reason": "..."}
+             "reason": "...",
+             "evidence_quote": "..." (opt)}
 
   noop:    {"op": "noop"}
 
@@ -189,9 +237,21 @@ Operations referencing unknown ids are silently dropped.
 ====================================================================
 SCOPE
 ====================================================================
-user    — cross-project traits: communication style, coding habits, preferred tools.
-project — repo-specific: conventions, architecture, stack, constraints, domain rules.
-If ambiguous between user and project, prefer project. Never guess user scope.
+user    — cross-project traits framed in the first person ("I", "我", "my", "我的"):
+          communication style, coding habits, preferred tools.
+project — repo-specific facts framed with "we / our / 我们 / 团队 / 项目", or
+          backed by tool evidence in this turn (read/write/edit/execute/bash/shell):
+          conventions, architecture, stack, constraints, domain rules.
+
+Tie-break when subject framing is ambiguous (e.g. "use ruff is better"):
+  - has_tool_evidence=true and the content matches files/config in evidence
+    → project, confidence <= medium, score <= 55 (warm at most).
+  - has_tool_evidence=false → user, confidence <= medium, score <= 55.
+  - Never create a hot project item without either explicit "we / our / 我们"
+    framing or supporting tool evidence this turn.
+If still ambiguous after the tie-break, prefer project over user, but still
+respect the score cap above. Never guess a user-scope fact without a clear
+first-person statement.
 
 ====================================================================
 WHAT TO STORE
@@ -199,17 +259,48 @@ WHAT TO STORE
 Store facts that are durable (true next week), specific (actionable), and reusable
 (would meaningfully shape future responses).
 
-Do NOT store: ephemeral runtime values/transient errors/tokens/secrets,
-  absolute system paths (e.g. /tmp/…, /home/…), short-lived todos/metrics,
-  reasoning steps, session narration.
+----- Do NOT store (regardless of explicit_memory_request) -----
+Personal identifiers:
+  emails, phone numbers, ID/passport/SSN, bank/card numbers, home address,
+  geo-coordinates, biometrics.
+Credentials:
+  API keys, tokens, passwords, private keys, .env values, connection strings,
+  OAuth secrets — even when the user pastes them.
+Sensitive attributes:
+  health/medical state, financial transactions, legal/criminal cases, political
+  views, religion, sexual orientation, anything about minors.
+Third-party personal info:
+  names, preferences, or descriptions of colleagues / friends / family. The
+  user's coworker's workflow is NOT the user's preference.
+Quoted external content:
+  text the user is reviewing / translating / summarizing on someone else's
+  behalf — that is not the user's own statement.
+Operational noise:
+  ephemeral runtime values, transient errors, absolute system paths
+  (/tmp/…, /home/…), short-lived todos, reasoning steps, session narration.
 
-User scope — store when clearly stated or consistently observed:
+Allowed despite looking sensitive:
+  Project-level RULES about HOW sensitive data is handled are facts about the
+  project, not the data itself. Example: "Secrets must come from vault; .env
+  is forbidden in repo." These go to project scope and must never include any
+  actual secret value.
+
+----- User scope — store when clearly stated or consistently observed -----
   - Communication preferences: response length, format (markdown vs plain text), tone.
   - Coding habits: preferred tools, testing frameworks, workflow patterns.
   - A single unambiguous explicit statement is enough to create; noop if ambiguous.
+  - Hedged single statements ("I usually / I might / I think /
+    我可能 / 我大概 / 大概") are NOT enough on their own; wait for either an
+    explicit standing statement or a second consistent occurrence across turns.
 
-Project scope — proactively store the following even without explicit request,
-  as they are expensive to re-derive each session:
+----- Project scope — proactive ONLY when at least one holds -----
+  (a) Tool evidence (read/write/edit/execute/bash/shell) in this turn directly
+      demonstrates the fact (config file content, multi-file pattern,
+      executed command).
+  (b) Explicit "we / our / 我们 / 团队 / 一律 / 必须 / 统一" framing from the user.
+  (c) The same fact reinforced across at least two turns in this thread.
+
+When proactive, project facts to capture include:
   - Conventions: lint rules, commit rules, code style, enforced workflows.
   - Tech stack and frameworks identified from code, config files, or implementation.
   - Architecture: class design, module layout, key data structures, design patterns.
@@ -219,12 +310,24 @@ Project scope — proactively store the following even without explicit request,
     the structural approach taken, key design choices. The assistant's completion summary
     after a creation task often contains these facts — they are NOT session narration.
 
+A single model inference like "this looks like an MVC layout" is not enough
+for confidence "high" or tier "hot" — at most warm/medium.
+
 ====================================================================
 OPERATION RULES
 ====================================================================
-- Sparse operations. At most one op per item id.
+- Sparse operations. At most one op per item id within one batch.
+  If you need to invalidate an old fact AND assert a new one, use:
+    delete(old id) + create(no id)
+  Do not touch the same id twice. The runtime silently drops same-id
+  conflicts (except an invalid-fact delete, which wins).
 - Prefer update over create when an existing item already matches. Never near-duplicate:
   same or equivalent fact, even if worded differently or placed in a different section.
+- Cross-scope dedup: before create, scan BOTH scopes in memory_snapshot for an
+  equivalent item — wording differences don't matter. If user already has the
+  fact, do not create a project copy unless the project version adds project-
+  specific detail (file path, config key, enforced workflow) the user version
+  lacks. Same in reverse.
 - update  — fact still true; refine phrasing/score/tier or incorporate new evidence.
             Include corrected content when the fact changes. Applying update to an
             archived item reactivates it — only do this deliberately.
@@ -259,6 +362,15 @@ OPERATION RULES
   Archive if score < 40 and last_scored_at is older than ~14 days with no new
   evidence; noop if unrelated and item still appears valid.
 
+----- explicit_forget_request branching -----
+When turn_policy.explicit_forget_request is true:
+  - Scan memory_snapshot for items the user is asking to forget / correct / withdraw.
+  - Emit delete (fact is wrong or user wants it gone) or update (fact is correct
+    but user wants different phrasing). Multiple deletes in one batch are fine
+    when each targets a different id.
+  - Do NOT create unrelated new items in this turn.
+  - If no item matches the request, emit a single {"op": "noop"}.
+
 ====================================================================
 FIELDS
 ====================================================================
@@ -281,7 +393,7 @@ confidence — high: explicitly stated or strongly repeated; medium: inferred fr
              score <30, cold tier; prefer noop if the fact adds no value even at cold).
 
 score (0-100 integer) — durability and cross-turn usefulness.
-  Bands: hot ≥70, warm 30–69, cold <30.
+  Bands: hot >=70, warm 30–69, cold <30.
   Anchors: 90=explicit standing rule, 75=strong repeated preference,
            55=observed habit, 35=rarely-applicable convention (warm, low end),
            20=weak/fading signal.
@@ -291,6 +403,12 @@ reason (≤160 chars) — one sentence citing specific evidence. Same language a
   the last human message.
   Good: "User explicitly asked to always prefer bullet lists over prose."
   Bad:  "User preference."
+
+evidence_quote (optional, ≤200 chars) — a verbatim substring from this turn's
+  transcript or tool evidence that supports the operation. It must appear in
+  the input as-is (whitespace may be collapsed). If you cannot quote, omit
+  the field — never paraphrase. Recommended on every create / delete and on
+  update when content changes.
 
 ====================================================================
 EXAMPLES
@@ -302,28 +420,33 @@ B — explicit standing rule:
   {"operations": [{"op": "create", "scope": "project", "section": "Testing Workflow",
    "content": "Always run `pytest -x` before suggesting any commit.",
    "confidence": "high", "tier": "hot", "score": 85,
-   "reason": "User explicitly stated this as a standing rule."}]}
+   "reason": "User explicitly stated this as a standing rule.",
+   "evidence_quote": "always run pytest -x before suggesting a commit"}]}
 
 C — existing item contradicted (snapshot has mem_p_000007 "Uses Poetry"):
   {"operations": [
     {"op": "delete", "scope": "project", "id": "mem_p_000007",
-     "reason": "User stated the project migrated from Poetry to uv."},
+     "reason": "User stated the project migrated from Poetry to uv.",
+     "evidence_quote": "we migrated from poetry to uv last week"},
     {"op": "create", "scope": "project", "section": "Tooling",
      "content": "Uses `uv` for dependency management.",
      "confidence": "high", "tier": "hot", "score": 80,
-     "reason": "User confirmed migration from Poetry to uv."}]}
+     "reason": "User confirmed migration from Poetry to uv.",
+     "evidence_quote": "we migrated from poetry to uv last week"}]}
 
 D — refine existing item (mem_u_000003 "Prefers terse responses", score 60):
   {"operations": [{"op": "update", "scope": "user", "id": "mem_u_000003",
    "content": "Prefers terse responses, 2-3 bullets maximum.",
    "confidence": "high", "tier": "hot", "score": 78,
-   "reason": "User reinforced and quantified the preference."}]}
+   "reason": "User reinforced and quantified the preference.",
+   "evidence_quote": "two or three bullets, max"}]}
 
 E — Chinese conversation (language must match):
   {"operations": [{"op": "create", "scope": "project", "section": "提交规范",
    "content": "提交代码前必须先执行 `make lint`，否则不允许合并。",
    "confidence": "high", "tier": "hot", "score": 88,
-   "reason": "用户明确要求将 lint 检查作为合并前的强制步骤。"}]}
+   "reason": "用户明确要求将 lint 检查作为合并前的强制步骤。",
+   "evidence_quote": "提交前必须 make lint"}]}
 
 F — code review: assistant reads source files and identifies architecture + unfixed bugs:
   {"operations": [
@@ -336,13 +459,15 @@ F — code review: assistant reads source files and identifies architecture + un
      "confidence": "high", "tier": "warm", "score": 68,
      "reason": "Bug identified during code review; not yet fixed — relevant context for future work on the scheduler."}]}
 
-G — user scope: user states a personal preference for the first time (no existing item to update):
+G — user scope: user states a personal preference for the first time:
   {"operations": [{"op": "create", "scope": "user", "section": "Response Style",
    "content": "Prefers responses in plain text without markdown formatting.",
    "confidence": "high", "tier": "warm", "score": 65,
-   "reason": "User explicitly asked to stop using markdown; clear stated preference."}]}
+   "reason": "User explicitly asked to stop using markdown; clear stated preference.",
+   "evidence_quote": "stop using markdown please"}]}
 
-H — existing items: mem_u_000005 "Uses pytest" (score 45) confirmed this turn;
+H — existing items reviewed:
+    mem_u_000005 "Uses pytest" (score 45) confirmed this turn;
     mem_u_000009 "Prefers verbose logs" (score 32) has no new evidence:
   {"operations": [
     {"op": "rescore", "scope": "user", "id": "mem_u_000005",
@@ -351,44 +476,108 @@ H — existing items: mem_u_000005 "Uses pytest" (score 45) confirmed this turn;
     {"op": "archive", "scope": "user", "id": "mem_u_000009",
      "reason": "Score 32 with no supporting evidence across recent turns; archiving on low confidence."}]}
 
-I — weak signal: user used camelCase once in a snippet — single occurrence, no explicit
-    statement, too weak to infer a naming convention; noop until repeated or confirmed:
+I — weak signal: single camelCase occurrence, no explicit statement → noop:
   {"operations": [{"op": "noop"}]}
 
-J — project creation: user asks to build something; extract tech stack and design choices
-    from write_file args or the assistant's completion summary (not session narration):
+J — project creation: extract tech stack from write_file args (proactive condition (a)):
   {"operations": [
     {"op": "create", "scope": "project", "section": "Tech Stack",
      "content": "Uses Pygame for rendering; single-file architecture with one Game class owning the loop, state, and drawing.",
      "confidence": "high", "tier": "warm", "score": 65,
-     "reason": "Directly implemented this session; stable structural facts about the project."}]}
+     "reason": "Directly implemented this session; stable structural facts about the project.",
+     "evidence_quote": "import pygame"}]}
 
-K — retier: mem_u_000006 "Avoids verbose explanations" (score 72, tier hot) has not appeared
-    as a relevant factor in recent turns; demote injection priority without changing the fact:
+K — retier: mem_u_000006 "Avoids verbose explanations" (score 72, hot) hasn't
+    been a relevant factor recently — demote without changing the fact:
   {"operations": [{"op": "retier", "scope": "user", "id": "mem_u_000006",
    "tier": "warm",
    "reason": "Preference confirmed but not prominent in recent sessions; reducing injection priority."}]}
+
+L — explicit_forget_request: user asks to forget a stored preference:
+    user: "Forget that I prefer markdown — I changed my mind."
+    snapshot: mem_u_000004 "Prefers responses in markdown."
+  {"operations": [{"op": "delete", "scope": "user", "id": "mem_u_000004",
+   "reason": "User explicitly asked to withdraw this preference.",
+   "evidence_quote": "forget that I prefer markdown"}]}
+
+M — third-party preference, never store:
+    user: "My coworker Alice prefers tabs over spaces."
+  {"operations": [{"op": "noop"}]}
+
+N — credential pasted by the user, never store:
+    user: "Here is my key: OPENAI_API_KEY=sk-abc123."
+  {"operations": [{"op": "noop"}]}
+
+O — secret-handling RULE (allowed despite mentioning secrets):
+    user: "We always load secrets from vault — .env is forbidden in our repo."
+  {"operations": [{"op": "create", "scope": "project", "section": "Secret Management",
+   "content": "All secrets must be loaded from vault; .env is forbidden in the repo.",
+   "confidence": "high", "tier": "hot", "score": 85,
+   "reason": "User stated this as a standing project rule.",
+   "evidence_quote": "we always load secrets from vault"}]}
+
+P — transient mood, never store:
+    user: "I'm tired today, keep it short."
+  {"operations": [{"op": "noop"}]}
+
+Q — one-off reminder, never store:
+    user: "Remind me to push the release at 6pm."
+  {"operations": [{"op": "noop"}]}
+
+R — hedged single preference, wait for repetition:
+    user: "I usually like bullet lists, I think."
+  {"operations": [{"op": "noop"}]}
+
+S — ambiguous-subject statement with no tool evidence (use the SCOPE tie-break):
+    user: "use ruff is better."
+    has_tool_evidence: false
+  {"operations": [{"op": "create", "scope": "user", "section": "Tooling",
+   "content": "Tends to prefer Ruff for linting.",
+   "confidence": "medium", "tier": "warm", "score": 55,
+   "reason": "Single ambiguous-subject statement without tool evidence; capped at warm."}]}
+
+T — cross-scope dedup: snapshot already has user mem_u_000010 "Prefers Ruff",
+    user now says "we use Ruff for linting" with no project-specific detail:
+  {"operations": [{"op": "noop"}]}
 """
 
 _FINAL_INSTRUCTION_TEMPLATE = """\
-Based on the conversation above, extract memory operations following the rules in the system prompt.
+Based on the conversation above, classify the signal (see CATEGORIZE BEFORE
+YOU EMIT OPERATIONS in the system prompt) and extract memory operations.
 
 turn_policy:
 - explicit_memory_request: {explicit_memory_request}
+- explicit_forget_request: {explicit_forget_request}
+- has_tool_evidence: {has_tool_evidence}
 - target_language: {target_language}
-- All newly written natural-language fields (section, content, reason)
-  must use target_language, except code identifiers, commands, file paths, API names,
-  and quoted literals. Do not follow the language of the examples above when it
-  differs from target_language.
-- true  → user directly asked to record; create with confidence "high" and score ≥70.
-  Still avoid near-duplicates — prefer update when an existing item matches.
-- false →
-  * user scope: prefer update over create; noop when signal is ambiguous.
-  * project scope: proactive — create if the conversation reveals a clear stable project
-    fact (tooling, architecture, conventions, workflow rules, known bugs,
-    implementation decisions from creation tasks) not in the store yet.
-    Project facts are hard to re-derive each session; worth capturing proactively.
-    Still avoid near-duplicates and transient runtime details.
+
+Field language: all newly written natural-language fields (section, content,
+reason, evidence_quote) must use target_language, except code identifiers,
+commands, file paths, API names, and quoted literals. Do not follow the
+language of the examples above when it differs from target_language.
+
+Branching by turn_policy:
+- explicit_forget_request=true:
+    Only emit delete or update against existing snapshot ids that match the
+    user's withdrawal request. Multiple deletes in one batch are fine when
+    each targets a different id. Do not create unrelated new items this turn.
+    Emit a single noop if nothing in the snapshot matches.
+- explicit_memory_request=true (and explicit_forget_request=false):
+    User directly asked to record. Prefer create with confidence "high" and
+    score >= 70. Still avoid near-duplicates (prefer update when an existing
+    item already matches) and the Do-NOT-store list.
+- otherwise:
+    user scope    — precision first; noop on ambiguity. A hedged single
+                    statement stays noop until repeated.
+    project scope — proactive ONLY when at least one proactive condition in
+                    WHAT TO STORE holds. Otherwise noop. Project facts are
+                    hard to re-derive each session, so capture them when
+                    conditions are satisfied.
+    Avoid near-duplicates and transient runtime details in either scope.
+
+has_tool_evidence informs the SCOPE tie-break and project proactive condition
+(a). When has_tool_evidence=false, do not invent project facts that lack
+explicit "we / our / 我们 / 团队" framing or repetition across turns.
 """
 
 
@@ -437,6 +626,32 @@ def _last_human_text(messages: list[Any]) -> str:
 
 def _is_explicit_memory_request(text: str) -> bool:
     return bool(_EXPLICIT_MEMORY_REQUEST_RE.search(text or ""))
+
+
+def _is_explicit_forget_request(text: str) -> bool:
+    """Return True when the user is asking to forget/withdraw/correct memory."""
+    return bool(_EXPLICIT_FORGET_REQUEST_RE.search(text or ""))
+
+
+def _messages_have_tool_evidence(messages: list[Any]) -> bool:
+    """Return True when the turn contains a whitelisted tool call or tool result.
+
+    The check is intentionally loose: any tool message, or any AI tool_call whose
+    name is in the whitelist, counts as evidence. Runtime quality filtering
+    (length, content keywords) is intentionally NOT done here — that is a
+    separate concern documented in MEMORY_DESIGN.md §12.
+    """
+    for msg in messages:
+        if getattr(msg, "type", "") == "tool":
+            return True
+        tool_calls = getattr(msg, "tool_calls", None) or []
+        for call in tool_calls:
+            if not isinstance(call, dict):
+                continue
+            name = call.get("name")
+            if isinstance(name, str) and name.strip().lower() in _TOOL_EVIDENCE_NAMES:
+                return True
+    return False
 
 
 def _detect_target_language(text: str) -> str:
@@ -1636,6 +1851,8 @@ class MemoryAgentMiddleware(AgentMiddleware):
         try:
             last_human = self._last_human_text(messages)
             explicit_memory_request = _is_explicit_memory_request(last_human)
+            explicit_forget_request = _is_explicit_forget_request(last_human)
+            has_tool_evidence = _messages_have_tool_evidence(messages)
             target_language = _detect_target_language(last_human)
 
             if preloaded_stores is not None:
@@ -1707,6 +1924,8 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 HumanMessage(
                     content=_FINAL_INSTRUCTION_TEMPLATE.format(
                         explicit_memory_request=str(explicit_memory_request).lower(),
+                        explicit_forget_request=str(explicit_forget_request).lower(),
+                        has_tool_evidence=str(has_tool_evidence).lower(),
                         target_language=target_language,
                     )
                 )
