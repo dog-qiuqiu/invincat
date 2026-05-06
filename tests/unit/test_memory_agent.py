@@ -1187,18 +1187,21 @@ def test_system_prompt_contains_conservative_policy_contract() -> None:
     assert "memory curator" in lowered
     assert "prefer project" in lowered
     assert "do not store" in lowered
+    assert "decision order" in lowered
+    assert "prefer existing-item ops before create" in lowered
+    assert "never create semantic duplicates" in lowered
     assert "at most one op per item id" in lowered
     assert "do not treat confirmation as noise" in lowered
 
 
 def test_system_prompt_forbids_metadata_only_fact_corrections() -> None:
-    lowered = _SYSTEM_PROMPT.lower()
+    lowered = " ".join(_SYSTEM_PROMPT.lower().split())
     assert "both change only priority metadata" in lowered
     assert "do not use either to record a changed fact" in lowered
     assert "use update with" in lowered
     assert "corrected content" in lowered
     assert "delete the old item and create the replacement" in lowered
-    assert '"op": "delete"' in lowered
+    assert '"op":"delete"' in lowered
 
 
 def test_system_prompt_encourages_rescore_for_confirmed_existing_items() -> None:
