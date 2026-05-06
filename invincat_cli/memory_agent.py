@@ -222,7 +222,7 @@ Project scope — proactively store the following even without explicit request,
 ====================================================================
 OPERATION RULES
 ====================================================================
-- Sparse operations. At most one op per item id.
+- Sparse operations, but do not treat confirmation as noise. At most one op per item id.
 - Prefer update over create when an existing item already matches. Never near-duplicate:
   same or equivalent fact, even if worded differently or placed in a different section.
 - update  — fact still true; refine phrasing/score/tier or incorporate new evidence.
@@ -256,6 +256,10 @@ OPERATION RULES
   or delete the old item and create the replacement.
 - When reviewing existing items, assess whether this turn supports, contradicts, or
   refines the item. Rescore up if confirmed; delete/archive if contradicted.
+  If an active warm/cold item is directly confirmed by this turn, prefer rescore over noop.
+  This applies even when content does not change. Use the reason field to cite the fresh
+  confirming evidence. Do not rescore already-hot items for routine mentions unless
+  the turn adds unusually strong or explicit standing-rule evidence.
   Archive if score < 40 and last_scored_at is older than ~14 days with no new
   evidence; noop if unrelated and item still appears valid.
 
@@ -350,6 +354,13 @@ H — existing items: mem_u_000005 "Uses pytest" (score 45) confirmed this turn;
      "reason": "User ran pytest again this turn, confirming consistent usage pattern."},
     {"op": "archive", "scope": "user", "id": "mem_u_000009",
      "reason": "Score 32 with no supporting evidence across recent turns; archiving on low confidence."}]}
+
+H2 — project item confirmed without content changes:
+    mem_p_000012 "Project uses pytest as the test runner." (score 55, tier warm).
+    The assistant runs `pytest tests/unit/test_api.py` successfully this turn:
+  {"operations": [{"op": "rescore", "scope": "project", "id": "mem_p_000012",
+   "score": 72,
+   "reason": "本轮再次运行 pytest 测试，直接验证了项目测试入口。"}]}
 
 I — weak signal: user used camelCase once in a snippet — single occurrence, no explicit
     statement, too weak to infer a naming convention; noop until repeated or confirmed:

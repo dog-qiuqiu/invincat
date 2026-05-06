@@ -1188,6 +1188,7 @@ def test_system_prompt_contains_conservative_policy_contract() -> None:
     assert "prefer project" in lowered
     assert "do not store" in lowered
     assert "at most one op per item id" in lowered
+    assert "do not treat confirmation as noise" in lowered
 
 
 def test_system_prompt_forbids_metadata_only_fact_corrections() -> None:
@@ -1198,6 +1199,14 @@ def test_system_prompt_forbids_metadata_only_fact_corrections() -> None:
     assert "corrected content" in lowered
     assert "delete the old item and create the replacement" in lowered
     assert '"op": "delete"' in lowered
+
+
+def test_system_prompt_encourages_rescore_for_confirmed_existing_items() -> None:
+    lowered = " ".join(_SYSTEM_PROMPT.lower().split())
+    assert "directly confirmed by this turn" in lowered
+    assert "prefer rescore over noop" in lowered
+    assert "fresh confirming evidence" in lowered
+    assert "project item confirmed without content changes" in lowered
 
 
 def test_recover_corrupt_store_without_legacy_fallback(tmp_path: Path) -> None:
