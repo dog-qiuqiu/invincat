@@ -6,6 +6,7 @@ import json
 import logging
 import asyncio
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, NotRequired
 
@@ -35,6 +36,20 @@ _MAX_SCOPE_RENDER_CHARS = 4000
 _MAX_TOTAL_INJECTION_CHARS = 8000
 _ALLOWED_ITEM_STATUS = {"active", "archived"}
 _ALLOWED_ITEM_TIER = {"hot", "warm", "cold"}
+
+# Recall-side reranking parameters. Strategy B: hot and warm pools stay
+# isolated (so a long-term standing rule is never displaced by a hot warm
+# item), but ordering inside each pool now uses effective_score = base_score
+# * confidence_weight * decay_factor instead of the previous static base score.
+_HOT_HALF_LIFE_DAYS = 90.0
+_WARM_HALF_LIFE_DAYS = 30.0
+_DECAY_FLOOR = 0.5
+_CONFIDENCE_WEIGHTS: dict[str, float] = {
+    "high": 1.0,
+    "medium": 0.85,
+    "low": 0.65,
+}
+_DEFAULT_CONFIDENCE_WEIGHT = _CONFIDENCE_WEIGHTS["medium"]
 
 
 class RefreshableMemoryState(AgentState):
@@ -83,10 +98,60 @@ def _normalize_item_score(raw: Any) -> int:
     return max(0, min(100, score))
 
 
+def _parse_iso_timestamp(value: Any) -> datetime | None:
+    """Best-effort parser for ISO timestamps written by the memory agent."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _confidence_weight(value: Any) -> float:
+    """Map confidence label to a multiplicative weight (default medium)."""
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _CONFIDENCE_WEIGHTS:
+            return _CONFIDENCE_WEIGHTS[normalized]
+    return _DEFAULT_CONFIDENCE_WEIGHT
+
+
+def _decay_factor(
+    last_scored_at: Any,
+    *,
+    now: datetime,
+    half_life_days: float,
+    floor: float = _DECAY_FLOOR,
+) -> float:
+    """Half-life decay capped at `floor` to protect long-term standing rules."""
+    parsed = _parse_iso_timestamp(last_scored_at)
+    if parsed is None or half_life_days <= 0:
+        return 1.0
+    age_seconds = (now - parsed).total_seconds()
+    age_days = max(0.0, age_seconds / 86400.0)
+    factor = 0.5 ** (age_days / half_life_days)
+    return max(floor, factor)
+
+
 def _select_items_for_injection(
     items: list[dict[str, Any]],
+    *,
+    now: datetime,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Return (hot_items, warm_items) sorted by score descending, cold excluded."""
+    """Return (hot_items, warm_items) sorted by effective_score desc, cold excluded.
+
+    effective_score = base_score * confidence_weight * decay_factor.
+    Hot items use a longer half-life (90d) so standing rules don't drop quickly;
+    warm uses 30d. Hot and warm are independent pools (Strategy B), so a
+    transiently-relevant warm item never displaces a hot standing rule.
+    """
     normalized: list[dict[str, Any]] = []
     for raw in items:
         if not _is_valid_store_item(raw):
@@ -96,6 +161,22 @@ def _select_items_for_injection(
         tier = _normalize_item_tier(raw.get("tier"))
         if tier == "cold":
             continue
+        score = _normalize_item_score(raw.get("score"))
+        last_scored_at = (
+            raw.get("last_scored_at")
+            or raw.get("updated_at")
+            or raw.get("created_at")
+        )
+        half_life = _HOT_HALF_LIFE_DAYS if tier == "hot" else _WARM_HALF_LIFE_DAYS
+        effective = (
+            score
+            * _confidence_weight(raw.get("confidence"))
+            * _decay_factor(
+                last_scored_at,
+                now=now,
+                half_life_days=half_life,
+            )
+        )
         normalized.append(
             {
                 "id": str(raw.get("id", "")).strip(),
@@ -103,26 +184,32 @@ def _select_items_for_injection(
                 or "Imported Notes",
                 "content": _normalize_text(raw.get("content"), max_chars=500),
                 "tier": tier,
-                "score": _normalize_item_score(raw.get("score")),
+                "score": score,
+                "effective_score": effective,
             }
         )
 
     hot_items = sorted(
         (item for item in normalized if item["tier"] == "hot"),
-        key=lambda item: (-int(item["score"]), str(item["id"])),
+        key=lambda item: (-float(item["effective_score"]), str(item["id"])),
     )[:_MAX_HOT_ITEMS_PER_SCOPE]
     warm_items = sorted(
         (item for item in normalized if item["tier"] == "warm"),
-        key=lambda item: (-int(item["score"]), str(item["id"])),
+        key=lambda item: (-float(item["effective_score"]), str(item["id"])),
     )[:_MAX_WARM_ITEMS_PER_SCOPE]
     return hot_items, warm_items
 
 
-def _render_store_content(store: dict[str, Any], *, max_chars: int = _MAX_SCOPE_RENDER_CHARS) -> str:
+def _render_store_content(
+    store: dict[str, Any],
+    *,
+    now: datetime,
+    max_chars: int = _MAX_SCOPE_RENDER_CHARS,
+) -> str:
     items = store.get("items", [])
     if not isinstance(items, list):
         return ""
-    hot_items, warm_items = _select_items_for_injection(items)
+    hot_items, warm_items = _select_items_for_injection(items, now=now)
     if not hot_items and not warm_items:
         return ""
 
@@ -155,7 +242,7 @@ def _render_store_content(store: dict[str, Any], *, max_chars: int = _MAX_SCOPE_
     return "\n".join(lines).strip()
 
 
-def _store_content_if_valid(path: Path) -> tuple[bool, str]:
+def _store_content_if_valid(path: Path, *, now: datetime) -> tuple[bool, str]:
     """Return (is_valid_store, rendered_memory_content)."""
     if not path.exists():
         return False, ""
@@ -173,7 +260,7 @@ def _store_content_if_valid(path: Path) -> tuple[bool, str]:
         logger.warning("Memory store items invalid at %s; skipping store content", path)
         return False, ""
 
-    rendered = _render_store_content(data)
+    rendered = _render_store_content(data, now=now)
     return True, rendered
 
 
@@ -224,13 +311,16 @@ class RefreshableMemoryMiddleware(AgentMiddleware):
         return contents
 
     def _load_memory_contents(self) -> dict[str, str]:
+        # Single timestamp per load so user and project scopes share a coherent
+        # decay reference point, and tests can replace `datetime.now` once.
+        now = datetime.now(UTC)
         contents: dict[str, str] = {}
         total_chars = 0
         for scope in ("user", "project"):
             store_path = self._memory_store_paths.get(scope)
             if not store_path:
                 continue
-            is_valid_store, rendered = _store_content_if_valid(Path(store_path))
+            is_valid_store, rendered = _store_content_if_valid(Path(store_path), now=now)
             if not is_valid_store:
                 continue
             key = "User Memory" if scope == "user" else "Project Memory"

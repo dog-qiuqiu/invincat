@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from collections.abc import Mapping
@@ -586,3 +587,93 @@ def test_reload_when_store_changes_even_if_state_has_cached_empty_dict(tmp_path:
     assert isinstance(second, dict)
     rendered = "\n".join(second["memory_contents"].values())
     assert "Use uv." in rendered
+
+
+# --- Recall-side reranking (decay + confidence + Strategy B bucketing) ----------
+
+
+def test_decay_factor_recent_returns_full_strength() -> None:
+    now = datetime(2026, 5, 6, tzinfo=UTC)
+    fresh = now.isoformat().replace("+00:00", "Z")
+    assert auto_memory_module._decay_factor(fresh, now=now, half_life_days=30.0) == 1.0
+
+
+def test_decay_factor_at_one_half_life_drops_to_one_half() -> None:
+    now = datetime(2026, 5, 6, tzinfo=UTC)
+    one_half_life_ago = (now - timedelta(days=30)).isoformat().replace("+00:00", "Z")
+    factor = auto_memory_module._decay_factor(
+        one_half_life_ago, now=now, half_life_days=30.0
+    )
+    assert abs(factor - 0.5) < 1e-9
+
+
+def test_decay_factor_floored_at_decay_floor() -> None:
+    # Long-past timestamps must not decay below the floor — protects standing
+    # rules whose owners haven't reconfirmed them in a while.
+    now = datetime(2026, 5, 6, tzinfo=UTC)
+    very_old = (now - timedelta(days=365 * 3)).isoformat().replace("+00:00", "Z")
+    factor = auto_memory_module._decay_factor(
+        very_old, now=now, half_life_days=30.0
+    )
+    assert factor == auto_memory_module._DECAY_FLOOR
+
+
+def test_warm_pool_promotes_more_recent_when_scores_tie() -> None:
+    now = datetime(2026, 5, 6, tzinfo=UTC)
+    fresh = (now - timedelta(days=1)).isoformat().replace("+00:00", "Z")
+    stale = (now - timedelta(days=365)).isoformat().replace("+00:00", "Z")
+    items = [
+        {
+            "id": "mem_p_000001",
+            "section": "Rules",
+            "content": "stale fact",
+            "status": "active",
+            "tier": "warm",
+            "score": 60,
+            "confidence": "high",
+            "last_scored_at": stale,
+        },
+        {
+            "id": "mem_p_000002",
+            "section": "Rules",
+            "content": "fresh fact",
+            "status": "active",
+            "tier": "warm",
+            "score": 60,
+            "confidence": "high",
+            "last_scored_at": fresh,
+        },
+    ]
+    _, warm = auto_memory_module._select_items_for_injection(items, now=now)
+    contents = [w["content"] for w in warm]
+    assert contents == ["fresh fact", "stale fact"]
+
+
+def test_warm_pool_promotes_higher_confidence_when_scores_tie() -> None:
+    now = datetime(2026, 5, 6, tzinfo=UTC)
+    same_ts = (now - timedelta(days=5)).isoformat().replace("+00:00", "Z")
+    items = [
+        {
+            "id": "mem_p_000001",
+            "section": "Rules",
+            "content": "low confidence",
+            "status": "active",
+            "tier": "warm",
+            "score": 60,
+            "confidence": "low",
+            "last_scored_at": same_ts,
+        },
+        {
+            "id": "mem_p_000002",
+            "section": "Rules",
+            "content": "high confidence",
+            "status": "active",
+            "tier": "warm",
+            "score": 60,
+            "confidence": "high",
+            "last_scored_at": same_ts,
+        },
+    ]
+    _, warm = auto_memory_module._select_items_for_injection(items, now=now)
+    contents = [w["content"] for w in warm]
+    assert contents == ["high confidence", "low confidence"]
