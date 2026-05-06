@@ -1742,12 +1742,19 @@ class MemoryAgentMiddleware(AgentMiddleware):
             fence_match = re.search(r"```(?:json)?\s*(\{)", raw, re.DOTALL)
             start = fence_match.start(1) if fence_match else raw.find("{")
             if start == -1:
-                logger.debug("Memory agent: model response has no JSON object")
+                logger.debug(
+                    "Memory agent: model response has no JSON object preview=%r",
+                    raw[:200],
+                )
             else:
                 try:
                     data, _ = json.JSONDecoder().raw_decode(raw, start)
                 except json.JSONDecodeError:
-                    logger.debug("Memory agent: model returned malformed JSON", exc_info=True)
+                    logger.debug(
+                        "Memory agent: model returned malformed JSON preview=%r",
+                        raw[start : start + 200],
+                        exc_info=True,
+                    )
             operations = _normalize_and_validate_operations(data)
             if not operations:
                 if written_store_paths:

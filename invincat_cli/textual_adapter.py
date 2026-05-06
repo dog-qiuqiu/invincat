@@ -853,12 +853,19 @@ async def execute_task_textual(
                                 continue
         
                             message, metadata = data
-                            logger.debug(
-                                "Processing message: type=%s id=%s has_content_blocks=%s",
-                                type(message).__name__,
-                                getattr(message, "id", None),
-                                hasattr(message, "content_blocks"),
+                            has_content_blocks = hasattr(message, "content_blocks")
+                            content_blocks = (
+                                getattr(message, "content_blocks", None)
+                                if has_content_blocks
+                                else None
                             )
+                            if not (has_content_blocks and content_blocks == []):
+                                logger.debug(
+                                    "Processing message: type=%s id=%s has_content_blocks=%s",
+                                    type(message).__name__,
+                                    getattr(message, "id", None),
+                                    has_content_blocks,
+                                )
         
                             # Filter out summarization model output, but keep UI feedback.
                             # The summarization model streams AIMessage chunks tagged
@@ -1289,7 +1296,7 @@ async def execute_task_textual(
                                         adapter._on_tokens_update(captured_input_tokens)
         
                             # Check if this is an AIMessageChunk with content
-                            if not hasattr(message, "content_blocks"):
+                            if not has_content_blocks:
                                 logger.debug(
                                     "Message has no content_blocks: type=%s",
                                     type(message).__name__,
@@ -1297,12 +1304,13 @@ async def execute_task_textual(
                                 continue
         
                             # Process content blocks
-                            blocks = message.content_blocks
-                            logger.debug(
-                                "content_blocks count=%d blocks=%s",
-                                len(blocks),
-                                repr(blocks)[:500],
-                            )
+                            blocks = content_blocks or []
+                            if blocks:
+                                logger.debug(
+                                    "content_blocks count=%d blocks=%s",
+                                    len(blocks),
+                                    repr(blocks)[:500],
+                                )
                             for block in blocks:
                                 block_type = block.get("type")
 

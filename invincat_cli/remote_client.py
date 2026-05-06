@@ -138,7 +138,8 @@ class RemoteAgent:
             config=config,
             context=context,
         ):
-            logger.debug("RemoteGraph event mode=%s ns=%s", mode, ns)
+            if mode != "messages":
+                logger.debug("RemoteGraph event mode=%s ns=%s", mode, ns)
 
             if mode == "messages":
                 msg_dict, meta = data
