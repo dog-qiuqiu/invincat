@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.content import Content
+from textual.css.query import NoMatches
 from textual.events import (
     Click,  # noqa: TC002 - needed at runtime for Textual event dispatch
 )
@@ -1035,6 +1036,7 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
+        Binding("ctrl+s", "submit", "Submit", show=False, priority=True),
         Binding("tab", "next_field", "Next field", show=False, priority=True),
         Binding("shift+tab", "prev_field", "Prev field", show=False, priority=True),
     ]
@@ -1094,11 +1096,20 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
         "reg-api-key-env",
         "reg-base-url",
         "reg-max-input-tokens",
+        "reg-deepseek-thinking",
+        "reg-deepseek-effort",
     ]
     _PROVIDER_OPTIONS: ClassVar[tuple[str, ...]] = (
         "anthropic",
         "google_genai",
         "openai",
+    )
+    _DEEPSEEK_OPTION_IDS: ClassVar[tuple[str, ...]] = (
+        "reg-deepseek-title",
+        "reg-deepseek-thinking-label",
+        "reg-deepseek-thinking",
+        "reg-deepseek-effort-label",
+        "reg-deepseek-effort",
     )
 
     def compose(self) -> ComposeResult:
@@ -1146,16 +1157,56 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
                 classes="register-input",
             )
 
+            yield Static(
+                t("model.register_deepseek_title"),
+                id="reg-deepseek-title",
+                classes="register-field-label",
+            )
+            yield Static(
+                t("model.register_deepseek_thinking_label"),
+                id="reg-deepseek-thinking-label",
+                classes="register-field-label",
+            )
+            yield ProviderSelect(
+                [
+                    (t("model.register_deepseek_default"), ""),
+                    ("enabled", "enabled"),
+                    ("disabled", "disabled"),
+                ],
+                value="",
+                allow_blank=False,
+                id="reg-deepseek-thinking",
+                classes="register-input",
+            )
+            yield Static(
+                t("model.register_deepseek_effort_label"),
+                id="reg-deepseek-effort-label",
+                classes="register-field-label",
+            )
+            yield ProviderSelect(
+                [
+                    (t("model.register_deepseek_default"), ""),
+                    ("low", "low"),
+                    ("medium", "medium"),
+                    ("high", "high"),
+                ],
+                value="",
+                allow_blank=False,
+                id="reg-deepseek-effort",
+                classes="register-input",
+            )
+
             yield Static("", id="reg-error", classes="register-error")
             yield Static(
                 f"Tab {t('model.register_next_field')}"
-                f" {get_glyphs().bullet} Enter {t('model.register_submit')}"
+                f" {get_glyphs().bullet} Ctrl+S {t('model.register_submit')}"
                 f" {get_glyphs().bullet} Esc {t('model.cancel_action')}",
                 classes="register-help",
             )
 
     def on_mount(self) -> None:
         """Focus the first input field on mount."""
+        self._update_deepseek_options_visibility()
         self._focus_field("reg-provider")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -1164,6 +1215,16 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
         event.prevent_default()
         self.run_worker(self.action_submit(), exclusive=True)
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Refresh conditional registration fields when inputs change."""
+        if event.input.id == "reg-base-url":
+            self._update_deepseek_options_visibility()
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        """Refresh conditional registration fields when provider changes."""
+        if event.select.id == "reg-provider":
+            self._update_deepseek_options_visibility()
+
     def on_key(self, event: events.Key) -> None:
         """Handle Escape key to cancel."""
         if event.key == "escape":
@@ -1171,8 +1232,7 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
             event.stop()
             self.action_cancel()
         elif event.key in {"down", "up"}:
-            provider_select = self.query_one("#reg-provider", ProviderSelect)
-            if provider_select.expanded:
+            if any(select.expanded for select in self.query(ProviderSelect)):
                 return
             event.prevent_default()
             event.stop()
@@ -1203,13 +1263,39 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
             self._focus_field("reg-provider")
             return
 
-        next_idx = (idx + delta) % len(self._FIELD_IDS)
-        next_id = self._FIELD_IDS[next_idx]
-        self._focus_field(next_id)
+        for step in range(1, len(self._FIELD_IDS) + 1):
+            next_idx = (idx + (delta * step)) % len(self._FIELD_IDS)
+            next_id = self._FIELD_IDS[next_idx]
+            if self._field_visible(next_id):
+                self._focus_field(next_id)
+                return
 
     def _focus_field(self, field_id: str) -> None:
         """Focus a registration field by id."""
         self.query_one(f"#{field_id}", Widget).focus()
+
+    def _field_visible(self, field_id: str) -> bool:
+        """Return whether a registration field can be focused."""
+        try:
+            return bool(self.query_one(f"#{field_id}", Widget).display)
+        except NoMatches:
+            return False
+
+    def _deepseek_options_enabled(self) -> bool:
+        """Return whether DeepSeek-specific options should be shown."""
+        provider_value = self.query_one("#reg-provider", ProviderSelect).value
+        provider = provider_value if isinstance(provider_value, str) else ""
+        base_url = self.query_one("#reg-base-url", Input).value.strip().lower()
+        return provider == "openai" and "api.deepseek.com" in base_url
+
+    def _update_deepseek_options_visibility(self) -> None:
+        """Show DeepSeek options only for the OpenAI-compatible DeepSeek API."""
+        visible = self._deepseek_options_enabled()
+        for widget_id in self._DEEPSEEK_OPTION_IDS:
+            try:
+                self.query_one(f"#{widget_id}", Widget).display = visible
+            except NoMatches:
+                continue
 
     async def action_submit(self) -> None:
         """Validate and submit the registration form."""
@@ -1219,6 +1305,16 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
         api_key_env = self.query_one("#reg-api-key-env", Input).value.strip() or None
         base_url = self.query_one("#reg-base-url", Input).value.strip()
         max_input_tokens_str = self.query_one("#reg-max-input-tokens", Input).value.strip()
+        extra_params: dict[str, Any] = {}
+        if self._deepseek_options_enabled():
+            thinking_value = self.query_one("#reg-deepseek-thinking", ProviderSelect).value
+            effort_value = self.query_one("#reg-deepseek-effort", ProviderSelect).value
+            if isinstance(thinking_value, str) and thinking_value:
+                extra_params.setdefault("extra_body", {})["thinking"] = {
+                    "type": thinking_value
+                }
+            if isinstance(effort_value, str) and effort_value:
+                extra_params["reasoning_effort"] = effort_value
 
         error_widget = self.query_one("#reg-error", Static)
 
@@ -1269,6 +1365,7 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
                 api_key_env=api_key_env,
                 base_url=base_url,
                 max_input_tokens=max_input_tokens,
+                extra_params=extra_params or None,
             )
 
             if success:

@@ -1565,6 +1565,16 @@ def save_recent_model(model_spec: str, config_path: Path | None = None) -> bool:
     return _save_model_field("recent", model_spec, config_path)
 
 
+def _deep_merge_dict(target: dict[str, Any], source: dict[str, Any]) -> None:
+    """Merge `source` into `target`, recursing into nested dict values."""
+    for key, value in source.items():
+        existing = target.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            _deep_merge_dict(existing, value)
+        else:
+            target[key] = value
+
+
 def register_provider_model(
     provider_name: str,
     model_name: str,
@@ -1572,6 +1582,7 @@ def register_provider_model(
     api_key_env: str | None = None,
     base_url: str | None = None,
     max_input_tokens: int | None = None,
+    extra_params: dict[str, Any] | None = None,
     class_path: str | None = None,
     config_path: Path | None = None,
 ) -> bool:
@@ -1600,6 +1611,8 @@ def register_provider_model(
             configuration.
         max_input_tokens: Maximum input tokens (context window size) for
             this model.  Stored in ``profile.<model_name>.max_input_tokens``.
+        extra_params: Additional model constructor params to merge into
+            ``params.<model_name>``.
         class_path: Fully-qualified ``module.path:ClassName`` for a custom
             ``BaseChatModel`` subclass.  Ignored when the provider already
             exists.
@@ -1636,14 +1649,16 @@ def register_provider_model(
         if "class_path" not in provider_cfg and class_path:
             provider_cfg["class_path"] = class_path
 
-        # Store base_url and api_key_env in params.<model_name> for per-model config
-        if base_url or api_key_env:
+        # Store per-model constructor params.
+        if base_url or api_key_env or extra_params:
             params = provider_cfg.setdefault("params", {})
             model_params = params.setdefault(model_name, {})
             if base_url:
                 model_params["base_url"] = base_url
             if api_key_env:
                 model_params["api_key_env"] = api_key_env
+            if extra_params:
+                _deep_merge_dict(model_params, extra_params)
 
         # Store max_input_tokens in profile.<model_name>
         if max_input_tokens is not None:

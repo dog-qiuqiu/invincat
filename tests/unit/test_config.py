@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+import tomllib
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -202,6 +203,46 @@ class TestModelCreation:
 
         with pytest.raises(ModelConfigError, match="model name is required"):
             create_model("openai:")
+
+    def test_register_model_merges_extra_params(self):
+        """Registering a model can persist nested constructor params."""
+        from invincat_cli.model_config import register_provider_model
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.toml"
+
+            assert register_provider_model(
+                "openai",
+                "deepseek-chat",
+                api_key_env="DEEPSEEK_API_KEY",
+                base_url="https://api.deepseek.com/v1",
+                max_input_tokens=64000,
+                extra_params={
+                    "reasoning_effort": "medium",
+                    "extra_body": {
+                        "thinking": {
+                            "type": "disabled",
+                        },
+                    },
+                },
+                config_path=config_path,
+            )
+
+            data = tomllib.loads(config_path.read_text())
+            model_params = data["models"]["providers"]["openai"]["params"][
+                "deepseek-chat"
+            ]
+
+            assert model_params["api_key_env"] == "DEEPSEEK_API_KEY"
+            assert model_params["base_url"] == "https://api.deepseek.com/v1"
+            assert model_params["reasoning_effort"] == "medium"
+            assert model_params["extra_body"]["thinking"]["type"] == "disabled"
+            assert (
+                data["models"]["providers"]["openai"]["profile"]["deepseek-chat"][
+                    "max_input_tokens"
+                ]
+                == 64000
+            )
 
 
 if __name__ == "__main__":
