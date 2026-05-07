@@ -421,17 +421,17 @@ def _profile_module_from_class_path(class_path: str) -> str | None:
 
 
 def get_available_models() -> dict[str, list[str]]:
-    """Get available models dynamically from installed LangChain provider packages.
+    """Get models explicitly configured by the user in config.toml.
 
-    Imports model profiles from each provider package and extracts model names.
+    Only returns models listed under ``[models.providers.X].models`` in the
+    user's ``~/.invincat/config.toml``. Dynamic discovery from installed
+    LangChain provider packages is intentionally excluded so the switcher
+    shows only what the user has actively set up.
 
     Results are cached after the first call; use `clear_caches()` to reset.
 
     Returns:
         Dictionary mapping provider names to lists of model identifiers.
-            Includes providers from the langchain registry, config-file
-            providers with explicit model lists, and `class_path` providers
-            whose packages expose a `_profiles` module.
     """
     global _available_models_cache  # noqa: PLW0603  # Module-level cache requires global statement
     if _available_models_cache is not None:
@@ -440,54 +440,7 @@ def get_available_models() -> dict[str, list[str]]:
     available: dict[str, list[str]] = {}
     config = ModelConfig.load()
 
-    # Try to load from langchain provider profile data.
-    # Build the list dynamically from langchain's supported-provider registry
-    # so new providers are picked up automatically when langchain adds them.
-    provider_modules = _get_provider_profile_modules()
-    registry_providers: set[str] = set()
-
-    for provider, module_path in provider_modules:
-        registry_providers.add(provider)
-        # Skip providers explicitly disabled in config.
-        if not config.is_provider_enabled(provider):
-            logger.debug(
-                "Provider '%s' is disabled in config; skipping registry discovery",
-                provider,
-            )
-            continue
-        try:
-            profiles = _load_provider_profiles(module_path)
-        except ImportError:
-            logger.debug(
-                "Could not import profiles from %s (package may not be installed)",
-                module_path,
-            )
-            continue
-        except Exception:
-            logger.warning(
-                "Failed to load profiles from %s, skipping provider '%s'",
-                module_path,
-                provider,
-                exc_info=True,
-            )
-            continue
-
-        # Filter to models that support tool calling and text I/O.
-        models = [
-            name
-            for name, profile in profiles.items()
-            if profile.get("tool_calling", False)
-            and profile.get("text_inputs", True) is not False
-            and profile.get("text_outputs", True) is not False
-        ]
-
-        models.sort()
-        if models:
-            available[provider] = models
-
-    # Merge in models from config file (custom providers like ollama, fireworks)
     for provider_name, provider_config in config.providers.items():
-        # Respect enabled = false (hide provider entirely).
         if not config.is_provider_enabled(provider_name):
             logger.debug(
                 "Provider '%s' is disabled in config; skipping",
@@ -496,51 +449,8 @@ def get_available_models() -> dict[str, list[str]]:
             continue
 
         config_models = list(provider_config.get("models", []))
-
-        # For class_path providers not in the built-in registry, auto-discover
-        # models from the package's _profiles.py when no explicit models list.
-        if (
-            not config_models
-            and provider_name not in registry_providers
-            and provider_name not in available
-        ):
-            class_path = provider_config.get("class_path", "")
-            profile_module = _profile_module_from_class_path(class_path)
-            if profile_module:
-                try:
-                    profiles = _load_provider_profiles(profile_module)
-                except ImportError:
-                    logger.debug(
-                        "Could not import profiles from %s for class_path "
-                        "provider '%s' (package may not be installed)",
-                        profile_module,
-                        provider_name,
-                    )
-                except Exception:
-                    logger.warning(
-                        "Failed to load profiles from %s for class_path provider '%s'",
-                        profile_module,
-                        provider_name,
-                        exc_info=True,
-                    )
-                else:
-                    config_models = sorted(
-                        name
-                        for name, profile in profiles.items()
-                        if profile.get("tool_calling", False)
-                        and profile.get("text_inputs", True) is not False
-                        and profile.get("text_outputs", True) is not False
-                    )
-
-        if provider_name not in available:
-            if config_models:
-                available[provider_name] = config_models
-        else:
-            # Append any config models not already discovered
-            existing = set(available[provider_name])
-            for model in config_models:
-                if model not in existing:
-                    available[provider_name].append(model)
+        if config_models:
+            available[provider_name] = config_models
 
     _available_models_cache = available
     return available
