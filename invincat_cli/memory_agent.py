@@ -1684,7 +1684,6 @@ class MemoryAgentMiddleware(AgentMiddleware):
             model_result = create_model(
                 memory_spec,
                 extra_kwargs=memory_params,
-                enable_thinking_default=False,
             )
             self._memory_model_cache_key = cache_key
             self._memory_model_cache_obj = model_result.model

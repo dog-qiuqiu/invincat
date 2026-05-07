@@ -836,6 +836,34 @@ class _FailingMemoryModel:
         raise RuntimeError("model unavailable")
 
 
+def test_resolve_memory_model_uses_default_deepseek_thinking(monkeypatch: Any) -> None:
+    middleware = MemoryAgentMiddleware(memory_paths=[])
+    runtime = type(
+        "Runtime",
+        (),
+        {"context": {"memory_model": "openai:deepseek-chat"}},
+    )()
+    fallback = object()
+    created = object()
+    calls: list[dict[str, Any]] = []
+
+    def _fake_create_model(*args: Any, **kwargs: Any) -> Any:
+        calls.append({"args": args, "kwargs": kwargs})
+        return type("ModelResult", (), {"model": created})()
+
+    import invincat_cli.config as config_mod
+
+    monkeypatch.setattr(config_mod, "create_model", _fake_create_model)
+
+    assert middleware._resolve_memory_model(runtime, fallback) is created
+    assert calls == [
+        {
+            "args": ("openai:deepseek-chat",),
+            "kwargs": {"extra_kwargs": {}},
+        }
+    ]
+
+
 def test_aafter_agent_emits_status_and_advances_cursor(monkeypatch: Any) -> None:
     middleware = MemoryAgentMiddleware(memory_paths=["/tmp/AGENTS.md"])
     middleware._captured_model = object()
