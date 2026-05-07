@@ -15,7 +15,8 @@ from textual.events import (
 from textual.fuzzy import Matcher
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Input, Static
+from textual.widget import Widget
+from textual.widgets import Input, Select, Static
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -94,6 +95,14 @@ class ModelOption(Static):
         """
         event.stop()
         self.post_message(self.Clicked(self.model_spec, self.provider, self.index))
+
+
+class ProviderSelect(Select[str]):
+    """Provider select that lets up/down move between registration fields."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter,space", "show_overlay", "Show menu", show=False),
+    ]
 
 
 class ModelSelectorScreen(ModalScreen[tuple[str, str, ModelTarget] | None]):
@@ -1026,11 +1035,8 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
-        Binding("enter", "submit", "Submit", show=False, priority=True),
         Binding("tab", "next_field", "Next field", show=False, priority=True),
         Binding("shift+tab", "prev_field", "Prev field", show=False, priority=True),
-        Binding("down", "next_field", "Next field", show=False, priority=True),
-        Binding("up", "prev_field", "Prev field", show=False, priority=True),
     ]
 
     CSS = """
@@ -1090,6 +1096,11 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
         "reg-max-input-tokens",
         "reg-class-path",
     ]
+    _PROVIDER_OPTIONS: ClassVar[tuple[str, ...]] = (
+        "anthropic",
+        "google_genai",
+        "openai",
+    )
 
     def compose(self) -> ComposeResult:
         """Compose the registration form layout."""
@@ -1097,8 +1108,10 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
             yield Static(t("model.register_title"), classes="register-title")
 
             yield Static(t("model.register_provider_label"), classes="register-field-label")
-            yield Input(
-                placeholder=t("model.register_provider_placeholder"),
+            yield ProviderSelect(
+                [(provider, provider) for provider in self._PROVIDER_OPTIONS],
+                value=self._PROVIDER_OPTIONS[0],
+                allow_blank=False,
                 id="reg-provider",
                 classes="register-input",
             )
@@ -1154,7 +1167,7 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
 
     def on_mount(self) -> None:
         """Focus the first input field on mount."""
-        self.query_one("#reg-provider", Input).focus()
+        self._focus_field("reg-provider")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle Enter key from any input field — submit the form."""
@@ -1168,6 +1181,13 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
             event.prevent_default()
             event.stop()
             self.action_cancel()
+        elif event.key in {"down", "up"}:
+            provider_select = self.query_one("#reg-provider", ProviderSelect)
+            if provider_select.expanded:
+                return
+            event.prevent_default()
+            event.stop()
+            self._cycle_field(1 if event.key == "down" else -1)
 
     def action_next_field(self) -> None:
         """Move focus to the next input field."""
@@ -1184,23 +1204,28 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
             delta: Direction to cycle (+1 forward, -1 backward).
         """
         focused = self.focused
-        if not isinstance(focused, Input):
-            self.query_one("#reg-provider", Input).focus()
+        if not isinstance(focused, Widget):
+            self._focus_field("reg-provider")
             return
 
         try:
             idx = self._FIELD_IDS.index(focused.id)
         except ValueError:
-            self.query_one("#reg-provider", Input).focus()
+            self._focus_field("reg-provider")
             return
 
         next_idx = (idx + delta) % len(self._FIELD_IDS)
         next_id = self._FIELD_IDS[next_idx]
-        self.query_one(f"#{next_id}", Input).focus()
+        self._focus_field(next_id)
+
+    def _focus_field(self, field_id: str) -> None:
+        """Focus a registration field by id."""
+        self.query_one(f"#{field_id}", Widget).focus()
 
     async def action_submit(self) -> None:
         """Validate and submit the registration form."""
-        provider = self.query_one("#reg-provider", Input).value.strip()
+        provider_value = self.query_one("#reg-provider", ProviderSelect).value
+        provider = provider_value if isinstance(provider_value, str) else ""
         model_name = self.query_one("#reg-model", Input).value.strip()
         api_key_env = self.query_one("#reg-api-key-env", Input).value.strip() or None
         base_url = self.query_one("#reg-base-url", Input).value.strip()
@@ -1211,7 +1236,7 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
 
         if not provider:
             error_widget.update(t("model.register_error_provider"))
-            self.query_one("#reg-provider", Input).focus()
+            self._focus_field("reg-provider")
             return
 
         if not model_name:
