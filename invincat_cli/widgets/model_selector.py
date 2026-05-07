@@ -1027,7 +1027,7 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
     """Modal screen for registering a new model provider.
 
     Provides a form with fields for provider name, model name, API key env,
-    base URL, and class path.  On submit, writes the configuration to
+    base URL, and max input tokens.  On submit, writes the configuration to
     ``~/.invincat/config.toml`` and returns ``(provider, model)``.
 
     Returns ``None`` on cancel.
@@ -1094,7 +1094,6 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
         "reg-api-key-env",
         "reg-base-url",
         "reg-max-input-tokens",
-        "reg-class-path",
     ]
     _PROVIDER_OPTIONS: ClassVar[tuple[str, ...]] = (
         "anthropic",
@@ -1144,16 +1143,6 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
             yield Input(
                 placeholder=t("model.register_max_input_tokens_placeholder"),
                 id="reg-max-input-tokens",
-                classes="register-input",
-            )
-
-            yield Static(t("model.register_classpath_label"), classes="register-field-label")
-            yield Static(
-                t("model.register_classpath_hint"), classes="register-field-hint"
-            )
-            yield Input(
-                placeholder=t("model.register_classpath_placeholder"),
-                id="reg-class-path",
                 classes="register-input",
             )
 
@@ -1230,7 +1219,6 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
         api_key_env = self.query_one("#reg-api-key-env", Input).value.strip() or None
         base_url = self.query_one("#reg-base-url", Input).value.strip()
         max_input_tokens_str = self.query_one("#reg-max-input-tokens", Input).value.strip()
-        class_path = self.query_one("#reg-class-path", Input).value.strip() or None
 
         error_widget = self.query_one("#reg-error", Static)
 
@@ -1270,10 +1258,6 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
             error_widget.update(t("model.register_error_colon"))
             return
 
-        if class_path and ":" not in class_path:
-            error_widget.update(t("model.register_error_classpath"))
-            return
-
         if not api_key_env and provider in PROVIDER_API_KEY_ENV:
             api_key_env = PROVIDER_API_KEY_ENV[provider]
 
@@ -1285,7 +1269,6 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
                 api_key_env=api_key_env,
                 base_url=base_url,
                 max_input_tokens=max_input_tokens,
-                class_path=class_path,
             )
 
             if success:
