@@ -146,6 +146,12 @@ class WelcomeBanner(Static):
         self._mcp_tool_count = mcp_tool_count
         self.update(self._build_banner(self._project_url))
 
+    def set_connecting(self) -> None:
+        """Transition to connecting state."""
+        self._connecting = True
+        self._failed = False
+        self.update(self._build_banner(self._project_url))
+
     def set_failed(self, error: str) -> None:
         """Transition from "connecting" to a persistent failure state.
 

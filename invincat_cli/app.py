@@ -704,6 +704,7 @@ class DeepAgentsApp(App):
         server_kwargs: dict[str, Any] | None = None,
         mcp_preload_kwargs: dict[str, Any] | None = None,
         model_kwargs: dict[str, Any] | None = None,
+        defer_server_start: bool = False,
         **kwargs: Any,
     ) -> None:
         """Initialize the Deep Agents application.
@@ -746,6 +747,8 @@ class DeepAgentsApp(App):
 
                 When provided, model creation runs in a background worker after
                 first paint instead of blocking startup.
+            defer_server_start: Keep `server_kwargs` for later but do not start
+                the server until the user selects a primary model.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -791,7 +794,9 @@ class DeepAgentsApp(App):
 
         self._model_kwargs = model_kwargs
 
-        self._connecting = server_kwargs is not None
+        self._defer_server_start = defer_server_start
+
+        self._connecting = server_kwargs is not None and not defer_server_start
         # Extract sandbox type from server kwargs for trace metadata.
         # ServerConfig.__post_init__ normalizes "none" → None, but server_kwargs carries
         # the raw argparse value, so guard against both.
@@ -1162,7 +1167,7 @@ class DeepAgentsApp(App):
         self.run_worker(self._init_session_state, exclusive=True, group="session-init")
 
         # Server startup (model creation + server process)
-        if self._server_kwargs is not None:
+        if self._server_kwargs is not None and not self._defer_server_start:
             self.run_worker(
                 self._start_server_background,
                 exclusive=True,
@@ -6694,12 +6699,6 @@ class DeepAgentsApp(App):
 
             model_spec = model_spec.removeprefix(":")
 
-            if not self._remote_agent():
-                await self._mount_message(
-                    ErrorMessage(t("model.switch_requires_server"))
-                )
-                return
-
             parsed = ModelSpec.try_parse(model_spec)
             if parsed:
                 provider: str | None = parsed.provider
@@ -6735,6 +6734,18 @@ class DeepAgentsApp(App):
             display = model_spec
             if provider and not parsed:
                 display = f"{provider}:{model_name}"
+
+            remote_agent = self._remote_agent()
+            can_start_deferred_server = (
+                target == "primary"
+                and self._server_kwargs is not None
+                and not self._connecting
+            )
+            if remote_agent is None and not can_start_deferred_server:
+                await self._mount_message(
+                    ErrorMessage(t("model.switch_requires_server"))
+                )
+                return
 
             if target == "primary":
                 if model_name == current_model_name and (
@@ -6773,6 +6784,8 @@ class DeepAgentsApp(App):
                 self._model_override = display
                 self._model_params_override = extra_kwargs
                 self._invalidate_planner_agent_cache()
+                if remote_agent is None:
+                    self._model = model_result.model
 
                 if self._status_bar:
                     self._status_bar.set_model(
@@ -6785,6 +6798,21 @@ class DeepAgentsApp(App):
                             model=model_result.model_name or "",
                             follow_primary=True,
                         )
+
+                if remote_agent is None and self._server_kwargs is not None:
+                    self._server_kwargs["model_name"] = display
+                    self._server_kwargs["model_params"] = extra_kwargs
+                    self._model_kwargs = None
+                    self._defer_server_start = False
+                    self._connecting = True
+                    with suppress(NoMatches):
+                        banner = self.query_one("#welcome-banner", WelcomeBanner)
+                        banner.set_connecting()
+                    self.run_worker(
+                        self._start_server_background,
+                        exclusive=True,
+                        group="server-startup",
+                    )
 
                 if not await asyncio.to_thread(save_recent_model, display):
                     await self._mount_message(
@@ -6965,6 +6993,7 @@ async def run_textual_app(
     server_kwargs: dict[str, Any] | None = None,
     mcp_preload_kwargs: dict[str, Any] | None = None,
     model_kwargs: dict[str, Any] | None = None,
+    defer_server_start: bool = False,
 ) -> AppResult:
     """Run the Textual application.
 
@@ -7001,6 +7030,8 @@ async def run_textual_app(
 
             When provided, model creation runs in a background worker after
             first paint so the splash screen appears immediately.
+        defer_server_start: Keep server startup deferred until a primary model
+            is selected.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -7020,6 +7051,7 @@ async def run_textual_app(
         server_kwargs=server_kwargs,
         mcp_preload_kwargs=mcp_preload_kwargs,
         model_kwargs=model_kwargs,
+        defer_server_start=defer_server_start,
     )
     try:
         await app.run_async()

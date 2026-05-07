@@ -13,7 +13,7 @@ from invincat_cli.config import (
     is_ascii_mode,
     is_shell_command_allowed,
 )
-from invincat_cli.model_config import ModelConfigError
+from invincat_cli.model_config import ModelConfig, ModelConfigError
 
 
 class TestSettings:
@@ -120,6 +120,55 @@ class TestUtilityFunctions:
 
 class TestModelCreation:
     """Tests for model creation functions."""
+
+    @patch("invincat_cli.model_config.ModelConfig.load")
+    def test_default_model_spec_requires_registered_model(self, mock_model_config_load):
+        """Environment credentials alone should not select a default model."""
+        from invincat_cli.config import _get_default_model_spec
+
+        mock_model_config_load.return_value = ModelConfig()
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=True):
+            with pytest.raises(ModelConfigError, match="No model configured"):
+                _get_default_model_spec()
+
+    @patch("invincat_cli.model_config.ModelConfig.load")
+    def test_default_model_spec_ignores_unregistered_recent(
+        self, mock_model_config_load
+    ):
+        """Stale recent/default values are ignored unless they are registered."""
+        from invincat_cli.config import _get_default_model_spec
+
+        mock_model_config_load.return_value = ModelConfig(
+            default_model="openai:gpt-5.2",
+            recent_model="anthropic:claude-sonnet-4-6",
+            providers={
+                "openai": {
+                    "models": ["gpt-4o"],
+                },
+            },
+        )
+
+        assert _get_default_model_spec() == "openai:gpt-4o"
+
+    @patch("invincat_cli.model_config.ModelConfig.load")
+    def test_default_model_spec_uses_registered_recent(self, mock_model_config_load):
+        """Registered recent model takes priority over first registered model."""
+        from invincat_cli.config import _get_default_model_spec
+
+        mock_model_config_load.return_value = ModelConfig(
+            recent_model="google_genai:gemini-2.5-pro",
+            providers={
+                "openai": {
+                    "models": ["gpt-4o"],
+                },
+                "google_genai": {
+                    "models": ["gemini-2.5-pro"],
+                },
+            },
+        )
+
+        assert _get_default_model_spec() == "google_genai:gemini-2.5-pro"
 
     @patch("invincat_cli.config._create_model_via_init")
     @patch("invincat_cli.model_config.ModelConfig.load")

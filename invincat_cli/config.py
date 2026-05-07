@@ -1817,45 +1817,59 @@ def detect_provider(model_name: str) -> str | None:
 
 
 def _get_default_model_spec() -> str:
-    """Get default model specification based on available credentials.
+    """Get default model specification from configured models.
 
     Checks in order:
 
     1. `[models].default` in config file (user's intentional preference).
     2. `[models].recent` in config file (last `/model` switch).
-    3. Auto-detection based on available API credentials.
+    3. First model explicitly registered under `[models.providers]`.
+
+    Environment credentials alone do not select a model. This keeps the status
+    bar and startup model aligned with the user's registered model list.
 
     Returns:
         Model specification in provider:model format.
 
     Raises:
-        ModelConfigError: If no credentials are configured.
+        ModelConfigError: If no model is registered.
     """
-    from invincat_cli.model_config import ModelConfig, ModelConfigError
+    from invincat_cli.model_config import ModelConfig, ModelConfigError, ModelSpec
 
     config = ModelConfig.load()
-    if config.default_model:
+    registered_specs: list[str] = [
+        f"{provider_name}:{model_name}"
+        for provider_name, provider_config in config.providers.items()
+        if config.is_provider_enabled(provider_name)
+        for model_name in provider_config.get("models", [])
+    ]
+    registered_set = set(registered_specs)
+
+    if config.default_model and config.default_model in registered_set:
         return config.default_model
 
-    if config.recent_model:
+    if config.recent_model and config.recent_model in registered_set:
         return config.recent_model
 
-    s = _get_settings()
-    if s.has_openai:
-        return "openai:gpt-5.2"
-    if s.has_anthropic:
-        return "anthropic:claude-sonnet-4-6"
-    if s.has_google:
-        return "google_genai:gemini-3.1-pro-preview"
-    if s.has_vertex_ai:
-        return "google_vertexai:gemini-3.1-pro-preview"
-    if s.has_nvidia:
-        return "nvidia:nvidia/nemotron-3-super-120b-a12b"
+    # Preserve support for older config files where default/recent may have been
+    # written as a bare model name, but only when it resolves to a registered
+    # model unambiguously.
+    for preferred in (config.default_model, config.recent_model):
+        if not preferred or ":" in preferred:
+            continue
+        matches = [
+            spec
+            for spec in registered_specs
+            if (parsed := ModelSpec.try_parse(spec)) and parsed.model == preferred
+        ]
+        if len(matches) == 1:
+            return matches[0]
+
+    if registered_specs:
+        return registered_specs[0]
 
     msg = (
-        "No credentials configured. Please set one of: "
-        "ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, "
-        "GOOGLE_CLOUD_PROJECT, or NVIDIA_API_KEY"
+        "No model configured. Run /model, press Ctrl+N, and register a model first."
     )
     raise ModelConfigError(msg)
 
