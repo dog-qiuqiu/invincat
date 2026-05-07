@@ -1169,11 +1169,10 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
             )
             yield ProviderSelect(
                 [
-                    (t("model.register_deepseek_default"), ""),
-                    ("enabled", "enabled"),
-                    ("disabled", "disabled"),
+                    (t("model.register_deepseek_enabled"), "enabled"),
+                    (t("model.register_deepseek_disabled"), "disabled"),
                 ],
-                value="",
+                value="enabled",
                 allow_blank=False,
                 id="reg-deepseek-thinking",
                 classes="register-input",
@@ -1185,12 +1184,11 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
             )
             yield ProviderSelect(
                 [
-                    (t("model.register_deepseek_default"), ""),
-                    ("low", "low"),
-                    ("medium", "medium"),
-                    ("high", "high"),
+                    (t("model.register_deepseek_effort_low"), "low"),
+                    (t("model.register_deepseek_effort_medium"), "medium"),
+                    (t("model.register_deepseek_effort_high"), "high"),
                 ],
-                value="",
+                value="high",
                 allow_blank=False,
                 id="reg-deepseek-effort",
                 classes="register-input",
