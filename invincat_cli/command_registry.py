@@ -210,7 +210,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         name="/schedule",
         description_key="schedule",
-        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        bypass_tier=BypassTier.IMMEDIATE_UI,
         hidden_keywords="cron timer task recurring run list pause resume delete",
     ),
     SlashCommand(

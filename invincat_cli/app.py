@@ -4224,64 +4224,41 @@ class DeepAgentsApp(App):
                 await self._mount_message(AppMessage("\n".join(lines)))
 
     async def _handle_schedule_command(self, command: str) -> None:
-        """Handle /schedule [list|run|pause|resume|delete] commands."""
+        """Open the schedule manager modal screen."""
+        await self._show_schedule_manager()
+
+    async def _show_schedule_manager(self) -> None:
+        """Push the ScheduleManagerScreen modal."""
+        from invincat_cli.widgets.schedule_manager import ScheduleManagerScreen, ScheduleAction
         from invincat_cli.i18n import t
-        from invincat_cli.scheduler.parser import describe_schedule
 
-        await self._mount_message(UserMessage(command))
-        parts = command.strip().split(maxsplit=2)
-        sub = parts[1].lower() if len(parts) > 1 else "list"
+        screen = ScheduleManagerScreen(store=self._scheduler_store)
 
-        if sub == "list":
-            tasks = self._scheduler_store.list_tasks()
-            if not tasks:
-                await self._mount_message(AppMessage(t("schedule.list_empty")))
+        def handle_result(result: "ScheduleAction | None") -> None:
+            if self._chat_input:
+                self._chat_input.focus_input()
+            if result is None:
                 return
-            lines = [t("schedule.list_header").format(count=len(tasks))]
-            for task in tasks:
-                status_icon = "✓" if task.enabled else "✗"
-                desc = describe_schedule(task.cron, task.timezone)
-                next_run = (task.next_run_at or "")[:16].replace("T", " ")
-                lines.append(
-                    f"  {status_icon} [{task.id[:8]}] {task.title}\n"
-                    f"      {desc} {task.timezone} — next: {next_run} — {task.last_status}"
-                )
-            await self._mount_message(AppMessage("\n".join(lines)))
+            # Execute the chosen action after the modal closes
+            self.call_later(self._execute_schedule_action, result)
 
-        elif sub == "pause":
-            task_id = parts[2] if len(parts) > 2 else ""
-            task = self._scheduler_store.load_task(task_id) or self._find_task_by_prefix(task_id)
-            if task is None:
-                await self._mount_message(AppMessage(t("schedule.not_found").format(task_id=task_id)))
-                return
-            self._scheduler_store.set_task_enabled(task.id, False)
-            await self._mount_message(AppMessage(t("schedule.paused").format(title=task.title)))
+        self.push_screen(screen, handle_result)
 
-        elif sub == "resume":
-            task_id = parts[2] if len(parts) > 2 else ""
-            task = self._scheduler_store.load_task(task_id) or self._find_task_by_prefix(task_id)
-            if task is None:
-                await self._mount_message(AppMessage(t("schedule.not_found").format(task_id=task_id)))
-                return
-            self._scheduler_store.set_task_enabled(task.id, True)
-            await self._mount_message(AppMessage(t("schedule.resumed").format(title=task.title)))
+    async def _execute_schedule_action(self, action: "ScheduleAction") -> None:  # noqa: F821
+        """Execute a schedule action returned by the manager modal."""
+        from invincat_cli.i18n import t
 
-        elif sub == "delete":
-            task_id = parts[2] if len(parts) > 2 else ""
-            task = self._scheduler_store.load_task(task_id) or self._find_task_by_prefix(task_id)
-            if task is None:
-                await self._mount_message(AppMessage(t("schedule.not_found").format(task_id=task_id)))
-                return
-            self._scheduler_store.delete_task(task.id)
-            await self._mount_message(AppMessage(t("schedule.deleted").format(title=task.title)))
+        task = self._scheduler_store.load_task(action.task_id)
+        if task is None:
+            await self._mount_message(
+                AppMessage(t("schedule.not_found").format(task_id=action.task_id))
+            )
+            return
 
-        elif sub == "run":
-            task_id = parts[2] if len(parts) > 2 else ""
-            task = self._scheduler_store.load_task(task_id) or self._find_task_by_prefix(task_id)
-            if task is None:
-                await self._mount_message(AppMessage(t("schedule.not_found").format(task_id=task_id)))
-                return
-            await self._mount_message(AppMessage(t("schedule.run_queued").format(title=task.title)))
+        if action.kind == "run_now":
+            await self._mount_message(
+                AppMessage(t("schedule.run_queued").format(title=task.title))
+            )
             if self._scheduler_runner is not None:
                 from datetime import datetime, timezone
 
@@ -4289,21 +4266,23 @@ class DeepAgentsApp(App):
                 self._scheduler_runner._pending_runs.append((task, now))
                 await self._scheduler_runner._drain_pending(now)
 
-        else:
+        elif action.kind == "pause":
+            self._scheduler_store.set_task_enabled(task.id, False)
             await self._mount_message(
-                AppMessage(
-                    "Usage: /schedule [list | pause <id> | resume <id> | delete <id> | run <id>]"
-                )
+                AppMessage(t("schedule.paused").format(title=task.title))
             )
 
-    def _find_task_by_prefix(self, prefix: str) -> "ScheduledTask | None":  # noqa: F821
-        """Find a task by the first 8 characters of its ID."""
-        if not prefix:
-            return None
-        for task in self._scheduler_store.list_tasks():
-            if task.id.startswith(prefix):
-                return task
-        return None
+        elif action.kind == "resume":
+            self._scheduler_store.set_task_enabled(task.id, True)
+            await self._mount_message(
+                AppMessage(t("schedule.resumed").format(title=task.title))
+            )
+
+        elif action.kind == "delete":
+            self._scheduler_store.delete_task(task.id)
+            await self._mount_message(
+                AppMessage(t("schedule.deleted").format(title=task.title))
+            )
 
     async def _handle_wecombot_command(self, command: str, *, action: str) -> None:
         """Manage WeCom bridge lifecycle in current CLI session.
