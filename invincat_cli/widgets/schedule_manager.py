@@ -227,23 +227,23 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
 
     def compose(self) -> "ComposeResult":
         glyphs = get_glyphs()
-        _KEY_BINDINGS = [
-            (f"{glyphs.arrow_up} / {glyphs.arrow_down}",  "上下浏览任务列表"),
-            ("Enter",                                       "立即手动触发选中任务（不等到计划时间）"),
-            ("p",                                          "暂停 / 恢复  切换选中任务的启用状态"),
-            ("d  d",                                       "删除选中任务（需按两次确认，防误操作）"),
-            ("r",                                          "刷新列表，重新从数据库加载最新状态"),
-            ("Esc",                                        "关闭此页面，返回主聊天界面"),
+        key_bindings = [
+            (f"{glyphs.arrow_up} / {glyphs.arrow_down}", t("schedule.manager.key.navigate")),
+            ("Enter",                                     t("schedule.manager.key.run_now")),
+            ("p",                                         t("schedule.manager.key.pause_resume")),
+            ("d  d",                                      t("schedule.manager.key.delete")),
+            ("r",                                         t("schedule.manager.key.refresh")),
+            ("Esc",                                       t("schedule.manager.key.close")),
         ]
         with Vertical():
-            yield Static("定时任务管理", classes="schedule-title")
+            yield Static(t("schedule.manager.title"), classes="schedule-title")
             yield Static("", classes="schedule-divider")
             with VerticalScroll(classes="schedule-task-list", id="task-list-scroll"):
                 yield Static("", id="task-list-container")
             yield Static("", classes="schedule-status-bar", id="status-bar")
             yield Static("", classes="schedule-divider")
             with Vertical(classes="schedule-keybindings"):
-                for key, desc in _KEY_BINDINGS:
+                for key, desc in key_bindings:
                     with Horizontal(classes="schedule-keybinding-row"):
                         yield Static(
                             Content.from_markup(f"[bold cyan]  {key}[/bold cyan]"),
@@ -255,7 +255,7 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
                         )
             yield Static(
                 Content.from_markup(
-                    "[dim italic]提示：通过自然语言告诉助手来创建新的定时任务[/dim italic]"
+                    f"[dim italic]{t('schedule.manager.footer_hint')}[/dim italic]"
                 ),
                 classes="schedule-footer",
             )
@@ -278,10 +278,20 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
         if not self._tasks:
             container.update(
                 Content.from_markup(
-                    "[dim italic]  暂无定时任务。在主界面告诉助手创建一个，例如：「每天早上 8 点分析项目」[/dim italic]"
+                    f"[dim italic]{t('schedule.manager.empty')}[/dim italic]"
                 )
             )
             return
+
+        status_map = {
+            "never":   t("schedule.task.status.never"),
+            "success": t("schedule.task.status.success"),
+            "failed":  t("schedule.task.status.failed"),
+            "running": t("schedule.task.status.running"),
+            "missed":  t("schedule.task.status.missed"),
+            "timeout": t("schedule.task.status.timeout"),
+        }
+        next_label = t("schedule.manager.next_run_label")
 
         lines: list[str] = []
         for i, task in enumerate(self._tasks):
@@ -289,14 +299,6 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
             from invincat_cli.scheduler.parser import describe_schedule
 
             enabled_icon = "●" if task.enabled else "○"
-            status_map = {
-                "never": "—",
-                "success": "✓ ok",
-                "failed": "✗ failed",
-                "running": "▶ running",
-                "missed": "! missed",
-                "timeout": "T timeout",
-            }
             status_str = status_map.get(task.last_status, task.last_status)
             schedule_desc = describe_schedule(task.cron, task.timezone)
             next_run = (task.next_run_at or "—")[:16].replace("T", " ")
@@ -305,17 +307,17 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
             if selected:
                 line = (
                     f"[bold cyan reverse] {enabled_icon} {task.title}"
-                    f"  {schedule_desc}  next: {next_run}  {status_str}  [{short_id}] [/bold cyan reverse]"
+                    f"  {schedule_desc}  {next_label} {next_run}  {status_str}  [{short_id}] [/bold cyan reverse]"
                 )
             elif not task.enabled:
                 line = (
                     f"[dim] {enabled_icon} {task.title}"
-                    f"  {schedule_desc}  next: {next_run}  {status_str}  [{short_id}][/dim]"
+                    f"  {schedule_desc}  {next_label} {next_run}  {status_str}  [{short_id}][/dim]"
                 )
             else:
                 line = (
                     f" {enabled_icon} {task.title}"
-                    f"  [dim]{schedule_desc}  next: {next_run}  {status_str}  [{short_id}][/dim]"
+                    f"  [dim]{schedule_desc}  {next_label} {next_run}  {status_str}  [{short_id}][/dim]"
                 )
             lines.append(line)
 
@@ -329,10 +331,15 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
             bar.update("")
         else:
             task = self._tasks[self._selected_index]
-            state_label = "[green]运行中[/green]" if task.enabled else "[dim]已暂停[/dim]"
-            runs_label = f"已执行 {task.run_count} 次"
-            fail_label = f"失败 {task.failure_count} 次" if task.failure_count else ""
-            last_label = f"上次: {task.last_run_at[:10] if task.last_run_at else '从未'}"
+            state_label = (
+                f"[green]{t('schedule.manager.status.enabled')}[/green]"
+                if task.enabled
+                else f"[dim]{t('schedule.manager.status.paused')}[/dim]"
+            )
+            runs_label = t("schedule.manager.status.runs").format(n=task.run_count)
+            fail_label = t("schedule.manager.status.failures").format(n=task.failure_count) if task.failure_count else ""
+            last_date = task.last_run_at[:10] if task.last_run_at else t("schedule.manager.status.never")
+            last_label = t("schedule.manager.status.last_run").format(date=last_date)
             parts = [f" {task.title}", state_label, runs_label]
             if fail_label:
                 parts.append(f"[red]{fail_label}[/red]")
@@ -369,7 +376,7 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
         task = self._tasks[self._selected_index]
         new_state = not task.enabled
         self._store.set_task_enabled(task.id, new_state)
-        verb = "已恢复" if new_state else "已暂停"
+        verb = t("schedule.manager.action.resumed") if new_state else t("schedule.manager.action.paused")
         self._update_status(f"{task.title} — {verb}")
         self._load_tasks()
 
@@ -382,14 +389,14 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
             self._confirm_delete = None
             self._selected_index = max(0, self._selected_index - 1)
             self._load_tasks()
-            self._update_status("已删除")
+            self._update_status(t("schedule.manager.action.deleted"))
         else:
             self._confirm_delete = task.id
-            self._update_status(f"确认删除「{task.title}」？再按一次 d 确认，其他键取消")
+            self._update_status(t("schedule.manager.confirm_delete").format(title=task.title))
 
     def action_refresh(self) -> None:
         self._load_tasks()
-        self._update_status("已刷新")
+        self._update_status(t("schedule.manager.action.refreshed"))
 
     def action_close(self) -> None:
         self.dismiss(None)
