@@ -206,7 +206,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str, ModelTarget] | None]):
     }
 
     ModelSelectorScreen .model-selector-help {
-        height: 1;
+        height: 2;
         color: $text-muted;
         text-style: italic;
         margin-top: 1;
@@ -307,6 +307,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str, ModelTarget] | None]):
             f" {glyphs.bullet} 2 {t('model.target_memory')}"
             f" {glyphs.bullet} {glyphs.arrow_up}/{glyphs.arrow_down} {t('model.navigate')}"
             f" {glyphs.bullet} Enter {t('model.select_action')}"
+            "\n"
             f" {glyphs.bullet} Ctrl+N {t('model.register_action')}"
             f" {glyphs.bullet} Ctrl+E {t('model.edit_action')}"
             f" {glyphs.bullet} Esc {t('model.cancel_action')}"
