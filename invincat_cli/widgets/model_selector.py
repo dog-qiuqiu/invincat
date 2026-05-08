@@ -29,6 +29,7 @@ from invincat_cli.config import Glyphs, get_glyphs, is_ascii_mode
 from invincat_cli.i18n import t
 from invincat_cli.model_config import (
     ModelProfileEntry,
+    ModelConfig,
     PROVIDER_API_KEY_ENV,
     get_available_models,
     get_model_profiles,
@@ -127,6 +128,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str, ModelTarget] | None]):
         Binding("2", "target_memory", "Memory target", show=False, priority=True),
         Binding("enter", "select", "Select", show=False, priority=True),
         Binding("ctrl+n", "register_model", "Register model", show=False, priority=True),
+        Binding("ctrl+e", "edit_model", "Edit model", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
     ]
 
@@ -306,6 +308,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str, ModelTarget] | None]):
             f" {glyphs.bullet} {glyphs.arrow_up}/{glyphs.arrow_down} {t('model.navigate')}"
             f" {glyphs.bullet} Enter {t('model.select_action')}"
             f" {glyphs.bullet} Ctrl+N {t('model.register_action')}"
+            f" {glyphs.bullet} Ctrl+E {t('model.edit_action')}"
             f" {glyphs.bullet} Esc {t('model.cancel_action')}"
         )
 
@@ -498,6 +501,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str, ModelTarget] | None]):
             event.prevent_default()
             event.stop()
             await self.action_register_model()
+        elif event.key == "ctrl+e":
+            event.prevent_default()
+            event.stop()
+            await self.action_edit_model()
         elif event.key == "1" and not self._filter_text.strip():
             event.prevent_default()
             event.stop()
@@ -977,6 +984,59 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str, ModelTarget] | None]):
         screen = ModelRegisterScreen()
         self.app.push_screen(screen, self._handle_register_result)
 
+    async def action_edit_model(self) -> None:
+        """Open the model registration screen prefilled for the selected model."""
+        if not self._filtered_models:
+            return
+
+        model_spec, provider = self._filtered_models[self._selected_index]
+        if provider not in ModelRegisterScreen.PROVIDER_OPTIONS:
+            self.notify(
+                t("model.edit_provider_unsupported", provider=provider),
+                severity="error",
+                timeout=6,
+                markup=False,
+            )
+            return
+
+        _, model_name = model_spec.split(":", 1)
+        initial_values = await asyncio.to_thread(
+            self._load_registration_values, provider, model_name
+        )
+        screen = ModelRegisterScreen(initial_values=initial_values, edit_mode=True)
+        self.app.push_screen(screen, self._handle_register_result)
+
+    @staticmethod
+    def _load_registration_values(provider: str, model_name: str) -> dict[str, str]:
+        """Load saved registration form values for a configured model."""
+        config = ModelConfig.load()
+        params = config.get_kwargs(provider, model_name=model_name)
+        profile = config.get_profile_overrides(provider, model_name=model_name)
+
+        values = {
+            "provider": provider,
+            "model": model_name,
+            "api_key_env": str(params.get("api_key_env") or ""),
+            "base_url": str(params.get("base_url") or ""),
+            "max_input_tokens": str(profile.get("max_input_tokens") or ""),
+            "deepseek_thinking": "enabled",
+            "deepseek_effort": "high",
+        }
+
+        extra_body = params.get("extra_body")
+        if isinstance(extra_body, dict):
+            thinking = extra_body.get("thinking")
+            if isinstance(thinking, dict):
+                thinking_type = thinking.get("type")
+                if thinking_type in {"enabled", "disabled"}:
+                    values["deepseek_thinking"] = thinking_type
+
+        effort = params.get("reasoning_effort")
+        if effort in {"low", "medium", "high"}:
+            values["deepseek_effort"] = str(effort)
+
+        return values
+
     def _handle_register_result(self, result: tuple[str, str] | None) -> None:
         """Handle the result from the model registration screen.
 
@@ -1099,7 +1159,7 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
         "reg-deepseek-thinking",
         "reg-deepseek-effort",
     ]
-    _PROVIDER_OPTIONS: ClassVar[tuple[str, ...]] = (
+    PROVIDER_OPTIONS: ClassVar[tuple[str, ...]] = (
         "anthropic",
         "google_genai",
         "openai",
@@ -1112,15 +1172,32 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
         "reg-deepseek-effort",
     )
 
+    def __init__(
+        self,
+        *,
+        initial_values: dict[str, str] | None = None,
+        edit_mode: bool = False,
+    ) -> None:
+        """Initialize the registration form.
+
+        Args:
+            initial_values: Optional field values for editing an existing model.
+            edit_mode: Whether the screen is updating an existing model.
+        """
+        super().__init__()
+        self._initial_values = initial_values or {}
+        self._edit_mode = edit_mode
+
     def compose(self) -> ComposeResult:
         """Compose the registration form layout."""
         with Vertical():
-            yield Static(t("model.register_title"), classes="register-title")
+            title_key = "model.edit_title" if self._edit_mode else "model.register_title"
+            yield Static(t(title_key), classes="register-title")
 
             yield Static(t("model.register_provider_label"), classes="register-field-label")
             yield ProviderSelect(
-                [(provider, provider) for provider in self._PROVIDER_OPTIONS],
-                value=self._PROVIDER_OPTIONS[0],
+                [(provider, provider) for provider in self.PROVIDER_OPTIONS],
+                value=self._initial_values.get("provider") or self.PROVIDER_OPTIONS[0],
                 allow_blank=False,
                 id="reg-provider",
                 classes="register-input",
@@ -1129,6 +1206,7 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
             yield Static(t("model.register_model_label"), classes="register-field-label")
             yield Input(
                 placeholder=t("model.register_model_placeholder"),
+                value=self._initial_values.get("model", ""),
                 id="reg-model",
                 classes="register-input",
             )
@@ -1139,6 +1217,7 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
             )
             yield Input(
                 placeholder=t("model.register_apikey_placeholder"),
+                value=self._initial_values.get("api_key_env", ""),
                 id="reg-api-key-env",
                 classes="register-input",
             )
@@ -1146,6 +1225,7 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
             yield Static(t("model.register_baseurl_label"), classes="register-field-label")
             yield Input(
                 placeholder=t("model.register_baseurl_placeholder"),
+                value=self._initial_values.get("base_url", ""),
                 id="reg-base-url",
                 classes="register-input",
             )
@@ -1153,6 +1233,7 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
             yield Static(t("model.register_max_input_tokens_label"), classes="register-field-label")
             yield Input(
                 placeholder=t("model.register_max_input_tokens_placeholder"),
+                value=self._initial_values.get("max_input_tokens", ""),
                 id="reg-max-input-tokens",
                 classes="register-input",
             )
@@ -1172,7 +1253,7 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
                     (t("model.register_deepseek_enabled"), "enabled"),
                     (t("model.register_deepseek_disabled"), "disabled"),
                 ],
-                value="enabled",
+                value=self._initial_values.get("deepseek_thinking") or "enabled",
                 allow_blank=False,
                 id="reg-deepseek-thinking",
                 classes="register-input",
@@ -1188,7 +1269,7 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
                     (t("model.register_deepseek_effort_medium"), "medium"),
                     (t("model.register_deepseek_effort_high"), "high"),
                 ],
-                value="high",
+                value=self._initial_values.get("deepseek_effort") or "high",
                 allow_blank=False,
                 id="reg-deepseek-effort",
                 classes="register-input",
