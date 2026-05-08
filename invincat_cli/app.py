@@ -5064,6 +5064,18 @@ class DeepAgentsApp(App):
             )
             return True
         else:
+            # Agent not available — if processing a scheduled run, mark it
+            # failed immediately so it doesn't stay stuck in "running" state.
+            if self._active_scheduled_run is not None:
+                run_id, task_id = self._active_scheduled_run
+                self._active_scheduled_run = None
+                if self._scheduler_runner is not None:
+                    with suppress(Exception):
+                        self._scheduler_runner.finish_run(
+                            run_id, task_id,
+                            status="failed",
+                            error="Agent not available",
+                        )
             await self._mount_message(
                 AppMessage(t("agent.not_configured_session"))
             )
