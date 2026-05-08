@@ -355,6 +355,20 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
             self._confirm_delete = None
         self._render_list()
         self._update_status()
+        self._scroll_to_selected()
+
+    def _scroll_to_selected(self) -> None:
+        """Scroll the task list so the selected row stays visible."""
+        try:
+            scroll = self.query_one("#task-list-scroll", VerticalScroll)
+            visible_height = scroll.size.height
+            if visible_height <= 0:
+                return
+            # Keep selected line vertically centred in the visible window.
+            target_y = max(0, self._selected_index - visible_height // 2)
+            scroll.scroll_to(y=target_y, animate=False)
+        except Exception:
+            pass
 
     def action_move_up(self) -> None:
         self._move_to(self._selected_index - 1)
