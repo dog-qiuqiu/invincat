@@ -78,7 +78,11 @@ class SchedulerRunner:
     The runner is started from `DeepAgentsApp._post_paint_init` via
     `set_interval` so it runs on the Textual event loop — no threads needed.
 
-    `_running_task_ids` prevents the same task from being triggered twice
+    ``inject_message(task_id, run_id, prompt)`` is called when a task fires.
+    ``finish_run(run_id, task_id, status=...)`` must be called by the TUI after
+    the agent turn completes so that run counts and statuses are recorded.
+
+    ``_running_task_ids`` prevents the same task from being triggered twice
     while an earlier run is still in progress.
     """
 
@@ -86,7 +90,7 @@ class SchedulerRunner:
         self,
         store: "SchedulerStore",
         *,
-        inject_message: Callable[[str, str], Awaitable[None]],
+        inject_message: Callable[[str, str, str], Awaitable[None]],
         notify: Callable[[str], None],
         is_busy: Callable[[], bool],
     ) -> None:
@@ -96,6 +100,7 @@ class SchedulerRunner:
         self._is_busy = is_busy
         self._running_task_ids: set[str] = set()
         self._pending_runs: list[tuple["ScheduledTask", datetime]] = []
+        self._timeout_tasks: dict[str, asyncio.Task] = {}
 
     # ------------------------------------------------------------------
     # Called by Textual set_interval every 60 s
@@ -173,6 +178,16 @@ class SchedulerRunner:
         task, scheduled_for = self._pending_runs.pop(0)
         await self._fire(task, scheduled_for, now)
 
+    async def fire_now(self, task: "ScheduledTask") -> None:
+        """Trigger a task to run immediately, bypassing the cron schedule."""
+        now = datetime.now(timezone.utc)
+        if task.id in self._running_task_ids:
+            return
+        if self._is_busy():
+            self._pending_runs.append((task, now))
+        else:
+            await self._fire(task, now, now)
+
     async def _fire(self, task: "ScheduledTask", scheduled_for: datetime, now: datetime) -> None:
         from invincat_cli.scheduler.models import TaskRun
 
@@ -206,12 +221,31 @@ class SchedulerRunner:
 
         prompt = _build_scheduled_prompt(task, scheduled_for)
         try:
-            await self._inject_message(task.id, prompt)
+            await self._inject_message(task.id, run_id, prompt)
+            # Start timeout watcher — finish_run() will cancel it on completion.
+            timeout_secs = getattr(task, "timeout_seconds", 600) or 600
+            if timeout_secs > 0:
+                self._timeout_tasks[run_id] = asyncio.ensure_future(
+                    self._timeout_watcher(run_id, task.id, timeout_secs)
+                )
         except Exception:
             logger.exception("Failed to inject scheduled task %r", task.id)
             self._finish_run(run_id, task.id, status="failed", error="inject failed")
-        finally:
-            self._running_task_ids.discard(task.id)
+
+    async def _timeout_watcher(self, run_id: str, task_id: str, timeout_seconds: int) -> None:
+        """Fires finish_run with status='timeout' if the task hasn't finished in time."""
+        try:
+            await asyncio.sleep(timeout_seconds)
+        except asyncio.CancelledError:
+            return
+        if task_id in self._running_task_ids:
+            logger.warning("Scheduled task %r timed out after %ds", task_id, timeout_seconds)
+            self._finish_run(
+                run_id,
+                task_id,
+                status="timeout",
+                error=f"Timed out after {timeout_seconds}s",
+            )
 
     def finish_run(
         self,
@@ -224,12 +258,34 @@ class SchedulerRunner:
         thread_id: str | None = None,
     ) -> None:
         """Called by the TUI after a scheduled agent turn completes."""
-        from invincat_cli.scheduler.models import TaskRun
+        self._finish_run(
+            run_id,
+            task_id,
+            status=status,
+            report_path=report_path,
+            error=error,
+            thread_id=thread_id,
+        )
+
+    def _finish_run(
+        self,
+        run_id: str,
+        task_id: str,
+        *,
+        status: str,
+        report_path: str | None = None,
+        error: str | None = None,
+        thread_id: str | None = None,
+    ) -> None:
+        """Internal: update run record and task stats, cancel timeout, release the running lock."""
+        # Cancel any pending timeout watcher for this run
+        timeout_task = self._timeout_tasks.pop(run_id, None)
+        if timeout_task is not None:
+            timeout_task.cancel()
 
         now = datetime.now(timezone.utc).isoformat()
-        run = self._store.list_runs(task_id, limit=50)
-        # Update the matching run
-        for r in run:
+        runs = self._store.list_runs(task_id, limit=50)
+        for r in runs:
             if r.id == run_id:
                 r.finished_at = now
                 r.status = status
@@ -244,7 +300,7 @@ class SchedulerRunner:
             last_status=status,
             last_error=error,
             run_count_delta=1,
-            failure_count_delta=1 if status == "failed" else 0,
+            failure_count_delta=1 if status in ("failed", "timeout") else 0,
         )
         self._running_task_ids.discard(task_id)
 

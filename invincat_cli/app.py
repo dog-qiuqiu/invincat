@@ -523,6 +523,12 @@ class QueuedMessage:
     mode: InputMode
     """The input mode that determines message routing."""
 
+    scheduled_run_id: str | None = None
+    """Run ID if this message was injected by the scheduler, else None."""
+
+    scheduled_task_id: str | None = None
+    """Task ID if this message was injected by the scheduler, else None."""
+
 
 DeferredActionKind = Literal["model_switch", "thread_switch", "chat_output", "plan_handoff"]
 """Valid `DeferredAction.kind` values for type-checked deduplication."""
@@ -952,6 +958,8 @@ class DeepAgentsApp(App):
         self._scheduler_store = SchedulerStore()
         self._scheduler_runner: SchedulerRunner | None = None
         self._scheduler_interval_handle: Any | None = None
+        self._active_scheduled_run: tuple[str, str] | None = None  # (run_id, task_id)
+        self._scheduled_turn_status: str = "success"
 
     def _remote_agent(self) -> RemoteAgent | None:
         """Return the agent narrowed to `RemoteAgent`, or `None`.
@@ -4069,14 +4077,19 @@ class DeepAgentsApp(App):
         if self._scheduler_runner is not None:
             await self._scheduler_runner.tick()
 
-    async def _inject_scheduled_message(self, task_id: str, prompt: str) -> None:
+    async def _inject_scheduled_message(self, task_id: str, run_id: str, prompt: str) -> None:
         """Inject a scheduled task prompt into the TUI message queue."""
         from invincat_cli.i18n import t
 
         task = self._scheduler_store.load_task(task_id)
         title = task.title if task else task_id
         await self._mount_message(AppMessage(t("schedule.running").format(title=title)))
-        self._pending_messages.append(QueuedMessage(text=prompt, mode="normal"))
+        self._pending_messages.append(QueuedMessage(
+            text=prompt,
+            mode="normal",
+            scheduled_run_id=run_id,
+            scheduled_task_id=task_id,
+        ))
         if not (self._agent_running or self._shell_running):
             await self._process_next_from_queue()
 
@@ -4201,9 +4214,7 @@ class DeepAgentsApp(App):
                 AppMessage(t("schedule.run_queued").format(title=title))
             )
             if self._scheduler_runner is not None:
-                now = datetime.now(timezone.utc)
-                self._scheduler_runner._pending_runs.append((task, now))
-                await self._scheduler_runner._drain_pending(now)
+                await self._scheduler_runner.fire_now(task)
 
         elif ptype == "schedule_list":
             tasks = payload.get("tasks", [])
@@ -4260,11 +4271,7 @@ class DeepAgentsApp(App):
                 AppMessage(t("schedule.run_queued").format(title=task.title))
             )
             if self._scheduler_runner is not None:
-                from datetime import datetime, timezone
-
-                now = datetime.now(timezone.utc)
-                self._scheduler_runner._pending_runs.append((task, now))
-                await self._scheduler_runner._drain_pending(now)
+                await self._scheduler_runner.fire_now(task)
 
         elif action.kind == "pause":
             self._scheduler_store.set_task_enabled(task.id, False)
@@ -5121,6 +5128,7 @@ class DeepAgentsApp(App):
                     memory_model=self._memory_model_override,
                     memory_model_params=self._memory_model_params_override or {},
                     wecom_enabled=on_wecom_file_request is not None,
+                    scheduled_run=self._active_scheduled_run is not None,
                 ),
                 turn_stats=turn_stats,
                 on_text_delta=on_text_delta,
@@ -5130,6 +5138,7 @@ class DeepAgentsApp(App):
             if post_turn_hook is not None:
                 await post_turn_hook()
         except Exception as e:  # Resilient tool rendering
+            self._scheduled_turn_status = "failed"
             logger.exception("Agent execution failed")
             error_detail = _format_exception_details(e)
             if _looks_like_masked_internal_error(e) and self._server_proc is not None:
@@ -5181,6 +5190,13 @@ class DeepAgentsApp(App):
         self._processing_pending = True
         try:
             msg = self._pending_messages.popleft()
+
+            # Track whether this queued message is a scheduled run
+            if msg.scheduled_run_id and msg.scheduled_task_id:
+                self._active_scheduled_run = (msg.scheduled_run_id, msg.scheduled_task_id)
+                self._scheduled_turn_status = "success"
+            else:
+                self._active_scheduled_run = None
 
             # Remove the ephemeral queued-message widget
             if self._queued_widgets:
@@ -5268,6 +5284,21 @@ class DeepAgentsApp(App):
 
         # Notify user if memory files were updated this turn
         await self._maybe_notify_memory_update()
+
+        # Record completion of a scheduled run (must happen before draining the
+        # queue so the next message doesn't overwrite _active_scheduled_run first).
+        if self._active_scheduled_run is not None:
+            run_id, task_id = self._active_scheduled_run
+            self._active_scheduled_run = None
+            if self._scheduler_runner is not None:
+                try:
+                    self._scheduler_runner.finish_run(
+                        run_id,
+                        task_id,
+                        status=self._scheduled_turn_status,
+                    )
+                except Exception:
+                    logger.exception("Failed to finish scheduled run %r", run_id)
 
         # Process next message from queue if any
         await self._process_next_from_queue()

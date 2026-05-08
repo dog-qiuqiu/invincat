@@ -110,9 +110,13 @@ def test_invalid_schedule_raises() -> None:
         parse_schedule("every monday at noon")
 
 
-def test_monthly_dom_over_28_raises() -> None:
+def test_monthly_dom_over_31_raises() -> None:
     with pytest.raises(ValueError):
-        parse_schedule("monthly 30 08:00")
+        parse_schedule("monthly 32 08:00")
+
+
+def test_monthly_dom_29_allowed() -> None:
+    assert parse_schedule("monthly 29 08:00") == "0 8 29 * *"
 
 
 def test_describe_daily() -> None:
@@ -275,7 +279,7 @@ def test_runner_skips_task_when_policy_skip(tmp_path: Path) -> None:
 
     injected: list[str] = []
 
-    async def inject(task_id: str, prompt: str) -> None:
+    async def inject(task_id: str, run_id: str, prompt: str) -> None:
         injected.append(task_id)
 
     runner = SchedulerRunner(
@@ -297,7 +301,7 @@ def test_runner_runs_once_for_missed_run_once(tmp_path: Path) -> None:
 
     injected: list[str] = []
 
-    async def inject(task_id: str, prompt: str) -> None:
+    async def inject(task_id: str, run_id: str, prompt: str) -> None:
         injected.append(task_id)
 
     runner = SchedulerRunner(
@@ -320,7 +324,7 @@ def test_runner_does_not_double_trigger_running_task(tmp_path: Path) -> None:
 
     injected: list[str] = []
 
-    async def inject(task_id: str, prompt: str) -> None:
+    async def inject(task_id: str, run_id: str, prompt: str) -> None:
         injected.append(task_id)
 
     runner = SchedulerRunner(
@@ -343,7 +347,7 @@ def test_runner_queues_when_busy(tmp_path: Path) -> None:
 
     injected: list[str] = []
 
-    async def inject(task_id: str, prompt: str) -> None:
+    async def inject(task_id: str, run_id: str, prompt: str) -> None:
         injected.append(task_id)
 
     runner = SchedulerRunner(
@@ -365,7 +369,7 @@ def test_runner_disabled_task_not_triggered(tmp_path: Path) -> None:
 
     injected: list[str] = []
 
-    async def inject(task_id: str, prompt: str) -> None:
+    async def inject(task_id: str, run_id: str, prompt: str) -> None:
         injected.append(task_id)
 
     runner = SchedulerRunner(
@@ -485,3 +489,96 @@ def test_schedule_middleware_shows_tools_during_normal_run(tmp_path: Path) -> No
 
     filtered = mw._filter_tools([FakeTool()], runtime)
     assert len(filtered) == 1
+
+
+# ---------------------------------------------------------------------------
+# runner: finish_run updates task status and run count
+# ---------------------------------------------------------------------------
+
+
+def test_runner_finish_run_updates_status(tmp_path: Path) -> None:
+    """finish_run marks the task as success and increments run_count."""
+    store = _make_store(tmp_path)
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    task = _make_task(next_run_at=past)
+    store.save_task(task)
+
+    fired_run_ids: list[tuple[str, str]] = []
+
+    async def inject(task_id: str, run_id: str, prompt: str) -> None:
+        fired_run_ids.append((task_id, run_id))
+
+    runner = SchedulerRunner(
+        store,
+        inject_message=inject,
+        notify=MagicMock(),
+        is_busy=lambda: False,
+    )
+    asyncio.run(runner.tick())
+    assert len(fired_run_ids) == 1
+    task_id, run_id = fired_run_ids[0]
+
+    # Simulate TUI calling finish_run after the agent turn completes
+    runner.finish_run(run_id, task_id, status="success")
+
+    loaded = store.load_task("task-1")
+    assert loaded is not None
+    assert loaded.last_status == "success"
+    assert loaded.run_count == 1
+    assert task_id not in runner._running_task_ids
+
+
+def test_runner_finish_run_counts_failures(tmp_path: Path) -> None:
+    """finish_run with status='failed' increments failure_count."""
+    store = _make_store(tmp_path)
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    task = _make_task(next_run_at=past)
+    store.save_task(task)
+
+    fired: list[tuple[str, str]] = []
+
+    async def inject(task_id: str, run_id: str, prompt: str) -> None:
+        fired.append((task_id, run_id))
+
+    runner = SchedulerRunner(
+        store,
+        inject_message=inject,
+        notify=MagicMock(),
+        is_busy=lambda: False,
+    )
+    asyncio.run(runner.tick())
+    task_id, run_id = fired[0]
+    runner.finish_run(run_id, task_id, status="failed", error="something broke")
+
+    loaded = store.load_task("task-1")
+    assert loaded is not None
+    assert loaded.last_status == "failed"
+    assert loaded.failure_count == 1
+
+
+def test_runner_running_task_ids_released_after_finish(tmp_path: Path) -> None:
+    """_running_task_ids is cleared only after finish_run, not after inject."""
+    store = _make_store(tmp_path)
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    task = _make_task(next_run_at=past)
+    store.save_task(task)
+
+    fired: list[tuple[str, str]] = []
+
+    async def inject(task_id: str, run_id: str, prompt: str) -> None:
+        fired.append((task_id, run_id))
+
+    runner = SchedulerRunner(
+        store,
+        inject_message=inject,
+        notify=MagicMock(),
+        is_busy=lambda: False,
+    )
+    asyncio.run(runner.tick())
+    assert len(fired) == 1
+    # Task should still be "running" — inject returned but finish_run not yet called
+    assert "task-1" in runner._running_task_ids
+
+    task_id, run_id = fired[0]
+    runner.finish_run(run_id, task_id, status="success")
+    assert "task-1" not in runner._running_task_ids

@@ -266,12 +266,22 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
             colors = theme.get_theme_colors(self)
             container.styles.border = ("ascii", colors.primary)
         self._load_tasks()
+        self.set_interval(30, self._auto_refresh)
 
     def _load_tasks(self) -> None:
         self._tasks = self._store.list_tasks()
+        self._selected_index = max(0, min(self._selected_index, len(self._tasks) - 1))
         self._confirm_delete = None
         self._render_list()
         self._update_status()
+
+    def _auto_refresh(self) -> None:
+        """Refresh task data from the store without disrupting UI state."""
+        self._tasks = self._store.list_tasks()
+        self._selected_index = max(0, min(self._selected_index, len(self._tasks) - 1))
+        self._render_list()
+        if not self._confirm_delete:
+            self._update_status()
 
     def _render_list(self) -> None:
         container = self.query_one("#task-list-container", Static)

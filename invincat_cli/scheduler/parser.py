@@ -114,8 +114,8 @@ def parse_schedule(expr: str) -> str:
         except ValueError:
             msg = f"Invalid day-of-month: {parts[1]!r}"
             raise ValueError(msg) from None
-        if not (1 <= dom <= 28):
-            msg = f"Day-of-month must be 1-28 (got {dom}) to avoid end-of-month issues"
+        if not (1 <= dom <= 31):
+            msg = f"Day-of-month must be 1-31 (got {dom})"
             raise ValueError(msg)
         time_str = parts[2] if len(parts) > 2 else "08:00"
         minute, hour = _parse_time(time_str)
