@@ -283,6 +283,11 @@ class SchedulerRunner:
         now = datetime.now(timezone.utc).isoformat()
         run = self._store.load_run(run_id)
         if run is not None:
+            if run.finished_at is not None:
+                # Already completed (e.g. timeout fired before agent finished).
+                # Release the lock but do not double-count stats or overwrite status.
+                self._running_task_ids.discard(task_id)
+                return
             run.finished_at = now
             run.status = status
             run.report_path = report_path
