@@ -5025,6 +5025,12 @@ class DeepAgentsApp(App):
         with suppress(NoMatches, ScreenStackError):
             self.query_one("#chat", VerticalScroll).anchor()
 
+        # If this is a direct user message (not dequeued from the scheduled
+        # queue), discard any stale scheduled-run context that may have been
+        # left from an interrupted scheduled turn.
+        if not self._processing_pending:
+            self._active_scheduled_run = None
+
         # Check if agent is available
         target_agent = agent_override or self._agent
         if target_agent and self._ui_adapter and self._session_state:
@@ -5251,6 +5257,18 @@ class DeepAgentsApp(App):
         if not is_current_generation:
             # A newer agent took over — skip queue drain, deferred actions, and
             # auto-offload so they don't interfere with the new agent's turn.
+            # But still clear any stale scheduled-run context so the next
+            # user turn isn't wrongly treated as a scheduled run.
+            if self._active_scheduled_run is not None:
+                run_id, task_id = self._active_scheduled_run
+                self._active_scheduled_run = None
+                if self._scheduler_runner is not None:
+                    with suppress(Exception):
+                        self._scheduler_runner.finish_run(
+                            run_id, task_id,
+                            status="failed",
+                            error="Interrupted by user",
+                        )
             logger.debug(
                 "Skipping stale cleanup for generation %d (current: %d)",
                 generation,

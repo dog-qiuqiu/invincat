@@ -205,19 +205,14 @@ class SchedulerRunner:
             cwd=task.cwd,
         )
         self._store.save_run(run)
-        self._store.update_task_status(
-            task.id,
-            last_status="running",
-            last_run_at=now.isoformat(),
-        )
-        self._running_task_ids.add(task.id)
-
         next_run = compute_next_run(task.cron, now, task.timezone)
         self._store.update_task_status(
             task.id,
             last_status="running",
+            last_run_at=now.isoformat(),
             next_run_at=next_run.isoformat() if next_run else None,
         )
+        self._running_task_ids.add(task.id)
 
         prompt = _build_scheduled_prompt(task, scheduled_for)
         try:
@@ -284,16 +279,14 @@ class SchedulerRunner:
             timeout_task.cancel()
 
         now = datetime.now(timezone.utc).isoformat()
-        runs = self._store.list_runs(task_id, limit=50)
-        for r in runs:
-            if r.id == run_id:
-                r.finished_at = now
-                r.status = status
-                r.report_path = report_path
-                r.error = error
-                r.thread_id = thread_id
-                self._store.save_run(r)
-                break
+        run = self._store.load_run(run_id)
+        if run is not None:
+            run.finished_at = now
+            run.status = status
+            run.report_path = report_path
+            run.error = error
+            run.thread_id = thread_id
+            self._store.save_run(run)
 
         self._store.update_task_status(
             task_id,

@@ -237,6 +237,13 @@ class SchedulerStore:
             )
             conn.commit()
 
+    def load_run(self, run_id: str) -> "TaskRun | None":  # noqa: F821
+        with _connect(self._db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM scheduled_task_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+        return _row_to_run(row) if row else None
+
     def list_runs(self, task_id: str, limit: int = 20) -> list["TaskRun"]:  # noqa: F821
         with _connect(self._db_path) as conn:
             rows = conn.execute(
