@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import importlib
 import json
 import logging
@@ -2215,7 +2216,12 @@ def _apply_profile_overrides(
 
     logger.debug("Applying %s profile overrides: %s", label, overrides)
     profile = getattr(model, "profile", None)
-    merged = {**profile, **overrides} if isinstance(profile, dict) else overrides
+    copied_overrides = copy.deepcopy(overrides)
+    merged = (
+        {**copy.deepcopy(profile), **copied_overrides}
+        if isinstance(profile, dict)
+        else copied_overrides
+    )
     try:
         model.profile = merged  # type: ignore[union-attr]
     except (AttributeError, TypeError, ValueError) as exc:
@@ -2316,7 +2322,7 @@ def create_model(
 
     # CLI --model-params take highest priority
     if extra_kwargs:
-        kwargs.update(extra_kwargs)
+        kwargs.update(copy.deepcopy(extra_kwargs))
 
     # Check if this provider uses a custom BaseChatModel class
     config = ModelConfig.load()

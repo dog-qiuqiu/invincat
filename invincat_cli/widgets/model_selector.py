@@ -35,6 +35,7 @@ from invincat_cli.model_config import (
     get_model_profiles,
     has_provider_credentials,
     register_provider_model,
+    save_target_model_params,
 )
 
 logger = logging.getLogger(__name__)
@@ -982,7 +983,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str, ModelTarget] | None]):
 
     async def action_register_model(self) -> None:
         """Open the model registration screen."""
-        screen = ModelRegisterScreen()
+        screen = ModelRegisterScreen(target=self._target)
         self.app.push_screen(screen, self._handle_register_result)
 
     async def action_edit_model(self) -> None:
@@ -1002,16 +1003,25 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str, ModelTarget] | None]):
 
         _, model_name = model_spec.split(":", 1)
         initial_values = await asyncio.to_thread(
-            self._load_registration_values, provider, model_name
+            self._load_registration_values, provider, model_name, self._target
         )
-        screen = ModelRegisterScreen(initial_values=initial_values, edit_mode=True)
+        screen = ModelRegisterScreen(
+            initial_values=initial_values,
+            edit_mode=True,
+            target=self._target,
+        )
         self.app.push_screen(screen, self._handle_register_result)
 
     @staticmethod
-    def _load_registration_values(provider: str, model_name: str) -> dict[str, str]:
+    def _load_registration_values(
+        provider: str, model_name: str, target: ModelTarget
+    ) -> dict[str, str]:
         """Load saved registration form values for a configured model."""
         config = ModelConfig.load()
         params = config.get_kwargs(provider, model_name=model_name)
+        target_params = config.get_target_model_params(
+            target, f"{provider}:{model_name}"
+        )
         profile = config.get_profile_overrides(provider, model_name=model_name)
 
         values = {
@@ -1024,7 +1034,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str, ModelTarget] | None]):
             "deepseek_effort": "high",
         }
 
-        extra_body = params.get("extra_body")
+        behavior_params = {**params, **target_params}
+
+        extra_body = behavior_params.get("extra_body")
         if isinstance(extra_body, dict):
             thinking = extra_body.get("thinking")
             if isinstance(thinking, dict):
@@ -1032,7 +1044,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str, ModelTarget] | None]):
                 if thinking_type in {"enabled", "disabled"}:
                     values["deepseek_thinking"] = thinking_type
 
-        effort = params.get("reasoning_effort")
+        effort = behavior_params.get("reasoning_effort")
         if effort in {"low", "medium", "high"}:
             values["deepseek_effort"] = str(effort)
 
@@ -1178,16 +1190,19 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
         *,
         initial_values: dict[str, str] | None = None,
         edit_mode: bool = False,
+        target: ModelTarget = "primary",
     ) -> None:
         """Initialize the registration form.
 
         Args:
             initial_values: Optional field values for editing an existing model.
             edit_mode: Whether the screen is updating an existing model.
+            target: Model target whose runtime params should be edited.
         """
         super().__init__()
         self._initial_values = initial_values or {}
         self._edit_mode = edit_mode
+        self._target = target
 
     def compose(self) -> ComposeResult:
         """Compose the registration form layout."""
@@ -1445,8 +1460,14 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
                 api_key_env=api_key_env,
                 base_url=base_url,
                 max_input_tokens=max_input_tokens,
-                extra_params=extra_params or None,
             )
+            if success:
+                success = await asyncio.to_thread(
+                    save_target_model_params,
+                    self._target,
+                    f"{provider}:{model_name}",
+                    extra_params or None,
+                )
 
             if success:
                 self.dismiss((provider, model_name))

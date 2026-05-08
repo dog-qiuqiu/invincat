@@ -244,6 +244,98 @@ class TestModelCreation:
                 == 64000
             )
 
+    def test_model_config_returns_isolated_nested_overrides(self):
+        """Model params/profile reads should not share nested mutable objects."""
+        config = ModelConfig(
+            providers={
+                "openai": {
+                    "models": ["deepseek-chat"],
+                    "params": {
+                        "deepseek-chat": {
+                            "extra_body": {
+                                "thinking": {
+                                    "type": "enabled",
+                                },
+                            },
+                        },
+                    },
+                    "profile": {
+                        "deepseek-chat": {
+                            "metadata": {
+                                "owner": "primary",
+                            },
+                        },
+                    },
+                },
+            },
+        )
+
+        first_params = config.get_kwargs("openai", model_name="deepseek-chat")
+        second_params = config.get_kwargs("openai", model_name="deepseek-chat")
+        first_params["extra_body"]["thinking"]["type"] = "disabled"
+
+        assert second_params["extra_body"]["thinking"]["type"] == "enabled"
+
+        first_profile = config.get_profile_overrides(
+            "openai", model_name="deepseek-chat"
+        )
+        second_profile = config.get_profile_overrides(
+            "openai", model_name="deepseek-chat"
+        )
+        first_profile["metadata"]["owner"] = "memory"
+
+        assert second_profile["metadata"]["owner"] == "primary"
+
+    def test_target_model_params_are_isolated_by_target(self):
+        """Primary and memory target params can differ for the same model."""
+        from invincat_cli.model_config import (
+            get_target_model_params,
+            save_target_model_params,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.toml"
+
+            assert save_target_model_params(
+                "primary",
+                "openai:deepseek-chat",
+                {
+                    "reasoning_effort": "high",
+                    "extra_body": {"thinking": {"type": "enabled"}},
+                },
+                config_path=config_path,
+            )
+            assert save_target_model_params(
+                "memory",
+                "openai:deepseek-chat",
+                {
+                    "reasoning_effort": "low",
+                    "extra_body": {"thinking": {"type": "disabled"}},
+                },
+                config_path=config_path,
+            )
+
+            primary = get_target_model_params(
+                "primary", "openai:deepseek-chat", config_path=config_path
+            )
+            memory = get_target_model_params(
+                "memory", "openai:deepseek-chat", config_path=config_path
+            )
+
+            assert primary["reasoning_effort"] == "high"
+            assert primary["extra_body"]["thinking"]["type"] == "enabled"
+            assert memory["reasoning_effort"] == "low"
+            assert memory["extra_body"]["thinking"]["type"] == "disabled"
+
+            primary["extra_body"]["thinking"]["type"] = "disabled"
+
+            assert (
+                get_target_model_params(
+                    "primary", "openai:deepseek-chat", config_path=config_path
+                )["extra_body"]["thinking"]["type"]
+                == "enabled"
+            )
+
 
 if __name__ == "__main__":
     pytest.main([__file__])

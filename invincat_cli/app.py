@@ -1027,11 +1027,30 @@ class DeepAgentsApp(App):
             chat.styles.scrollbar_size_vertical = 0
 
         from invincat_cli.config import _get_default_memory_model_spec, settings
+        from invincat_cli.model_config import get_target_model_params
 
         if self._memory_model_override is None:
             memory_default_spec = _get_default_memory_model_spec()
             if memory_default_spec:
                 self._memory_model_override = memory_default_spec
+
+        if (
+            self._model_params_override is None
+            and settings.model_provider
+            and settings.model_name
+        ):
+            primary_spec = f"{settings.model_provider}:{settings.model_name}"
+            primary_params = get_target_model_params("primary", primary_spec)
+            if primary_params:
+                self._model_params_override = primary_params
+
+        if (
+            self._memory_model_override is not None
+            and self._memory_model_params_override is None
+        ):
+            memory_params = get_target_model_params("memory", self._memory_model_override)
+            if memory_params:
+                self._memory_model_params_override = memory_params
 
         self._status_bar = self.query_one("#status-bar", StatusBar)
         self._chat_input = self.query_one("#input-area", ChatInput)
@@ -6680,6 +6699,7 @@ class DeepAgentsApp(App):
             ModelSpec,
             clear_caches,
             get_credential_env_var,
+            get_target_model_params,
             has_provider_credentials,
             save_recent_model,
         )
@@ -6735,6 +6755,11 @@ class DeepAgentsApp(App):
             if provider and not parsed:
                 display = f"{provider}:{model_name}"
 
+            target_kwargs = extra_kwargs
+            if target_kwargs is None:
+                saved_target_kwargs = get_target_model_params(target, display)
+                target_kwargs = saved_target_kwargs or None
+
             remote_agent = self._remote_agent()
             can_start_deferred_server = (
                 target == "primary"
@@ -6769,7 +6794,7 @@ class DeepAgentsApp(App):
             try:
                 model_result = create_model(
                     display,
-                    extra_kwargs=extra_kwargs,
+                    extra_kwargs=target_kwargs,
                     profile_overrides=self._profile_override,
                 )
             except Exception as exc:
@@ -6782,7 +6807,7 @@ class DeepAgentsApp(App):
             if target == "primary":
                 model_result.apply_to_settings()
                 self._model_override = display
-                self._model_params_override = extra_kwargs
+                self._model_params_override = target_kwargs
                 self._invalidate_planner_agent_cache()
                 if remote_agent is None:
                     self._model = model_result.model
@@ -6801,7 +6826,7 @@ class DeepAgentsApp(App):
 
                 if remote_agent is None and self._server_kwargs is not None:
                     self._server_kwargs["model_name"] = display
-                    self._server_kwargs["model_params"] = extra_kwargs
+                    self._server_kwargs["model_params"] = target_kwargs
                     self._model_kwargs = None
                     self._defer_server_start = False
                     self._connecting = True
@@ -6827,7 +6852,7 @@ class DeepAgentsApp(App):
                 logger.info("Primary model switched to %s", display)
             else:
                 self._memory_model_override = display
-                self._memory_model_params_override = extra_kwargs
+                self._memory_model_params_override = target_kwargs
                 if self._status_bar:
                     self._status_bar.set_memory_model(
                         provider=model_result.provider or "",

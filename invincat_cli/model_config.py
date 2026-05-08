@@ -7,25 +7,25 @@ structured way to define available models and providers.
 from __future__ import annotations
 
 import contextlib
+import copy
 import importlib.util
 import logging
 import os
 import tempfile
 import threading
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypedDict
 
 import tomli_w
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
 
 logger = logging.getLogger(__name__)
 
 _ENV_PREFIX = "DEEPAGENTS_CLI_"
+ModelTarget = Literal["primary", "memory"]
 
 
 def resolve_env_var(name: str) -> str | None:
@@ -708,10 +708,19 @@ class ModelConfig:
     providers: Mapping[str, ProviderConfig] = field(default_factory=dict)
     """Read-only mapping of provider names to their configurations."""
 
+    target_params: Mapping[str, Mapping[str, dict[str, Any]]] = field(
+        default_factory=dict
+    )
+    """Read-only target-specific model params keyed by target then provider:model."""
+
     def __post_init__(self) -> None:
         """Freeze the providers dict into a read-only proxy."""
         if not isinstance(self.providers, MappingProxyType):
             object.__setattr__(self, "providers", MappingProxyType(self.providers))
+        if not isinstance(self.target_params, MappingProxyType):
+            object.__setattr__(
+                self, "target_params", MappingProxyType(self.target_params)
+            )
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> ModelConfig:
@@ -769,6 +778,7 @@ class ModelConfig:
             recent_model=models_section.get("recent"),
             memory_default_model=models_section.get("memory_default"),
             providers=models_section.get("providers", {}),
+            target_params=models_section.get("target_params", {}),
         )
 
         # Validate config consistency
@@ -972,11 +982,13 @@ class ModelConfig:
         if not provider:
             return {}
         params = provider.get("params", {})
-        result = {k: v for k, v in params.items() if not isinstance(v, dict)}
+        result = {
+            k: copy.deepcopy(v) for k, v in params.items() if not isinstance(v, dict)
+        }
         if model_name:
             overrides = params.get(model_name)
             if isinstance(overrides, dict):
-                result.update(overrides)
+                result.update(copy.deepcopy(overrides))
         return result
 
     def get_profile_overrides(
@@ -999,12 +1011,32 @@ class ModelConfig:
         if not provider:
             return {}
         profile = provider.get("profile", {})
-        result = {k: v for k, v in profile.items() if not isinstance(v, dict)}
+        result = {
+            k: copy.deepcopy(v) for k, v in profile.items() if not isinstance(v, dict)
+        }
         if model_name:
             overrides = profile.get(model_name)
             if isinstance(overrides, dict):
-                result.update(overrides)
+                result.update(copy.deepcopy(overrides))
         return result
+
+    def get_target_model_params(
+        self, target: ModelTarget, model_spec: str
+    ) -> dict[str, Any]:
+        """Get target-specific constructor params for a model spec.
+
+        Args:
+            target: Model target (`primary` or `memory`).
+            model_spec: Provider-qualified model spec.
+
+        Returns:
+            Deep-copied target params, or an empty dict when not configured.
+        """
+        target_table = self.target_params.get(target)
+        if not isinstance(target_table, Mapping):
+            return {}
+        params = target_table.get(model_spec)
+        return copy.deepcopy(params) if isinstance(params, dict) else {}
 
 
 def _save_model_field(
@@ -1111,6 +1143,69 @@ def save_memory_default_model(
 def clear_memory_default_model(config_path: Path | None = None) -> bool:
     """Remove the dedicated memory default model from the config file."""
     return _clear_model_field("memory_default", config_path)
+
+
+def get_target_model_params(
+    target: ModelTarget,
+    model_spec: str,
+    config_path: Path | None = None,
+) -> dict[str, Any]:
+    """Load target-specific constructor params for a model spec."""
+    return ModelConfig.load(config_path).get_target_model_params(target, model_spec)
+
+
+def save_target_model_params(
+    target: ModelTarget,
+    model_spec: str,
+    params: dict[str, Any] | None,
+    config_path: Path | None = None,
+) -> bool:
+    """Save target-specific constructor params for a model spec.
+
+    Empty params remove the target override, allowing the model to fall back
+    to its provider/model-level configuration.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        if config_path.exists():
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
+        else:
+            data = {}
+
+        models_section = data.setdefault("models", {})
+        target_params = models_section.setdefault("target_params", {})
+        target_table = target_params.setdefault(target, {})
+
+        if params:
+            target_table[model_spec] = copy.deepcopy(params)
+        else:
+            target_table.pop(model_spec, None)
+            if not target_table:
+                target_params.pop(target, None)
+            if not target_params:
+                models_section.pop("target_params", None)
+
+        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                tomli_w.dump(data, f)
+            Path(tmp_path).replace(config_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.exception(
+            "Could not save %s target params for model %s", target, model_spec
+        )
+        return False
+    else:
+        clear_caches()
+        return True
 
 
 def _clear_model_field(field: str, config_path: Path | None = None) -> bool:
