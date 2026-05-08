@@ -142,9 +142,10 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
     }
 
     ScheduleManagerScreen > Vertical {
-        width: 90;
-        max-width: 95%;
-        height: 80%;
+        width: 92;
+        max-width: 96%;
+        height: auto;
+        max-height: 88%;
         background: $surface;
         border: solid $primary;
         padding: 0 0;
@@ -157,14 +158,18 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
         padding: 1 2 0 2;
     }
 
-    ScheduleManagerScreen .schedule-task-list {
-        height: 1fr;
-        padding: 1 2;
+    ScheduleManagerScreen .schedule-divider {
+        height: 1;
+        color: $primary-darken-2;
+        border-bottom: solid $primary-darken-2;
+        margin: 0 0;
     }
 
-    ScheduleManagerScreen .schedule-task-row {
-        height: 1;
-        padding: 0 0;
+    ScheduleManagerScreen .schedule-task-list {
+        height: auto;
+        max-height: 16;
+        min-height: 3;
+        padding: 0 2;
     }
 
     ScheduleManagerScreen .schedule-empty {
@@ -174,19 +179,42 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
         padding: 2 2;
     }
 
-    ScheduleManagerScreen .schedule-help {
-        height: 1;
-        color: $text-muted;
-        text-style: italic;
-        text-align: center;
-        padding: 0 2 1 2;
-    }
-
     ScheduleManagerScreen .schedule-status-bar {
         height: 1;
         background: $primary-background;
         color: $text-muted;
         padding: 0 2;
+        margin-top: 1;
+    }
+
+    ScheduleManagerScreen .schedule-keybindings {
+        height: auto;
+        padding: 1 2 0 2;
+    }
+
+    ScheduleManagerScreen .schedule-keybinding-row {
+        height: 1;
+        color: $text-muted;
+    }
+
+    ScheduleManagerScreen .schedule-key {
+        color: $primary;
+        text-style: bold;
+        width: 20;
+        min-width: 20;
+    }
+
+    ScheduleManagerScreen .schedule-key-desc {
+        color: $text-muted;
+    }
+
+    ScheduleManagerScreen .schedule-footer {
+        height: 1;
+        color: $text-muted;
+        text-style: italic;
+        text-align: center;
+        padding: 0 2 1 2;
+        margin-top: 1;
     }
     """
 
@@ -199,20 +227,38 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
 
     def compose(self) -> "ComposeResult":
         glyphs = get_glyphs()
+        _KEY_BINDINGS = [
+            (f"{glyphs.arrow_up} / {glyphs.arrow_down}",  "上下浏览任务列表"),
+            ("Enter",                                       "立即手动触发选中任务（不等到计划时间）"),
+            ("p",                                          "暂停 / 恢复  切换选中任务的启用状态"),
+            ("d  d",                                       "删除选中任务（需按两次确认，防误操作）"),
+            ("r",                                          "刷新列表，重新从数据库加载最新状态"),
+            ("Esc",                                        "关闭此页面，返回主聊天界面"),
+        ]
         with Vertical():
-            yield Static("Scheduled Tasks", classes="schedule-title")
+            yield Static("定时任务管理", classes="schedule-title")
+            yield Static("", classes="schedule-divider")
             with VerticalScroll(classes="schedule-task-list", id="task-list-scroll"):
                 yield Static("", id="task-list-container")
             yield Static("", classes="schedule-status-bar", id="status-bar")
-            help_text = (
-                f"{glyphs.arrow_up}/{glyphs.arrow_down} Navigate"
-                f"  ·  Enter: Run now"
-                f"  ·  p: Pause/Resume"
-                f"  ·  d: Delete"
-                f"  ·  r: Refresh"
-                f"  ·  Esc: Close"
+            yield Static("", classes="schedule-divider")
+            with Vertical(classes="schedule-keybindings"):
+                for key, desc in _KEY_BINDINGS:
+                    with Horizontal(classes="schedule-keybinding-row"):
+                        yield Static(
+                            Content.from_markup(f"[bold cyan]  {key}[/bold cyan]"),
+                            classes="schedule-key",
+                        )
+                        yield Static(
+                            Content.from_markup(f"[dim]{desc}[/dim]"),
+                            classes="schedule-key-desc",
+                        )
+            yield Static(
+                Content.from_markup(
+                    "[dim italic]提示：通过自然语言告诉助手来创建新的定时任务[/dim italic]"
+                ),
+                classes="schedule-footer",
             )
-            yield Static(help_text, classes="schedule-help")
 
     def on_mount(self) -> None:
         if is_ascii_mode():
@@ -232,7 +278,7 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
         if not self._tasks:
             container.update(
                 Content.from_markup(
-                    "[dim italic]No scheduled tasks. Ask the assistant to create one.[/dim italic]"
+                    "[dim italic]  暂无定时任务。在主界面告诉助手创建一个，例如：「每天早上 8 点分析项目」[/dim italic]"
                 )
             )
             return
@@ -278,14 +324,20 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
     def _update_status(self, message: str = "") -> None:
         bar = self.query_one("#status-bar", Static)
         if message:
-            bar.update(message)
+            bar.update(Content.from_markup(f" [bold]{message}[/bold]"))
         elif not self._tasks:
             bar.update("")
         else:
             task = self._tasks[self._selected_index]
-            state = "enabled" if task.enabled else "paused"
-            runs = f"{task.run_count} run(s)"
-            bar.update(f" {task.title}  [{state}]  {runs}  runs: {task.failure_count} failed")
+            state_label = "[green]运行中[/green]" if task.enabled else "[dim]已暂停[/dim]"
+            runs_label = f"已执行 {task.run_count} 次"
+            fail_label = f"失败 {task.failure_count} 次" if task.failure_count else ""
+            last_label = f"上次: {task.last_run_at[:10] if task.last_run_at else '从未'}"
+            parts = [f" {task.title}", state_label, runs_label]
+            if fail_label:
+                parts.append(f"[red]{fail_label}[/red]")
+            parts.append(f"[dim]{last_label}[/dim]")
+            bar.update(Content.from_markup("  ·  ".join(parts)))
 
     def _move_to(self, index: int) -> None:
         if not self._tasks:
@@ -317,8 +369,8 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
         task = self._tasks[self._selected_index]
         new_state = not task.enabled
         self._store.set_task_enabled(task.id, new_state)
-        verb = "resumed" if new_state else "paused"
-        self._update_status(f" {task.title} — {verb}")
+        verb = "已恢复" if new_state else "已暂停"
+        self._update_status(f"{task.title} — {verb}")
         self._load_tasks()
 
     def action_delete_task(self) -> None:
@@ -326,20 +378,18 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
             return
         task = self._tasks[self._selected_index]
         if self._confirm_delete == task.id:
-            # Second d-press: confirmed
             self._store.delete_task(task.id)
             self._confirm_delete = None
             self._selected_index = max(0, self._selected_index - 1)
             self._load_tasks()
-            self._update_status(" Deleted.")
+            self._update_status("已删除")
         else:
-            # First d-press: ask for confirmation
             self._confirm_delete = task.id
-            self._update_status(f" Delete '{task.title}'? Press d again to confirm, any other key to cancel.")
+            self._update_status(f"确认删除「{task.title}」？再按一次 d 确认，其他键取消")
 
     def action_refresh(self) -> None:
         self._load_tasks()
-        self._update_status(" Refreshed.")
+        self._update_status("已刷新")
 
     def action_close(self) -> None:
         self.dismiss(None)
