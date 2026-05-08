@@ -1204,7 +1204,8 @@ def save_target_model_params(
         )
         return False
     else:
-        clear_caches()
+        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
+        _default_config_cache = None
         return True
 
 

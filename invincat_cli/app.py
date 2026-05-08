@@ -6469,11 +6469,14 @@ class DeepAgentsApp(App):
         )
 
         store_paths: dict[str, str] = {"user": str(user_store.expanduser().resolve())}
-        project_root = settings.project_root
+        from invincat_cli.project_utils import find_project_root
+
+        cwd = Path(self._cwd).expanduser().resolve()
+        project_root = find_project_root(cwd)
         if project_root is not None:
             project_store_dir = project_root / ".invincat"
         else:
-            project_store_dir = Path(self._cwd).expanduser().resolve() / ".invincat"
+            project_store_dir = cwd / ".invincat"
         store_paths["project"] = str(
             (project_store_dir / "memory_project.json").expanduser().resolve()
         )
