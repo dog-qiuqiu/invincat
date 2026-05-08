@@ -218,7 +218,9 @@ class SchedulerRunner:
         try:
             await self._inject_message(task.id, run_id, prompt)
             # Start timeout watcher — finish_run() will cancel it on completion.
-            timeout_secs = getattr(task, "timeout_seconds", 600) or 600
+            # Use None-coalesce only; explicit 0 means "no timeout".
+            raw_timeout = getattr(task, "timeout_seconds", None)
+            timeout_secs = raw_timeout if raw_timeout is not None else 600
             if timeout_secs > 0:
                 self._timeout_tasks[run_id] = asyncio.ensure_future(
                     self._timeout_watcher(run_id, task.id, timeout_secs)

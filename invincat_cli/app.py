@@ -960,6 +960,7 @@ class DeepAgentsApp(App):
         self._scheduler_interval_handle: Any | None = None
         self._active_scheduled_run: tuple[str, str] | None = None  # (run_id, task_id)
         self._scheduled_turn_status: str = "success"
+        self._scheduled_turn_error: str | None = None
 
     def _remote_agent(self) -> RemoteAgent | None:
         """Return the agent narrowed to `RemoteAgent`, or `None`.
@@ -5145,6 +5146,7 @@ class DeepAgentsApp(App):
                 await post_turn_hook()
         except Exception as e:  # Resilient tool rendering
             self._scheduled_turn_status = "failed"
+            self._scheduled_turn_error = _format_exception_details(e)
             logger.exception("Agent execution failed")
             error_detail = _format_exception_details(e)
             if _looks_like_masked_internal_error(e) and self._server_proc is not None:
@@ -5201,6 +5203,7 @@ class DeepAgentsApp(App):
             if msg.scheduled_run_id and msg.scheduled_task_id:
                 self._active_scheduled_run = (msg.scheduled_run_id, msg.scheduled_task_id)
                 self._scheduled_turn_status = "success"
+                self._scheduled_turn_error = None
             else:
                 self._active_scheduled_run = None
 
@@ -5210,8 +5213,20 @@ class DeepAgentsApp(App):
                 await widget.remove()
 
             await self._process_message(msg.text, msg.mode)
-        except Exception:
+        except Exception as _queue_exc:
             logger.exception("Failed to process queued message")
+            # If this was a scheduled message, mark the run as failed so it
+            # doesn't stay stuck in "running" status.
+            if self._active_scheduled_run is not None:
+                run_id, task_id = self._active_scheduled_run
+                self._active_scheduled_run = None
+                if self._scheduler_runner is not None:
+                    with suppress(Exception):
+                        self._scheduler_runner.finish_run(
+                            run_id, task_id,
+                            status="failed",
+                            error=str(_queue_exc),
+                        )
             await self._mount_message(
                 ErrorMessage(
                     t("queue.process_failed").format(message=msg.text[:60])
@@ -5314,9 +5329,11 @@ class DeepAgentsApp(App):
                         run_id,
                         task_id,
                         status=self._scheduled_turn_status,
+                        error=self._scheduled_turn_error,
                     )
                 except Exception:
                     logger.exception("Failed to finish scheduled run %r", run_id)
+            self._scheduled_turn_error = None
 
         # Process next message from queue if any
         await self._process_next_from_queue()
