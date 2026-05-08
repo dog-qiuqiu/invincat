@@ -1134,6 +1134,11 @@ def create_cli_agent(
         WeComFileMiddleware(allowed_root=effective_cwd or Path.cwd())
     )
 
+    from invincat_cli.scheduler.store import SchedulerStore
+    from invincat_cli.scheduler.tool import ScheduleMiddleware
+
+    agent_middleware.append(ScheduleMiddleware(store=SchedulerStore()))
+
     # Add memory middleware
     if enable_memory:
         # Guard must be registered before any memory middleware so it runs first.

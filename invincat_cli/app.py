@@ -946,6 +946,13 @@ class DeepAgentsApp(App):
         self._wecom_bridge: WeComBridge | None = None
         self._wecom_lock = asyncio.Lock()
 
+        from invincat_cli.scheduler.store import SchedulerStore
+        from invincat_cli.scheduler.runner import SchedulerRunner
+
+        self._scheduler_store = SchedulerStore()
+        self._scheduler_runner: SchedulerRunner | None = None
+        self._scheduler_interval_handle: Any | None = None
+
     def _remote_agent(self) -> RemoteAgent | None:
         """Return the agent narrowed to `RemoteAgent`, or `None`.
 
@@ -1231,6 +1238,9 @@ class DeepAgentsApp(App):
             exclusive=True,
             group="startup-tool-check",
         )
+
+        # Start scheduler runner — checks for due tasks every 60 seconds.
+        self._start_scheduler()
 
         # Auto-submit initial prompt if provided via -m flag.
         # This check must come first because _lc_thread_id and _agent are
@@ -3910,6 +3920,8 @@ class DeepAgentsApp(App):
             await self._handle_wecombot_command(command, action="status")
         elif cmd == "/wecombot-stop":
             await self._handle_wecombot_command(command, action="stop")
+        elif cmd == "/schedule" or cmd.startswith("/schedule "):
+            await self._handle_schedule_command(command)
         elif cmd == "/theme":
             await self._show_theme_selector()
         elif cmd == "/language":
@@ -4032,6 +4044,266 @@ class DeepAgentsApp(App):
         # Anchor to bottom so command output stays visible
         with suppress(NoMatches, ScreenStackError):
             self.query_one("#chat", VerticalScroll).anchor()
+
+    # ------------------------------------------------------------------
+    # Scheduler integration
+    # ------------------------------------------------------------------
+
+    def _start_scheduler(self) -> None:
+        """Create SchedulerRunner and start the 60-second tick interval."""
+        from invincat_cli.scheduler.runner import SchedulerRunner
+
+        self._scheduler_runner = SchedulerRunner(
+            self._scheduler_store,
+            inject_message=self._inject_scheduled_message,
+            notify=lambda msg: self.notify(msg, timeout=6),
+            is_busy=lambda: self._agent_running or self._shell_running,
+        )
+        self._scheduler_interval_handle = self.set_interval(
+            60, self._scheduler_tick, pause=False
+        )
+        # Fire once immediately (after a short delay) for misfire recovery.
+        self.set_timer(3, self._scheduler_tick)
+
+    async def _scheduler_tick(self) -> None:
+        if self._scheduler_runner is not None:
+            await self._scheduler_runner.tick()
+
+    async def _inject_scheduled_message(self, task_id: str, prompt: str) -> None:
+        """Inject a scheduled task prompt into the TUI message queue."""
+        from invincat_cli.i18n import t
+
+        task = self._scheduler_store.load_task(task_id)
+        title = task.title if task else task_id
+        await self._mount_message(AppMessage(t("schedule.running").format(title=title)))
+        self._pending_messages.append(QueuedMessage(text=prompt, mode="normal"))
+        if not (self._agent_running or self._shell_running):
+            await self._process_next_from_queue()
+
+    async def _handle_schedule_tool_payload(self, payload: dict) -> None:
+        """Handle a structured schedule tool payload from the agent."""
+        from datetime import datetime, timezone
+
+        from invincat_cli.i18n import t
+        from invincat_cli.scheduler.models import DeliverySpec, ReportSpec, ScheduledTask
+        from invincat_cli.scheduler.parser import describe_schedule
+        from invincat_cli.scheduler.runner import compute_next_run
+
+        ptype = payload.get("type")
+
+        if ptype == "schedule_create":
+            import re
+
+            task_id = payload.get("task_id") or str(__import__("uuid").uuid4())
+            title = payload.get("title", "Untitled")
+            cron = payload.get("cron", "0 8 * * *")
+            tz = payload.get("timezone", "Asia/Shanghai")
+            prompt_text = payload.get("prompt", "")
+            report_format = payload.get("report_format", "markdown")
+            misfire_policy = payload.get("misfire_policy", "run_once")
+            slug = re.sub(r"[^\w\-]", "-", title.lower())[:40].strip("-")
+
+            now = datetime.now(timezone.utc)
+            next_run = compute_next_run(cron, now, tz)
+
+            task = ScheduledTask(
+                id=task_id,
+                title=title,
+                enabled=True,
+                prompt=prompt_text,
+                cron=cron,
+                timezone=tz,
+                cwd=self._cwd,
+                delivery=DeliverySpec(),
+                report=ReportSpec(
+                    output_dir="reports",
+                    filename_template=f"{slug}-{{date}}.{report_format.lower().replace('markdown', 'md')}",
+                    format=report_format,
+                ),
+                created_at=now.isoformat(),
+                updated_at=now.isoformat(),
+                next_run_at=next_run.isoformat() if next_run else None,
+                last_run_at=None,
+                last_status="never",
+                last_error=None,
+                run_count=0,
+                failure_count=0,
+                misfire_policy=misfire_policy,
+            )
+            self._scheduler_store.save_task(task)
+
+            next_run_str = (
+                next_run.astimezone(__import__("zoneinfo").ZoneInfo(tz)).strftime("%Y-%m-%d %H:%M %Z")
+                if next_run
+                else "unknown"
+            )
+            schedule_desc = describe_schedule(cron, tz)
+            report_path = f"reports/{slug}-{{date}}.md"
+            await self._mount_message(
+                AppMessage(
+                    t("schedule.created").format(
+                        title=title,
+                        schedule=schedule_desc,
+                        timezone=tz,
+                        next_run=next_run_str,
+                        report_path=report_path,
+                    )
+                )
+            )
+
+        elif ptype == "schedule_update":
+            task_id = payload.get("task_id", "")
+            task = self._scheduler_store.load_task(task_id)
+            if task is None:
+                await self._mount_message(
+                    AppMessage(t("schedule.not_found").format(task_id=task_id))
+                )
+                return
+            updates = payload.get("updates", {})
+            if "title" in updates:
+                task.title = updates["title"]
+            if "cron" in updates:
+                task.cron = updates["cron"]
+                now = datetime.now(timezone.utc)
+                next_run = compute_next_run(task.cron, now, task.timezone)
+                task.next_run_at = next_run.isoformat() if next_run else None
+            if "prompt" in updates:
+                task.prompt = updates["prompt"]
+            if "enabled" in updates:
+                task.enabled = bool(updates["enabled"])
+            if "timezone" in updates:
+                task.timezone = updates["timezone"]
+            task.updated_at = datetime.now(timezone.utc).isoformat()
+            self._scheduler_store.save_task(task)
+            await self._mount_message(
+                AppMessage(t("schedule.updated").format(title=task.title))
+            )
+
+        elif ptype == "schedule_cancel":
+            task_id = payload.get("task_id", "")
+            task = self._scheduler_store.load_task(task_id)
+            title = task.title if task else task_id
+            self._scheduler_store.delete_task(task_id)
+            await self._mount_message(
+                AppMessage(t("schedule.deleted").format(title=title))
+            )
+
+        elif ptype == "schedule_run_now":
+            task_id = payload.get("task_id", "")
+            title = payload.get("title", task_id)
+            task = self._scheduler_store.load_task(task_id)
+            if task is None:
+                await self._mount_message(
+                    AppMessage(t("schedule.not_found").format(task_id=task_id))
+                )
+                return
+            await self._mount_message(
+                AppMessage(t("schedule.run_queued").format(title=title))
+            )
+            if self._scheduler_runner is not None:
+                now = datetime.now(timezone.utc)
+                self._scheduler_runner._pending_runs.append((task, now))
+                await self._scheduler_runner._drain_pending(now)
+
+        elif ptype == "schedule_list":
+            tasks = payload.get("tasks", [])
+            if not tasks:
+                await self._mount_message(AppMessage(t("schedule.list_empty")))
+            else:
+                from invincat_cli.scheduler.parser import describe_schedule
+
+                lines = [t("schedule.list_header").format(count=len(tasks))]
+                for task_info in tasks:
+                    status_icon = "✓" if task_info.get("enabled") else "✗"
+                    desc = describe_schedule(task_info.get("cron", ""))
+                    next_run = task_info.get("next_run_at", "")[:16].replace("T", " ")
+                    lines.append(
+                        f"  {status_icon} {task_info['title']} — {desc} — next: {next_run}"
+                        f"  [id: {task_info['id'][:8]}]"
+                    )
+                await self._mount_message(AppMessage("\n".join(lines)))
+
+    async def _handle_schedule_command(self, command: str) -> None:
+        """Handle /schedule [list|run|pause|resume|delete] commands."""
+        from invincat_cli.i18n import t
+        from invincat_cli.scheduler.parser import describe_schedule
+
+        await self._mount_message(UserMessage(command))
+        parts = command.strip().split(maxsplit=2)
+        sub = parts[1].lower() if len(parts) > 1 else "list"
+
+        if sub == "list":
+            tasks = self._scheduler_store.list_tasks()
+            if not tasks:
+                await self._mount_message(AppMessage(t("schedule.list_empty")))
+                return
+            lines = [t("schedule.list_header").format(count=len(tasks))]
+            for task in tasks:
+                status_icon = "✓" if task.enabled else "✗"
+                desc = describe_schedule(task.cron, task.timezone)
+                next_run = (task.next_run_at or "")[:16].replace("T", " ")
+                lines.append(
+                    f"  {status_icon} [{task.id[:8]}] {task.title}\n"
+                    f"      {desc} {task.timezone} — next: {next_run} — {task.last_status}"
+                )
+            await self._mount_message(AppMessage("\n".join(lines)))
+
+        elif sub == "pause":
+            task_id = parts[2] if len(parts) > 2 else ""
+            task = self._scheduler_store.load_task(task_id) or self._find_task_by_prefix(task_id)
+            if task is None:
+                await self._mount_message(AppMessage(t("schedule.not_found").format(task_id=task_id)))
+                return
+            self._scheduler_store.set_task_enabled(task.id, False)
+            await self._mount_message(AppMessage(t("schedule.paused").format(title=task.title)))
+
+        elif sub == "resume":
+            task_id = parts[2] if len(parts) > 2 else ""
+            task = self._scheduler_store.load_task(task_id) or self._find_task_by_prefix(task_id)
+            if task is None:
+                await self._mount_message(AppMessage(t("schedule.not_found").format(task_id=task_id)))
+                return
+            self._scheduler_store.set_task_enabled(task.id, True)
+            await self._mount_message(AppMessage(t("schedule.resumed").format(title=task.title)))
+
+        elif sub == "delete":
+            task_id = parts[2] if len(parts) > 2 else ""
+            task = self._scheduler_store.load_task(task_id) or self._find_task_by_prefix(task_id)
+            if task is None:
+                await self._mount_message(AppMessage(t("schedule.not_found").format(task_id=task_id)))
+                return
+            self._scheduler_store.delete_task(task.id)
+            await self._mount_message(AppMessage(t("schedule.deleted").format(title=task.title)))
+
+        elif sub == "run":
+            task_id = parts[2] if len(parts) > 2 else ""
+            task = self._scheduler_store.load_task(task_id) or self._find_task_by_prefix(task_id)
+            if task is None:
+                await self._mount_message(AppMessage(t("schedule.not_found").format(task_id=task_id)))
+                return
+            await self._mount_message(AppMessage(t("schedule.run_queued").format(title=task.title)))
+            if self._scheduler_runner is not None:
+                from datetime import datetime, timezone
+
+                now = datetime.now(timezone.utc)
+                self._scheduler_runner._pending_runs.append((task, now))
+                await self._scheduler_runner._drain_pending(now)
+
+        else:
+            await self._mount_message(
+                AppMessage(
+                    "Usage: /schedule [list | pause <id> | resume <id> | delete <id> | run <id>]"
+                )
+            )
+
+    def _find_task_by_prefix(self, prefix: str) -> "ScheduledTask | None":  # noqa: F821
+        """Find a task by the first 8 characters of its ID."""
+        if not prefix:
+            return None
+        for task in self._scheduler_store.list_tasks():
+            if task.id.startswith(prefix):
+                return task
+        return None
 
     async def _handle_wecombot_command(self, command: str, *, action: str) -> None:
         """Manage WeCom bridge lifecycle in current CLI session.
@@ -4874,6 +5146,7 @@ class DeepAgentsApp(App):
                 turn_stats=turn_stats,
                 on_text_delta=on_text_delta,
                 on_wecom_file_request=on_wecom_file_request,
+                on_schedule_payload=self._handle_schedule_tool_payload,
             )
             if post_turn_hook is not None:
                 await post_turn_hook()
