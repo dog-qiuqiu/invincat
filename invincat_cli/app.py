@@ -126,6 +126,8 @@ _AUTO_OFFLOAD_THRESHOLD = 0.8
 # occurs when system-prompt overhead dominates the token count.
 _AUTO_OFFLOAD_COOLDOWN_SECONDS = 300
 
+_SCHEDULED_TRANSIENT_RETRY_DELAY_SECONDS = 3.0
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -239,6 +241,53 @@ def _looks_like_masked_internal_error(exc: BaseException) -> bool:
         message = str(payload.get("message", "")).strip().lower()
         return message == "an internal error occurred"
     return "an internal error occurred" in str(exc).lower()
+
+
+def _is_scheduled_retryable_error(exc: BaseException) -> bool:
+    """Return True for transient model/network errors worth retrying once."""
+    names = {cls.__name__ for cls in type(exc).__mro__}
+    if names & {
+        "ConnectError",
+        "ConnectTimeout",
+        "ReadError",
+        "ReadTimeout",
+        "RemoteProtocolError",
+        "TransportError",
+        "WriteError",
+        "WriteTimeout",
+        "PoolTimeout",
+        "NetworkError",
+        "APIConnectionError",
+        "APITimeoutError",
+        "InternalServerError",
+        "RateLimitError",
+    }:
+        return True
+    payload = _extract_exception_payload(exc)
+    text_parts = [type(exc).__name__, str(exc)]
+    if payload is not None:
+        text_parts.extend(str(v) for v in payload.values())
+    text = " ".join(text_parts).lower()
+    return any(
+        marker in text
+        for marker in (
+            "readerror",
+            "read error",
+            "timeout",
+            "timed out",
+            "connection",
+            "network",
+            "transport",
+            "temporarily unavailable",
+            "rate limit",
+            "429",
+            "500",
+            "502",
+            "503",
+            "504",
+            "an internal error occurred",
+        )
+    )
 
 
 # Disable cursor guide at module load (before Textual takes over)
@@ -962,6 +1011,7 @@ class DeepAgentsApp(App):
         self._active_scheduled_run: tuple[str, str] | None = None  # (run_id, task_id)
         self._scheduled_turn_status: str = "success"
         self._scheduled_turn_error: str | None = None
+        self._scheduled_turn_retry_used: bool = False
 
     def _remote_agent(self) -> RemoteAgent | None:
         """Return the agent narrowed to `RemoteAgent`, or `None`.
@@ -5307,6 +5357,7 @@ class DeepAgentsApp(App):
         self._inflight_turn_stats = turn_stats
         self._inflight_turn_start = time.monotonic()
         original_thread_id = self._session_state.thread_id
+        retry_after_exc: BaseException | None = None
         try:
             if thread_id_override:
                 self._session_state.thread_id = thread_id_override
@@ -5337,8 +5388,28 @@ class DeepAgentsApp(App):
             if post_turn_hook is not None:
                 await post_turn_hook()
         except Exception as e:  # Resilient tool rendering
-            self._scheduled_turn_status = "failed"
-            self._scheduled_turn_error = _format_exception_details(e)
+            scheduled_retryable = (
+                self._active_scheduled_run is not None
+                and not self._scheduled_turn_retry_used
+                and _is_scheduled_retryable_error(e)
+            )
+            if scheduled_retryable:
+                self._scheduled_turn_retry_used = True
+                retry_after_exc = e
+                logger.warning(
+                    "Scheduled run transient agent error; retrying once after %.1fs",
+                    _SCHEDULED_TRANSIENT_RETRY_DELAY_SECONDS,
+                    exc_info=True,
+                )
+                with suppress(Exception):
+                    await self._mount_message(
+                        AppMessage(
+                            "Scheduled task hit a transient model/network error; retrying once..."
+                        )
+                    )
+            else:
+                self._scheduled_turn_status = "failed"
+                self._scheduled_turn_error = _format_exception_details(e)
             logger.exception("Agent execution failed")
             error_detail = _format_exception_details(e)
             if _looks_like_masked_internal_error(e) and self._server_proc is not None:
@@ -5357,14 +5428,15 @@ class DeepAgentsApp(App):
                 self._ui_adapter.finalize_pending_tools_with_error(
                     t("agent.error").format(error=error_detail)
                 )
-            try:
-                await self._mount_message(
-                    ErrorMessage(t("agent.error").format(error=error_detail))
-                )
-            except Exception:
-                logger.debug(
-                    "Could not mount error message (app closing?)", exc_info=True
-                )
+            if not scheduled_retryable:
+                try:
+                    await self._mount_message(
+                        ErrorMessage(t("agent.error").format(error=error_detail))
+                    )
+                except Exception:
+                    logger.debug(
+                        "Could not mount error message (app closing?)", exc_info=True
+                    )
         finally:
             if thread_id_override and self._session_state is not None:
                 self._session_state.thread_id = original_thread_id
@@ -5376,6 +5448,19 @@ class DeepAgentsApp(App):
             if self._inflight_turn_stats is not None:
                 self._session_stats.merge(turn_stats)
                 self._inflight_turn_stats = None
+            if retry_after_exc is not None:
+                await asyncio.sleep(_SCHEDULED_TRANSIENT_RETRY_DELAY_SECONDS)
+                await self._run_agent_task(
+                    message,
+                    message_kwargs=message_kwargs,
+                    generation=generation,
+                    agent_override=agent_override,
+                    thread_id_override=thread_id_override,
+                    post_turn_hook=post_turn_hook,
+                    on_text_delta=on_text_delta,
+                    on_wecom_file_request=on_wecom_file_request,
+                )
+                return
             await self._cleanup_agent_task(generation=generation)
 
     async def _process_next_from_queue(self) -> None:
@@ -5396,6 +5481,7 @@ class DeepAgentsApp(App):
                 self._active_scheduled_run = (msg.scheduled_run_id, msg.scheduled_task_id)
                 self._scheduled_turn_status = "success"
                 self._scheduled_turn_error = None
+                self._scheduled_turn_retry_used = False
             else:
                 self._active_scheduled_run = None
 
@@ -5537,6 +5623,7 @@ class DeepAgentsApp(App):
                 except Exception:
                     logger.exception("Failed to finish scheduled run %r", run_id)
             self._scheduled_turn_error = None
+            self._scheduled_turn_retry_used = False
 
         if self._scheduler_runner is not None and not (self._agent_running or self._shell_running):
             await self._scheduler_runner.drain_pending_now()
