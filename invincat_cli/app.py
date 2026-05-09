@@ -4124,14 +4124,15 @@ class DeepAgentsApp(App):
             return
 
         report_path: str | None = None
-        try:
-            scheduled_for = datetime.fromisoformat(run.scheduled_for)
-            if scheduled_for.tzinfo is None:
-                scheduled_for = scheduled_for.replace(tzinfo=timezone.utc)
-            date_str = scheduled_for.astimezone(ZoneInfo(task.timezone)).strftime("%Y-%m-%d")
-            report_path = check_report_exists(task, date_str)
-        except Exception:
-            logger.warning("Failed to resolve scheduled report path for WeCom delivery", exc_info=True)
+        if task.report.mode == "report":
+            try:
+                scheduled_for = datetime.fromisoformat(run.scheduled_for)
+                if scheduled_for.tzinfo is None:
+                    scheduled_for = scheduled_for.replace(tzinfo=timezone.utc)
+                date_str = scheduled_for.astimezone(ZoneInfo(task.timezone)).strftime("%Y-%m-%d")
+                report_path = check_report_exists(task, date_str)
+            except Exception:
+                logger.warning("Failed to resolve scheduled report path for WeCom delivery", exc_info=True)
 
         assistant_messages = [
             m.content.strip()
@@ -4203,6 +4204,9 @@ class DeepAgentsApp(App):
             cron = payload.get("cron", "0 8 * * *")
             tz = payload.get("timezone", "Asia/Shanghai")
             prompt_text = payload.get("prompt", "")
+            output_mode = payload.get("output_mode", "message")
+            if output_mode not in {"message", "report"}:
+                output_mode = "message"
             report_format = payload.get("report_format", "markdown")
             misfire_policy = payload.get("misfire_policy", "run_once")
             slug = re.sub(r"[^\w\-]", "-", title.lower())[:40].strip("-")
@@ -4234,6 +4238,7 @@ class DeepAgentsApp(App):
                 cwd=self._cwd,
                 delivery=delivery,
                 report=ReportSpec(
+                    mode=output_mode,
                     output_dir="reports",
                     filename_template=f"{slug}-{{date}}.{report_format.lower().replace('markdown', 'md')}",
                     format=report_format,
@@ -4256,7 +4261,11 @@ class DeepAgentsApp(App):
                 else "unknown"
             )
             schedule_desc = describe_schedule(cron, tz)
-            report_path = f"reports/{slug}-{{date}}.md"
+            report_path = (
+                f"reports/{slug}-{{date}}.md"
+                if output_mode == "report"
+                else "message only"
+            )
             await self._mount_message(
                 AppMessage(
                     t("schedule.created").format(

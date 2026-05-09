@@ -17,7 +17,12 @@ from invincat_cli.scheduler.models import (
     TaskRun,
 )
 from invincat_cli.scheduler.parser import describe_schedule, parse_schedule
-from invincat_cli.scheduler.runner import SchedulerRunner, _parse_dt, compute_next_run
+from invincat_cli.scheduler.runner import (
+    SchedulerRunner,
+    _build_scheduled_prompt,
+    _parse_dt,
+    compute_next_run,
+)
 from invincat_cli.scheduler.store import SchedulerStore
 from invincat_cli.scheduler.tool import (
     SCHEDULE_CREATE_TYPE,
@@ -410,6 +415,23 @@ def test_parse_schedule_tool_returns_none_for_unknown_type() -> None:
     assert parse_schedule_tool_result(payload) is None
 
 
+def test_scheduled_prompt_defaults_to_message_mode() -> None:
+    task = _make_task()
+    prompt = _build_scheduled_prompt(task, datetime.now(timezone.utc))
+
+    assert "reply with a concise result" in prompt
+    assert "Save the report to" not in prompt
+
+
+def test_scheduled_prompt_report_mode_requires_report_file() -> None:
+    task = _make_task()
+    task.report = ReportSpec(mode="report")
+    prompt = _build_scheduled_prompt(task, datetime.now(timezone.utc))
+
+    assert "Save the report to: reports/test-task-" in prompt
+    assert "brief summary" in prompt
+
+
 def test_store_preserves_wecom_delivery_channel(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     task = _make_task()
@@ -456,6 +478,22 @@ def test_schedule_middleware_create_tool_returns_valid_json(tmp_path: Path) -> N
     assert data["type"] == SCHEDULE_CREATE_TYPE
     assert data["cron"] == "0 8 * * *"
     assert data["title"] == "Daily analysis"
+    assert data["output_mode"] == "message"
+
+
+def test_schedule_middleware_create_tool_accepts_report_mode(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    mw = ScheduleMiddleware(store=store)
+    create_tool = next(t for t in mw.tools if t.name == "create_scheduled_task")
+    result = _invoke_tool(create_tool, {
+        "title": "Daily analysis",
+        "schedule": "daily 08:00",
+        "prompt": "Analyse the project",
+        "output_mode": "report",
+    })
+    data = json.loads(result)
+    assert data["type"] == SCHEDULE_CREATE_TYPE
+    assert data["output_mode"] == "report"
 
 
 def test_schedule_middleware_create_tool_invalid_schedule(tmp_path: Path) -> None:

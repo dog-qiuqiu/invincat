@@ -50,11 +50,26 @@ def _build_scheduled_prompt(task: "ScheduledTask", scheduled_for: datetime) -> s
     from invincat_cli.scheduler.models import ReportSpec
 
     report: ReportSpec = task.report
-    filename = report.filename_template.format(
-        task_slug=_slug(task.title),
-        date=date_str,
-    )
-    report_path = f"{report.output_dir}/{filename}"
+    if report.mode == "report":
+        filename = report.filename_template.format(
+            task_slug=_slug(task.title),
+            date=date_str,
+        )
+        report_path = f"{report.output_dir}/{filename}"
+        requirements = (
+            f"Requirements:\n"
+            f"1. Save the report to: {report_path}\n"
+            f"2. The report must be in {report.format} format.\n"
+            f"3. After saving, reply with the report path and a brief summary.\n"
+            f"4. Do not create new scheduled tasks."
+        )
+    else:
+        requirements = (
+            f"Requirements:\n"
+            f"1. Execute the task and reply with a concise result for notification.\n"
+            f"2. Do not create a report file unless the task explicitly asks for one.\n"
+            f"3. Do not create new scheduled tasks."
+        )
 
     return (
         f"[Scheduled task – DO NOT create another scheduled task]\n"
@@ -64,11 +79,7 @@ def _build_scheduled_prompt(task: "ScheduledTask", scheduled_for: datetime) -> s
         f"Working directory: {task.cwd}\n\n"
         f"Please execute the following scheduled task:\n"
         f"{task.prompt}\n\n"
-        f"Requirements:\n"
-        f"1. Save the report to: {report_path}\n"
-        f"2. The report must be in {report.format} format.\n"
-        f"3. After saving, reply with the report path and a brief summary.\n"
-        f"4. Do not create new scheduled tasks."
+        f"{requirements}"
     )
 
 

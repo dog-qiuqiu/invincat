@@ -109,6 +109,7 @@ class ScheduleMiddleware(AgentMiddleware):
             tool_call_id: Annotated[str, InjectedToolCallId],
             timezone: str = "Asia/Shanghai",
             delivery: str = "tui",
+            output_mode: str = "message",
             report_format: str = "markdown",
             misfire_policy: str = "run_once",
         ) -> str:
@@ -125,20 +126,24 @@ class ScheduleMiddleware(AgentMiddleware):
                     - bare cron: "0 8 * * *"
                 prompt: The task instructions to execute on each run.
                 timezone: IANA timezone name (default "Asia/Shanghai").
-                delivery: Delivery channel. Currently only "tui" is supported.
+                delivery: Delivery channel. Use "tui" normally; WeCom turns are delivered back to WeCom automatically.
+                output_mode: "message" for lightweight text result (default), or "report" to require a saved report file.
                 report_format: Output format, "markdown" or "text".
                 misfire_policy: "run_once" (default) or "skip" if TUI was closed.
             """
             from invincat_cli.scheduler.parser import parse_schedule
-            from invincat_cli.scheduler.models import DeliverySpec, ReportSpec
-            import re
 
             try:
                 cron = parse_schedule(schedule)
             except ValueError as exc:
                 return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
-            slug = re.sub(r"[^\w\-]", "-", title.lower())[:40].strip("-")
+            if output_mode not in {"message", "report"}:
+                return json.dumps(
+                    {"error": "output_mode must be 'message' or 'report'"},
+                    ensure_ascii=False,
+                )
+
             payload = {
                 "type": SCHEDULE_CREATE_TYPE,
                 "task_id": str(uuid.uuid4()),
@@ -148,6 +153,7 @@ class ScheduleMiddleware(AgentMiddleware):
                 "prompt": prompt,
                 "timezone": timezone,
                 "delivery": delivery,
+                "output_mode": output_mode,
                 "report_format": report_format,
                 "misfire_policy": misfire_policy,
                 "tool_call_id": tool_call_id,

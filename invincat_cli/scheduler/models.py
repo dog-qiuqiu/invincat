@@ -17,6 +17,7 @@ class DeliverySpec:
 
 @dataclass
 class ReportSpec:
+    mode: Literal["message", "report"] = "message"
     output_dir: str = "reports"
     filename_template: str = "{task_slug}-{date}.md"
     format: str = "markdown"
