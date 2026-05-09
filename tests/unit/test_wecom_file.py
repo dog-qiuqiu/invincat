@@ -33,6 +33,7 @@ from invincat_cli.wecom.protocol import (
     build_wecom_agent_input,
     build_wecom_file_frame,
     build_wecom_ping_frame,
+    build_wecom_text_frame,
     extract_wecom_inbound_media,
     extract_wecom_mixed_text,
     extract_wecom_voice_text,
@@ -624,6 +625,18 @@ def test_wecom_file_frame_requires_active_send_target() -> None:
         assert "missing active-send target" in str(exc)
     else:
         raise AssertionError("expected missing target to fail")
+
+
+def test_wecom_text_frame_sends_active_markdown_to_chat() -> None:
+    payload = build_wecom_text_frame("chat-1", "hello")
+
+    assert payload["cmd"] == "aibot_send_msg"
+    assert payload["headers"]["req_id"].startswith("aibot_send_msg_")
+    assert payload["body"] == {
+        "msgtype": "markdown",
+        "markdown": {"content": "hello"},
+        "chatid": "chat-1",
+    }
 
 
 def test_wecom_upload_outbound_media_uses_init_chunks_and_finish(tmp_path: Path) -> None:

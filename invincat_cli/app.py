@@ -951,6 +951,7 @@ class DeepAgentsApp(App):
         self._wecom_task: asyncio.Task[None] | None = None
         self._wecom_bridge: WeComBridge | None = None
         self._wecom_lock = asyncio.Lock()
+        self._current_wecom_inbound_frame: dict[str, Any] | None = None
 
         from invincat_cli.scheduler.store import SchedulerStore
         from invincat_cli.scheduler.runner import SchedulerRunner
@@ -4078,6 +4079,94 @@ class DeepAgentsApp(App):
         if self._scheduler_runner is not None:
             await self._scheduler_runner.tick()
 
+    async def _deliver_scheduled_result_to_wecom(
+        self,
+        *,
+        task_id: str,
+        run_id: str,
+        status: str,
+        error: str | None,
+    ) -> None:
+        """Best-effort active WeCom delivery for a completed scheduled run."""
+        from datetime import datetime, timezone
+        from pathlib import Path
+        from zoneinfo import ZoneInfo
+
+        from invincat_cli.scheduler.delivery import check_report_exists
+        from invincat_cli.wecom.media import upload_wecom_outbound_media
+        from invincat_cli.wecom.protocol import (
+            build_wecom_file_frame_for_chat,
+            build_wecom_text_frame,
+        )
+        from invincat_cli.widgets.message_store import MessageType
+
+        task = self._scheduler_store.load_task(task_id)
+        run = self._scheduler_store.load_run(run_id)
+        if task is None or run is None:
+            return
+
+        channels = getattr(task.delivery, "channels", []) or []
+        wecom_channels = [ch for ch in channels if isinstance(ch, dict) and ch.get("type") == "wecom"]
+        if not wecom_channels:
+            return
+
+        if self._wecom_bridge is None:
+            await self._mount_message(
+                ErrorMessage("Scheduled task WeCom delivery skipped: WeCom bridge is offline.")
+            )
+            return
+
+        chatid = str(wecom_channels[0].get("chatid") or "").strip()
+        if not chatid:
+            await self._mount_message(
+                ErrorMessage("Scheduled task WeCom delivery skipped: missing chatid.")
+            )
+            return
+
+        report_path: str | None = None
+        try:
+            scheduled_for = datetime.fromisoformat(run.scheduled_for)
+            if scheduled_for.tzinfo is None:
+                scheduled_for = scheduled_for.replace(tzinfo=timezone.utc)
+            date_str = scheduled_for.astimezone(ZoneInfo(task.timezone)).strftime("%Y-%m-%d")
+            report_path = check_report_exists(task, date_str)
+        except Exception:
+            logger.warning("Failed to resolve scheduled report path for WeCom delivery", exc_info=True)
+
+        assistant_messages = [
+            m.content.strip()
+            for m in self._message_store.get_all_messages()
+            if m.type == MessageType.ASSISTANT and m.content.strip()
+        ]
+        summary = assistant_messages[-1] if assistant_messages else ""
+        if len(summary) > 1200:
+            summary = summary[:1200].rstrip() + "\n\n(摘要过长，已截断)"
+
+        if status == "success":
+            content = f"定时任务已完成：{task.title}"
+            if summary:
+                content += f"\n\n{summary}"
+            if report_path:
+                content += f"\n\n报告文件：{report_path}"
+        else:
+            content = f"定时任务执行失败：{task.title}"
+            if error:
+                content += f"\n\n{error}"
+
+        try:
+            await self._wecom_send_request(build_wecom_text_frame(chatid, content))
+            if status == "success" and report_path:
+                media_id = await upload_wecom_outbound_media(
+                    Path(report_path),
+                    send_request=self._wecom_send_request,
+                )
+                await self._wecom_send_request(build_wecom_file_frame_for_chat(chatid, media_id))
+        except Exception as exc:
+            logger.warning("Scheduled task WeCom delivery failed: %s", exc, exc_info=True)
+            await self._mount_message(
+                ErrorMessage(f"Scheduled task WeCom delivery failed: {exc}")
+            )
+
     async def _inject_scheduled_message(self, task_id: str, run_id: str, prompt: str) -> None:
         """Inject a scheduled task prompt into the TUI message queue."""
         from invincat_cli.i18n import t
@@ -4102,6 +4191,7 @@ class DeepAgentsApp(App):
         from invincat_cli.scheduler.models import DeliverySpec, ReportSpec, ScheduledTask
         from invincat_cli.scheduler.parser import describe_schedule
         from invincat_cli.scheduler.runner import compute_next_run
+        from invincat_cli.wecom.protocol import resolve_wecom_active_chat_id
 
         ptype = payload.get("type")
 
@@ -4116,6 +4206,20 @@ class DeepAgentsApp(App):
             report_format = payload.get("report_format", "markdown")
             misfire_policy = payload.get("misfire_policy", "run_once")
             slug = re.sub(r"[^\w\-]", "-", title.lower())[:40].strip("-")
+            delivery_channel = payload.get("delivery", "tui")
+            delivery = DeliverySpec()
+            if self._current_wecom_inbound_frame is not None and delivery_channel in {"tui", "wecom"}:
+                try:
+                    delivery = DeliverySpec(
+                        channels=[
+                            {
+                                "type": "wecom",
+                                "chatid": resolve_wecom_active_chat_id(self._current_wecom_inbound_frame),
+                            }
+                        ]
+                    )
+                except Exception:
+                    logger.warning("Could not resolve WeCom delivery target", exc_info=True)
 
             now = datetime.now(timezone.utc)
             next_run = compute_next_run(cron, now, tz)
@@ -4128,7 +4232,7 @@ class DeepAgentsApp(App):
                 cron=cron,
                 timezone=tz,
                 cwd=self._cwd,
-                delivery=DeliverySpec(),
+                delivery=delivery,
                 report=ReportSpec(
                     output_dir="reports",
                     filename_template=f"{slug}-{{date}}.{report_format.lower().replace('markdown', 'md')}",
@@ -4457,6 +4561,16 @@ class DeepAgentsApp(App):
                 on_wecom_file_request=on_wecom_file_request,
             )
 
+        previous_wecom_frame: dict[str, Any] | None = None
+
+        def _enter_wecom_turn_context() -> None:
+            nonlocal previous_wecom_frame
+            previous_wecom_frame = self._current_wecom_inbound_frame
+            self._current_wecom_inbound_frame = inbound_frame
+
+        def _exit_wecom_turn_context() -> None:
+            self._current_wecom_inbound_frame = previous_wecom_frame
+
         runner = WeComTurnRunner(
             lock=self._wecom_lock,
             cwd=self._cwd,
@@ -4472,6 +4586,8 @@ class DeepAgentsApp(App):
             send_request=self._wecom_send_request,
             cancel_timed_out_turn=self._cancel_wecom_timed_out_turn,
             on_content=on_content,
+            enter_turn_context=_enter_wecom_turn_context,
+            exit_turn_context=_exit_wecom_turn_context,
         )
         return await runner.run(text, inbound_frame=inbound_frame)
 
@@ -5336,6 +5452,15 @@ class DeepAgentsApp(App):
             run_id, task_id = self._active_scheduled_run
             self._active_scheduled_run = None
             if self._scheduler_runner is not None:
+                try:
+                    await self._deliver_scheduled_result_to_wecom(
+                        task_id=task_id,
+                        run_id=run_id,
+                        status=self._scheduled_turn_status,
+                        error=self._scheduled_turn_error,
+                    )
+                except Exception:
+                    logger.exception("Failed to deliver scheduled run %r to WeCom", run_id)
                 try:
                     self._scheduler_runner.finish_run(
                         run_id,

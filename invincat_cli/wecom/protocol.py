@@ -179,6 +179,29 @@ def build_wecom_file_frame(
 ) -> dict[str, Any]:
     """Build an active file send frame for an uploaded WeCom media id."""
     chatid = resolve_wecom_active_chat_id(inbound_frame)
+    return build_wecom_file_frame_for_chat(chatid, media_id)
+
+
+def build_wecom_text_frame(chatid: str, content: str) -> dict[str, Any]:
+    """Build an active markdown send frame for a WeCom chat.
+
+    WeCom AI Bot active pushes use markdown for textual content; plain
+    ``msgtype=text`` is accepted in reply/welcome contexts but is rejected by
+    ``aibot_send_msg`` with errcode 40008.
+    """
+    return {
+        "cmd": "aibot_send_msg",
+        "headers": {"req_id": wecom_req_id("aibot_send_msg")},
+        "body": {
+            "msgtype": "markdown",
+            "markdown": {"content": safe_wecom_content(content)},
+            "chatid": chatid,
+        },
+    }
+
+
+def build_wecom_file_frame_for_chat(chatid: str, media_id: str) -> dict[str, Any]:
+    """Build an active file send frame for a known WeCom chat id."""
     return {
         "cmd": "aibot_send_msg",
         "headers": {"req_id": wecom_req_id("aibot_send_msg")},

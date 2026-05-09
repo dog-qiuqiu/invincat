@@ -410,6 +410,18 @@ def test_parse_schedule_tool_returns_none_for_unknown_type() -> None:
     assert parse_schedule_tool_result(payload) is None
 
 
+def test_store_preserves_wecom_delivery_channel(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    task = _make_task()
+    task.delivery = DeliverySpec(channels=[{"type": "wecom", "chatid": "chat-1"}])
+
+    store.save_task(task)
+
+    loaded = store.load_task(task.id)
+    assert loaded is not None
+    assert loaded.delivery.channels == [{"type": "wecom", "chatid": "chat-1"}]
+
+
 # ---------------------------------------------------------------------------
 # tool: ScheduleMiddleware create tool
 # ---------------------------------------------------------------------------
