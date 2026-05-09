@@ -30,6 +30,7 @@ _MANAGEMENT_TOOLS = frozenset({
     "list_scheduled_tasks",
     "update_scheduled_task",
     "cancel_scheduled_task",
+    "delete_scheduled_task",
     "run_scheduled_task_now",
 })
 
@@ -91,6 +92,7 @@ class ScheduleMiddleware(AgentMiddleware):
             self._make_list_tool(),
             self._make_update_tool(),
             self._make_cancel_tool(),
+            self._make_delete_tool(),
             self._make_run_now_tool(),
         ]
 
@@ -173,6 +175,7 @@ class ScheduleMiddleware(AgentMiddleware):
             tasks = store.list_tasks()
             result = []
             for t in tasks:
+                channels = getattr(t.delivery, "channels", []) or []
                 result.append({
                     "id": t.id,
                     "title": t.title,
@@ -182,6 +185,8 @@ class ScheduleMiddleware(AgentMiddleware):
                     "next_run_at": t.next_run_at,
                     "last_status": t.last_status,
                     "run_count": t.run_count,
+                    "delivery": channels,
+                    "output_mode": getattr(t.report, "mode", "message"),
                 })
             payload = {
                 "type": SCHEDULE_LIST_TYPE,
@@ -268,6 +273,29 @@ class ScheduleMiddleware(AgentMiddleware):
             return json.dumps(payload, ensure_ascii=False)
 
         return cancel_scheduled_task
+
+    def _make_delete_tool(self):  # noqa: ANN202
+        @tool
+        def delete_scheduled_task(
+            task_id: str,
+            tool_call_id: Annotated[str, InjectedToolCallId],
+        ) -> str:
+            """Delete a scheduled task permanently.
+
+            This is an alias of cancel_scheduled_task for users who say
+            "delete" rather than "cancel".
+
+            Args:
+                task_id: The ID of the task to delete.
+            """
+            payload = {
+                "type": SCHEDULE_CANCEL_TYPE,
+                "task_id": task_id,
+                "tool_call_id": tool_call_id,
+            }
+            return json.dumps(payload, ensure_ascii=False)
+
+        return delete_scheduled_task
 
     def _make_run_now_tool(self):  # noqa: ANN202
         store = self._store

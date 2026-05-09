@@ -4068,6 +4068,7 @@ class DeepAgentsApp(App):
             inject_message=self._inject_scheduled_message,
             notify=lambda msg: self.notify(msg, timeout=6),
             is_busy=lambda: self._agent_running or self._shell_running,
+            on_timeout=self._handle_scheduled_timeout,
         )
         self._scheduler_interval_handle = self.set_interval(
             60, self._scheduler_tick, pause=False
@@ -4078,6 +4079,14 @@ class DeepAgentsApp(App):
     async def _scheduler_tick(self) -> None:
         if self._scheduler_runner is not None:
             await self._scheduler_runner.tick()
+
+    async def _handle_scheduled_timeout(self, run_id: str, task_id: str) -> None:
+        await self._deliver_scheduled_result_to_wecom(
+            task_id=task_id,
+            run_id=run_id,
+            status="timeout",
+            error="Scheduled task timed out",
+        )
 
     async def _deliver_scheduled_result_to_wecom(
         self,
@@ -4108,16 +4117,21 @@ class DeepAgentsApp(App):
         channels = getattr(task.delivery, "channels", []) or []
         wecom_channels = [ch for ch in channels if isinstance(ch, dict) and ch.get("type") == "wecom"]
         if not wecom_channels:
-            return
-
-        if self._wecom_bridge is None:
-            await self._mount_message(
-                ErrorMessage("Scheduled task WeCom delivery skipped: WeCom bridge is offline.")
+            self._scheduler_store.update_run_delivery(
+                run_id,
+                status="none",
+                error=None,
+                attempts_delta=0,
             )
             return
 
         chatid = str(wecom_channels[0].get("chatid") or "").strip()
         if not chatid:
+            self._scheduler_store.update_run_delivery(
+                run_id,
+                status="failed",
+                error="missing chatid",
+            )
             await self._mount_message(
                 ErrorMessage("Scheduled task WeCom delivery skipped: missing chatid.")
             )
@@ -4155,14 +4169,55 @@ class DeepAgentsApp(App):
                 content += f"\n\n{error}"
 
         try:
-            await self._wecom_send_request(build_wecom_text_frame(chatid, content))
+            if self._wecom_bridge is None:
+                self._scheduler_store.update_run_delivery(
+                    run_id,
+                    status="failed",
+                    error="WeCom bridge is offline",
+                )
+                await self._mount_message(
+                    ErrorMessage("Scheduled task WeCom delivery failed: WeCom bridge is offline.")
+                )
+                return
+            self._wecom_enqueue(build_wecom_text_frame(chatid, content))
+            flushed = await self._wecom_flush_outbox()
+            if not flushed:
+                self._scheduler_store.update_run_delivery(
+                    run_id,
+                    status="queued",
+                    error="waiting for bridge reconnect",
+                )
+                await self._mount_message(
+                    AppMessage(
+                        "Scheduled task WeCom delivery queued; waiting for bridge reconnect."
+                    )
+                )
+            else:
+                self._scheduler_store.update_run_delivery(
+                    run_id,
+                    status="success",
+                    error=None,
+                    delivered_at=datetime.now(timezone.utc).isoformat(),
+                )
             if status == "success" and report_path:
+                if self._wecom_bridge is None:
+                    await self._mount_message(
+                        ErrorMessage(
+                            "Scheduled task WeCom file delivery skipped: WeCom bridge is offline."
+                        )
+                    )
+                    return
                 media_id = await upload_wecom_outbound_media(
                     Path(report_path),
                     send_request=self._wecom_send_request,
                 )
                 await self._wecom_send_request(build_wecom_file_frame_for_chat(chatid, media_id))
         except Exception as exc:
+            self._scheduler_store.update_run_delivery(
+                run_id,
+                status="failed",
+                error=str(exc),
+            )
             logger.warning("Scheduled task WeCom delivery failed: %s", exc, exc_info=True)
             await self._mount_message(
                 ErrorMessage(f"Scheduled task WeCom delivery failed: {exc}")
@@ -5461,15 +5516,17 @@ class DeepAgentsApp(App):
             run_id, task_id = self._active_scheduled_run
             self._active_scheduled_run = None
             if self._scheduler_runner is not None:
-                try:
-                    await self._deliver_scheduled_result_to_wecom(
-                        task_id=task_id,
-                        run_id=run_id,
-                        status=self._scheduled_turn_status,
-                        error=self._scheduled_turn_error,
-                    )
-                except Exception:
-                    logger.exception("Failed to deliver scheduled run %r to WeCom", run_id)
+                run = self._scheduler_store.load_run(run_id)
+                if run is None or run.finished_at is None:
+                    try:
+                        await self._deliver_scheduled_result_to_wecom(
+                            task_id=task_id,
+                            run_id=run_id,
+                            status=self._scheduled_turn_status,
+                            error=self._scheduled_turn_error,
+                        )
+                    except Exception:
+                        logger.exception("Failed to deliver scheduled run %r to WeCom", run_id)
                 try:
                     self._scheduler_runner.finish_run(
                         run_id,
@@ -5480,6 +5537,9 @@ class DeepAgentsApp(App):
                 except Exception:
                     logger.exception("Failed to finish scheduled run %r", run_id)
             self._scheduled_turn_error = None
+
+        if self._scheduler_runner is not None and not (self._agent_running or self._shell_running):
+            await self._scheduler_runner.drain_pending_now()
 
         # Process next message from queue if any
         await self._process_next_from_queue()

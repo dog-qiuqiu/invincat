@@ -56,7 +56,16 @@ class WeComTurnRunner:
 
     async def run(self, text: str, *, inbound_frame: dict[str, Any]) -> str:
         """Inject one WeCom message into the current session and return the final answer."""
+        idle_waited = 0.0
+        while self._is_busy():
+            if idle_waited >= WECOM_IDLE_TIMEOUT:
+                return "当前会话忙碌，请稍后再试。"
+            await asyncio.sleep(0.1)
+            idle_waited += 0.1
+
         async with self._lock:
+            if self._is_busy():
+                return "当前会话忙碌，请稍后再试。"
             if self._enter_turn_context is not None:
                 self._enter_turn_context()
             try:
@@ -72,12 +81,6 @@ class WeComTurnRunner:
         last_file_notified_mono: float = 0.0
         last_delta_mono: float = 0.0
         last_streamed_text: str = ""
-        idle_waited = 0.0
-        while self._is_busy():
-            if idle_waited >= WECOM_IDLE_TIMEOUT:
-                return "当前会话忙碌，请稍后再试。"
-            await asyncio.sleep(0.1)
-            idle_waited += 0.1
 
         before = self._get_messages()
         before_ids: set[str] = {m.id for m in before}

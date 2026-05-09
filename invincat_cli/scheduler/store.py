@@ -56,9 +56,20 @@ CREATE TABLE IF NOT EXISTS scheduled_task_runs (
     error        TEXT,
     thread_id    TEXT,
     cwd          TEXT NOT NULL,
+    delivery_status TEXT NOT NULL DEFAULT 'none',
+    delivery_error TEXT,
+    delivered_at TEXT,
+    delivery_attempts INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id)
 );
 """
+
+_RUN_COLUMN_MIGRATIONS = {
+    "delivery_status": "ALTER TABLE scheduled_task_runs ADD COLUMN delivery_status TEXT NOT NULL DEFAULT 'none'",
+    "delivery_error": "ALTER TABLE scheduled_task_runs ADD COLUMN delivery_error TEXT",
+    "delivered_at": "ALTER TABLE scheduled_task_runs ADD COLUMN delivered_at TEXT",
+    "delivery_attempts": "ALTER TABLE scheduled_task_runs ADD COLUMN delivery_attempts INTEGER NOT NULL DEFAULT 0",
+}
 
 
 def _connect(path: Path | None = None) -> sqlite3.Connection:
@@ -67,7 +78,18 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_DDL)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    run_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(scheduled_task_runs)").fetchall()
+    }
+    for column, sql in _RUN_COLUMN_MIGRATIONS.items():
+        if column not in run_columns:
+            conn.execute(sql)
 
 
 class SchedulerStore:
@@ -210,17 +232,23 @@ class SchedulerStore:
                 """
                 INSERT INTO scheduled_task_runs
                     (id, task_id, scheduled_for, started_at, finished_at,
-                     status, report_path, error, thread_id, cwd)
+                     status, report_path, error, thread_id, cwd,
+                     delivery_status, delivery_error, delivered_at, delivery_attempts)
                 VALUES
                     (:id,:task_id,:scheduled_for,:started_at,:finished_at,
-                     :status,:report_path,:error,:thread_id,:cwd)
+                     :status,:report_path,:error,:thread_id,:cwd,
+                     :delivery_status,:delivery_error,:delivered_at,:delivery_attempts)
                 ON CONFLICT(id) DO UPDATE SET
                     started_at=excluded.started_at,
                     finished_at=excluded.finished_at,
                     status=excluded.status,
                     report_path=excluded.report_path,
                     error=excluded.error,
-                    thread_id=excluded.thread_id
+                    thread_id=excluded.thread_id,
+                    delivery_status=excluded.delivery_status,
+                    delivery_error=excluded.delivery_error,
+                    delivered_at=excluded.delivered_at,
+                    delivery_attempts=excluded.delivery_attempts
                 """,
                 {
                     "id": run.id,
@@ -233,6 +261,10 @@ class SchedulerStore:
                     "error": run.error,
                     "thread_id": run.thread_id,
                     "cwd": run.cwd,
+                    "delivery_status": run.delivery_status,
+                    "delivery_error": run.delivery_error,
+                    "delivered_at": run.delivered_at,
+                    "delivery_attempts": run.delivery_attempts,
                 },
             )
             conn.commit()
@@ -256,6 +288,29 @@ class SchedulerStore:
                 (task_id, limit),
             ).fetchall()
         return [_row_to_run(r) for r in rows]
+
+    def update_run_delivery(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        error: str | None = None,
+        delivered_at: str | None = None,
+        attempts_delta: int = 1,
+    ) -> None:
+        with _connect(self._db_path) as conn:
+            conn.execute(
+                """
+                UPDATE scheduled_task_runs SET
+                    delivery_status=?,
+                    delivery_error=?,
+                    delivered_at=COALESCE(?, delivered_at),
+                    delivery_attempts=delivery_attempts+?
+                WHERE id=?
+                """,
+                (status, error, delivered_at, attempts_delta, run_id),
+            )
+            conn.commit()
 
 
 # ------------------------------------------------------------------
@@ -339,4 +394,8 @@ def _row_to_run(row: sqlite3.Row) -> "TaskRun":  # noqa: F821
         error=row["error"],
         thread_id=row["thread_id"],
         cwd=row["cwd"],
+        delivery_status=row["delivery_status"],
+        delivery_error=row["delivery_error"],
+        delivered_at=row["delivered_at"],
+        delivery_attempts=row["delivery_attempts"],
     )

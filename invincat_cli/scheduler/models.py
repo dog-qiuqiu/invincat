@@ -8,6 +8,7 @@ from typing import Literal
 
 MisfirePolicy = Literal["skip", "run_once"]
 TaskStatus = Literal["never", "success", "failed", "running", "missed", "timeout"]
+DeliveryStatus = Literal["none", "pending", "success", "failed", "queued"]
 
 
 @dataclass
@@ -60,3 +61,7 @@ class TaskRun:
     error: str | None
     thread_id: str | None
     cwd: str
+    delivery_status: DeliveryStatus = "none"
+    delivery_error: str | None = None
+    delivered_at: str | None = None
+    delivery_attempts: int = 0

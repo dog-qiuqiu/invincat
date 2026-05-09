@@ -104,13 +104,16 @@ class SchedulerRunner:
         inject_message: Callable[[str, str, str], Awaitable[None]],
         notify: Callable[[str], None],
         is_busy: Callable[[], bool],
+        on_timeout: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> None:
         self._store = store
         self._inject_message = inject_message
         self._notify = notify
         self._is_busy = is_busy
+        self._on_timeout = on_timeout
         self._running_task_ids: set[str] = set()
         self._pending_runs: list[tuple["ScheduledTask", datetime]] = []
+        self._pending_task_ids: set[str] = set()
         self._timeout_tasks: dict[str, asyncio.Task] = {}
 
     # ------------------------------------------------------------------
@@ -127,7 +130,7 @@ class SchedulerRunner:
             return
 
         for task in tasks:
-            if task.id in self._running_task_ids:
+            if task.id in self._running_task_ids or task.id in self._pending_task_ids:
                 continue
             await self._evaluate_task(task, now)
 
@@ -179,15 +182,21 @@ class SchedulerRunner:
             self._notify(f"Missed scheduled task: {task.title!r} — running now")
 
         self._pending_runs.append((task, next_run))
+        self._pending_task_ids.add(task.id)
         await self._drain_pending(now)
 
     async def _drain_pending(self, now: datetime) -> None:
-        if not self._pending_runs:
-            return
-        if self._is_busy():
-            return
-        task, scheduled_for = self._pending_runs.pop(0)
-        await self._fire(task, scheduled_for, now)
+        while self._pending_runs and not self._is_busy():
+            task, scheduled_for = self._pending_runs.pop(0)
+            self._pending_task_ids.discard(task.id)
+            current_task = self._store.load_task(task.id)
+            if current_task is None or not current_task.enabled:
+                continue
+            await self._fire(current_task, scheduled_for, now)
+
+    async def drain_pending_now(self) -> None:
+        """Attempt to fire queued runs immediately if the TUI is idle."""
+        await self._drain_pending(datetime.now(timezone.utc))
 
     async def fire_now(self, task: "ScheduledTask") -> None:
         """Trigger a task to run immediately, bypassing the cron schedule."""
@@ -195,7 +204,9 @@ class SchedulerRunner:
         if task.id in self._running_task_ids:
             return
         if self._is_busy():
-            self._pending_runs.append((task, now))
+            if task.id not in self._pending_task_ids:
+                self._pending_runs.append((task, now))
+                self._pending_task_ids.add(task.id)
         else:
             await self._fire(task, now, now)
 
@@ -254,6 +265,8 @@ class SchedulerRunner:
                 status="timeout",
                 error=f"Timed out after {timeout_seconds}s",
             )
+            if self._on_timeout is not None:
+                await self._on_timeout(run_id, task_id)
 
     def finish_run(
         self,

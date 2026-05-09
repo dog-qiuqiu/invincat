@@ -764,6 +764,40 @@ def test_wecom_turn_runner_returns_new_assistant_message(tmp_path: Path) -> None
     assert answer == "answer"
 
 
+def test_wecom_turn_runner_does_not_hold_lock_while_waiting_for_idle(tmp_path: Path) -> None:
+    lock = asyncio.Lock()
+
+    async def _handle_user_message(
+        _message: str,
+        _on_text_delta,
+        _on_wecom_file_request,
+    ) -> None:
+        raise AssertionError("should not inject while busy")
+
+    async def _send_request(_payload: dict) -> dict:
+        return {"body": {}}
+
+    runner = WeComTurnRunner(
+        lock=lock,
+        cwd=tmp_path,
+        is_busy=lambda: True,
+        get_messages=lambda: [],
+        handle_user_message=_handle_user_message,
+        send_request=_send_request,
+        cancel_timed_out_turn=lambda: None,
+    )
+
+    async def _run_and_check() -> None:
+        task = asyncio.create_task(runner.run("hello", inbound_frame={"body": {}}))
+        await asyncio.sleep(0.2)
+        assert not lock.locked()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(_run_and_check())
+
+
 def test_wecom_message_responder_streams_ack_content_and_final() -> None:
     queued: list[dict] = []
     flush_count = 0

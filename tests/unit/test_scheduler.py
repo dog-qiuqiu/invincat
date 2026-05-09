@@ -25,7 +25,9 @@ from invincat_cli.scheduler.runner import (
 )
 from invincat_cli.scheduler.store import SchedulerStore
 from invincat_cli.scheduler.tool import (
+    SCHEDULE_CANCEL_TYPE,
     SCHEDULE_CREATE_TYPE,
+    SCHEDULE_LIST_TYPE,
     ScheduleMiddleware,
     parse_schedule_tool_result,
 )
@@ -257,6 +259,38 @@ def test_store_save_and_list_runs(tmp_path: Path) -> None:
     runs = store.list_runs("task-1")
     assert len(runs) == 1
     assert runs[0].status == "running"
+    assert runs[0].delivery_status == "none"
+
+
+def test_store_updates_run_delivery_status(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    store.save_task(_make_task())
+    now = datetime.now(timezone.utc).isoformat()
+    store.save_run(TaskRun(
+        id="run-1",
+        task_id="task-1",
+        scheduled_for=now,
+        started_at=now,
+        finished_at=None,
+        status="running",
+        report_path=None,
+        error=None,
+        thread_id=None,
+        cwd="/tmp",
+    ))
+
+    delivered_at = datetime.now(timezone.utc).isoformat()
+    store.update_run_delivery(
+        "run-1",
+        status="success",
+        delivered_at=delivered_at,
+    )
+
+    loaded = store.load_run("run-1")
+    assert loaded is not None
+    assert loaded.delivery_status == "success"
+    assert loaded.delivered_at == delivered_at
+    assert loaded.delivery_attempts == 1
 
 
 def test_store_persists_after_reload(tmp_path: Path) -> None:
@@ -364,6 +398,84 @@ def test_runner_queues_when_busy(tmp_path: Path) -> None:
     asyncio.run(runner.tick())
     assert len(injected) == 0
     assert len(runner._pending_runs) == 1
+
+
+def test_runner_dedupes_pending_runs_while_busy(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    task = _make_task(next_run_at=past)
+    store.save_task(task)
+
+    async def inject(task_id: str, run_id: str, prompt: str) -> None:
+        raise AssertionError("should not fire while busy")
+
+    runner = SchedulerRunner(
+        store,
+        inject_message=inject,
+        notify=MagicMock(),
+        is_busy=lambda: True,
+    )
+    asyncio.run(runner.tick())
+    asyncio.run(runner.tick())
+
+    assert len(runner._pending_runs) == 1
+    assert runner._pending_task_ids == {"task-1"}
+
+
+def test_runner_drain_pending_now_fires_when_idle(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    task = _make_task(next_run_at=past)
+    store.save_task(task)
+    busy = True
+    fired: list[str] = []
+
+    async def inject(task_id: str, run_id: str, prompt: str) -> None:
+        fired.append(task_id)
+
+    runner = SchedulerRunner(
+        store,
+        inject_message=inject,
+        notify=MagicMock(),
+        is_busy=lambda: busy,
+    )
+    asyncio.run(runner.tick())
+    assert len(fired) == 0
+
+    busy = False
+    asyncio.run(runner.drain_pending_now())
+
+    assert fired == ["task-1"]
+    assert not runner._pending_runs
+    assert not runner._pending_task_ids
+
+
+def test_runner_drain_pending_skips_disabled_task(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    task = _make_task(next_run_at=past)
+    store.save_task(task)
+    busy = True
+    fired: list[str] = []
+
+    async def inject(task_id: str, run_id: str, prompt: str) -> None:
+        fired.append(task_id)
+
+    runner = SchedulerRunner(
+        store,
+        inject_message=inject,
+        notify=MagicMock(),
+        is_busy=lambda: busy,
+    )
+    asyncio.run(runner.tick())
+    store.set_task_enabled("task-1", False)
+
+    busy = False
+    asyncio.run(runner.drain_pending_now())
+
+    assert fired == []
+    assert not runner._pending_runs
+    assert not runner._pending_task_ids
 
 
 def test_runner_disabled_task_not_triggered(tmp_path: Path) -> None:
@@ -494,6 +606,35 @@ def test_schedule_middleware_create_tool_accepts_report_mode(tmp_path: Path) -> 
     data = json.loads(result)
     assert data["type"] == SCHEDULE_CREATE_TYPE
     assert data["output_mode"] == "report"
+
+
+def test_schedule_middleware_delete_tool_alias_returns_cancel_payload(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    mw = ScheduleMiddleware(store=store)
+    delete_tool = next(t for t in mw.tools if t.name == "delete_scheduled_task")
+
+    result = _invoke_tool(delete_tool, {"task_id": "task-1"})
+    data = json.loads(result)
+
+    assert data["type"] == SCHEDULE_CANCEL_TYPE
+    assert data["task_id"] == "task-1"
+
+
+def test_schedule_middleware_list_includes_delivery_and_output_mode(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    task = _make_task()
+    task.delivery = DeliverySpec(channels=[{"type": "wecom", "chatid": "chat-1"}])
+    task.report = ReportSpec(mode="report")
+    store.save_task(task)
+
+    mw = ScheduleMiddleware(store=store)
+    list_tool = next(t for t in mw.tools if t.name == "list_scheduled_tasks")
+    result = _invoke_tool(list_tool, {})
+    data = json.loads(result)
+
+    assert data["type"] == SCHEDULE_LIST_TYPE
+    assert data["tasks"][0]["delivery"] == [{"type": "wecom", "chatid": "chat-1"}]
+    assert data["tasks"][0]["output_mode"] == "report"
 
 
 def test_schedule_middleware_create_tool_invalid_schedule(tmp_path: Path) -> None:
@@ -632,3 +773,44 @@ def test_runner_running_task_ids_released_after_finish(tmp_path: Path) -> None:
     task_id, run_id = fired[0]
     runner.finish_run(run_id, task_id, status="success")
     assert "task-1" not in runner._running_task_ids
+
+
+def test_runner_timeout_invokes_callback(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    now = datetime.now(timezone.utc).isoformat()
+    store.save_task(_make_task())
+    store.save_run(TaskRun(
+        id="run-1",
+        task_id="task-1",
+        scheduled_for=now,
+        started_at=now,
+        finished_at=None,
+        status="running",
+        report_path=None,
+        error=None,
+        thread_id=None,
+        cwd="/tmp",
+    ))
+    timed_out: list[tuple[str, str]] = []
+
+    async def on_timeout(run_id: str, task_id: str) -> None:
+        timed_out.append((run_id, task_id))
+
+    async def inject(task_id: str, run_id: str, prompt: str) -> None:
+        pass
+
+    runner = SchedulerRunner(
+        store,
+        inject_message=inject,
+        notify=MagicMock(),
+        is_busy=lambda: False,
+        on_timeout=on_timeout,
+    )
+    runner._running_task_ids.add("task-1")
+
+    asyncio.run(runner._timeout_watcher("run-1", "task-1", 0))
+
+    loaded = store.load_run("run-1")
+    assert loaded is not None
+    assert loaded.status == "timeout"
+    assert timed_out == [("run-1", "task-1")]
