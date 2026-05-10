@@ -334,6 +334,8 @@ async def _daemon_main(config: WeComDaemonConfig) -> None:
         _write_daemon_state(config)
         logger.info("Daemon state written to %s", config.state_file)
 
+        # Remove stale socket file from a previous crash before binding.
+        config.socket_path.unlink(missing_ok=True)
         socket_server = await asyncio.start_unix_server(
             lambda r, w: _handle_socket_client(r, w, bridge, handler, stop_event),
             path=str(config.socket_path),
@@ -422,6 +424,9 @@ async def _run_scheduler(
     async def _inject_message(task_id: str, run_id: str, prompt: str) -> None:
         task = store.load_task(task_id)
         if task is None:
+            # Task was deleted between evaluation and injection — release the lock.
+            if runner_holder:
+                runner_holder[0].finish_run(run_id, task_id, status="failed", error="task not found")
             return
 
         # Resolve WeCom delivery chatid from task's delivery spec.
@@ -481,20 +486,11 @@ async def _run_scheduler(
     logger.info("WeCom daemon scheduler started (cwd=%s)", config.cwd)
 
     try:
-        # Initial tick after 3 s for misfire recovery, then every 60 s.
         await asyncio.sleep(3)
-        await runner.tick()
-        while not stop_event.is_set():
-            await asyncio.wait_for(
-                asyncio.shield(stop_event.wait()), timeout=60
-            )
-    except asyncio.TimeoutError:
-        # Normal 60-second interval — loop back and tick again.
-        pass
     except asyncio.CancelledError:
         return
 
-    # Continue ticking until stop_event is set.
+    # Tick loop: initial tick for misfire recovery, then every 60 s.
     while not stop_event.is_set():
         try:
             await runner.tick()
