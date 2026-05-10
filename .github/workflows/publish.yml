@@ -28,12 +28,12 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Version: $VERSION"
 
-      - name: Update version in _version.py
+      - name: Update version in core/version.py
         run: |
           VERSION=${{ steps.get_version.outputs.version }}
           VERSION_ESCAPED=$(printf '%s' "$VERSION" | sed 's/[&\\]/\\&/g')
-          sed -i "s/__version__ = \".*\"/__version__ = \"$VERSION_ESCAPED\"  # x-release-please-version/" invincat_cli/_version.py
-          cat invincat_cli/_version.py
+          sed -i "s/__version__ = \".*\"/__version__ = \"$VERSION_ESCAPED\"  # x-release-please-version/" invincat_cli/core/version.py
+          cat invincat_cli/core/version.py
 
       - name: Update version in pyproject.toml
         run: |
