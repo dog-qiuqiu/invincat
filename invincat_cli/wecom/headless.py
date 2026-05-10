@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 _STREAM_CHUNK_LENGTH = 3
 _MESSAGE_DATA_LENGTH = 2
 _HITL_AUTO_APPROVE_CAP = 50
+_MAX_SESSIONS = 256  # bound _sessions LRU; older idle entries are evicted
 
 
 class HeadlessWeComHandler:
@@ -39,8 +41,10 @@ class HeadlessWeComHandler:
         self._cwd = cwd
         self._send_request = send_request
         self._on_schedule_run_now = on_schedule_run_now
-        # chatid → (thread_id, lock)
-        self._sessions: dict[str, tuple[str, asyncio.Lock]] = {}
+        # chatid → (thread_id, lock).  OrderedDict so we can evict the
+        # least-recently-used entry when the cache exceeds _MAX_SESSIONS,
+        # bounding memory across a long-running daemon.
+        self._sessions: OrderedDict[str, tuple[str, asyncio.Lock]] = OrderedDict()
         self._messages_handled = 0
 
     @property
@@ -90,10 +94,32 @@ class HeadlessWeComHandler:
         return "default"
 
     def _get_or_create_session(self, chatid: str) -> tuple[str, asyncio.Lock]:
-        if chatid not in self._sessions:
-            from invincat_cli.sessions import generate_thread_id
-            self._sessions[chatid] = (generate_thread_id(), asyncio.Lock())
+        existing = self._sessions.get(chatid)
+        if existing is not None:
+            self._sessions.move_to_end(chatid)
+            return existing
+        from invincat_cli.sessions import generate_thread_id
+        self._sessions[chatid] = (generate_thread_id(), asyncio.Lock())
+        self._evict_idle_sessions()
         return self._sessions[chatid]
+
+    def _evict_idle_sessions(self) -> None:
+        """Drop the oldest idle (lock not held) sessions until under the cap.
+
+        We never evict an entry whose lock is currently held: that would let
+        a concurrent ``run_turn`` re-create the entry under a new lock,
+        breaking per-chat serialisation.  In the worst case (every cached
+        session busy) the cache is allowed to exceed ``_MAX_SESSIONS``
+        temporarily — capacity is restored as turns complete.
+        """
+        if len(self._sessions) <= _MAX_SESSIONS:
+            return
+        for chatid in list(self._sessions.keys()):
+            if len(self._sessions) <= _MAX_SESSIONS:
+                break
+            _, lock = self._sessions[chatid]
+            if not lock.locked():
+                self._sessions.pop(chatid, None)
 
     async def _run_agent_turn(
         self,

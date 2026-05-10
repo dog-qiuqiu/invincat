@@ -305,6 +305,78 @@ def test_store_persists_after_reload(tmp_path: Path) -> None:
     assert loaded.title == "Persistent"
 
 
+def test_reconcile_orphan_runs_marks_running_runs_failed(tmp_path: Path) -> None:
+    """Daemon kill leaves runs stuck at status='running'; reconcile cleans them up."""
+    store = _make_store(tmp_path)
+    store.save_task(_make_task())
+    now = datetime.now(timezone.utc).isoformat()
+    store.save_run(TaskRun(
+        id="run-orphan",
+        task_id="task-1",
+        scheduled_for=now,
+        started_at=now,
+        finished_at=None,
+        status="running",
+        report_path=None,
+        error=None,
+        thread_id=None,
+        cwd="/tmp",
+    ))
+
+    finished_at = datetime.now(timezone.utc).isoformat()
+    count = store.reconcile_orphan_runs("/tmp", finished_at=finished_at)
+    assert count == 1
+
+    loaded = store.load_run("run-orphan")
+    assert loaded is not None
+    assert loaded.status == "failed"
+    assert loaded.finished_at == finished_at
+    assert loaded.error == "daemon restart"
+
+
+def test_reconcile_orphan_runs_filters_by_cwd(tmp_path: Path) -> None:
+    """Only runs from the current daemon's cwd are reconciled."""
+    store = _make_store(tmp_path)
+    store.save_task(_make_task())
+    now = datetime.now(timezone.utc).isoformat()
+    store.save_run(TaskRun(
+        id="run-mine", task_id="task-1", scheduled_for=now, started_at=now,
+        finished_at=None, status="running", report_path=None, error=None,
+        thread_id=None, cwd="/tmp/project-a",
+    ))
+    store.save_run(TaskRun(
+        id="run-other", task_id="task-1", scheduled_for=now, started_at=now,
+        finished_at=None, status="running", report_path=None, error=None,
+        thread_id=None, cwd="/tmp/project-b",
+    ))
+
+    count = store.reconcile_orphan_runs(
+        "/tmp/project-a",
+        finished_at=datetime.now(timezone.utc).isoformat(),
+    )
+    assert count == 1
+    assert store.load_run("run-mine").status == "failed"
+    assert store.load_run("run-other").status == "running"
+
+
+def test_reconcile_orphan_runs_skips_already_finished(tmp_path: Path) -> None:
+    """Runs that finished cleanly are not touched."""
+    store = _make_store(tmp_path)
+    store.save_task(_make_task())
+    now = datetime.now(timezone.utc).isoformat()
+    store.save_run(TaskRun(
+        id="run-done", task_id="task-1", scheduled_for=now, started_at=now,
+        finished_at=now, status="success", report_path=None, error=None,
+        thread_id=None, cwd="/tmp",
+    ))
+
+    count = store.reconcile_orphan_runs(
+        "/tmp", finished_at=datetime.now(timezone.utc).isoformat(),
+    )
+    assert count == 0
+    assert store.load_run("run-done").status == "success"
+
+
 def test_store_preserves_one_shot_fields(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     run_at = datetime.now(timezone.utc).isoformat()

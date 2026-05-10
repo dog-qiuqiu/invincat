@@ -345,6 +345,50 @@ class SchedulerStore:
             )
             conn.commit()
 
+    def reconcile_orphan_runs(
+        self,
+        cwd: str | None = None,
+        *,
+        finished_at: str,
+        status: str = "failed",
+        error: str = "daemon restart",
+    ) -> int:
+        """Mark every still-running TaskRun as finished.
+
+        Used on daemon startup to clear records left over from a previous
+        daemon kill that never got to call ``finish_run``.  Without this the
+        runs table accumulates "running" rows that never resolve.
+
+        If ``cwd`` is given, only runs from that working directory are
+        reconciled; otherwise all are.  Returns the number of rows updated.
+        """
+        params: list[Any] = [status, finished_at, error]
+        sql = (
+            "UPDATE scheduled_task_runs SET "
+            "  status=?, finished_at=?, "
+            "  error=COALESCE(error, ?) "
+            "WHERE status='running' AND finished_at IS NULL"
+        )
+        if cwd is not None:
+            sql += " AND cwd=?"
+            params.append(cwd)
+        with _connect(self._db_path) as conn:
+            cur = conn.execute(sql, tuple(params))
+            # Also bring scheduled_tasks.last_status out of 'running' so the
+            # list view doesn't show stuck entries.  We don't bump
+            # failure_count — restart isn't a real agent failure.
+            task_sql = (
+                "UPDATE scheduled_tasks SET last_status=? "
+                "WHERE last_status='running'"
+            )
+            task_params: list[Any] = [status]
+            if cwd is not None:
+                task_sql += " AND cwd=?"
+                task_params.append(cwd)
+            conn.execute(task_sql, tuple(task_params))
+            conn.commit()
+            return cur.rowcount
+
 
 # ------------------------------------------------------------------
 # Serialisation helpers

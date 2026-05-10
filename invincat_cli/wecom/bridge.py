@@ -72,6 +72,7 @@ class WeComBridge:
         self._message_tasks: set[asyncio.Task[None]] = set()
         self._pending_requests: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._bridge_ready: asyncio.Event = asyncio.Event()
+        self._reconnect_delay: int = 1
 
     def stop(self) -> None:
         self.active = False
@@ -94,7 +95,12 @@ class WeComBridge:
             return
 
         self.active = True
-        reconnect_delay = 1
+        # Reconnect back-off; reset to 1 each time we successfully complete
+        # the WeCom subscribe handshake (see _handle_control_frame).  Without
+        # that reset, the back-off only ever grows: a long-stable connection
+        # that finally drops would force a 30 s gap on every subsequent
+        # reconnect attempt.
+        self._reconnect_delay = 1
         while self.active and not self._should_exit():
             heartbeat_task: asyncio.Task[None] | None = None
             try:
@@ -163,7 +169,6 @@ class WeComBridge:
                         await heartbeat_task
                 self._bridge_ready.clear()
                 self._ws = None
-                reconnect_delay = 1
             except asyncio.CancelledError:
                 if heartbeat_task is not None:
                     heartbeat_task.cancel()
@@ -184,10 +189,10 @@ class WeComBridge:
                 with suppress(Exception):
                     await self._on_status(
                         "WeCom disconnected: "
-                        f"{reason}. Reconnecting in {reconnect_delay}s..."
+                        f"{reason}. Reconnecting in {self._reconnect_delay}s..."
                     )
-                await asyncio.sleep(reconnect_delay)
-                reconnect_delay = min(reconnect_delay * 2, 30)
+                await asyncio.sleep(self._reconnect_delay)
+                self._reconnect_delay = min(self._reconnect_delay * 2, 30)
 
         self.active = False
         self._cancel_pending_requests()
@@ -341,6 +346,9 @@ class WeComBridge:
             if errcode == 0:
                 await self._on_status("WeCom subscription acknowledged.")
                 self._bridge_ready.set()
+                # Connection is established and acknowledged; reset back-off
+                # so a future drop doesn't pay the previous 30 s cap.
+                self._reconnect_delay = 1
                 await self.flush_outbox()
             else:
                 await self._on_error(

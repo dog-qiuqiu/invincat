@@ -5,6 +5,7 @@ WeCom bridge alive independently of the Textual UI.
 
 State file:  {cwd}/.invincat/wecom_daemon.json
 Log file:    {cwd}/.invincat/wecom_daemon.log
+Lock file:   {cwd}/.invincat/wecom_daemon.lock  (authoritative liveness via flock)
 Unix socket: {cwd}/.invincat/wecom_daemon.sock
 """
 
@@ -13,9 +14,12 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import datetime
+import errno
+import fcntl
 import json
 import logging
 import os
+import resource
 import signal
 import sys
 from pathlib import Path
@@ -26,11 +30,13 @@ logger = logging.getLogger(__name__)
 _STATE_FILENAME = ".invincat/wecom_daemon.json"
 _LOG_FILENAME = ".invincat/wecom_daemon.log"
 _SOCKET_FILENAME = ".invincat/wecom_daemon.sock"
+_LOCK_FILENAME = ".invincat/wecom_daemon.lock"
 _SOCKET_TIMEOUT = 5.0
 _DELIVERY_RETRIES = 8                 # 1 initial attempt + 7 retries
 _DELIVERY_RETRY_DELAY = 15            # seconds between retries
 _DELIVERY_READY_TIMEOUT = 30          # per-attempt wait for bridge subscribe ACK
 _DELIVERY_REQUEST_TIMEOUT = 30        # per-attempt WeCom request response timeout
+_FILE_PERMS = 0o600                   # log / socket / state / lock — owner-only
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +62,10 @@ class WeComDaemonConfig:
     @property
     def socket_path(self) -> Path:
         return self.cwd / _SOCKET_FILENAME
+
+    @property
+    def lock_file(self) -> Path:
+        return self.cwd / _LOCK_FILENAME
 
     @classmethod
     def from_env(cls, cwd: Path) -> "WeComDaemonConfig":
@@ -88,10 +98,22 @@ def _write_daemon_state(config: WeComDaemonConfig) -> None:
         "bot_id": config.bot_id,
     }
     config.state_file.parent.mkdir(parents=True, exist_ok=True)
-    config.state_file.write_text(json.dumps(state, indent=2, ensure_ascii=False))
+    # Open with explicit owner-only mode so other local users can't read PID/bot_id.
+    fd = os.open(
+        str(config.state_file),
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        _FILE_PERMS,
+    )
+    try:
+        os.write(fd, json.dumps(state, indent=2, ensure_ascii=False).encode("utf-8"))
+    finally:
+        os.close(fd)
 
 
 def _remove_daemon_state(config: WeComDaemonConfig) -> None:
+    # Lock file is intentionally NOT removed: keeping the inode stable means a
+    # racing peer that opened the same path before we deleted it still sees the
+    # same lock state.  The OS releases our flock automatically on process exit.
     for path in (config.state_file, config.socket_path):
         try:
             path.unlink(missing_ok=True)
@@ -99,21 +121,72 @@ def _remove_daemon_state(config: WeComDaemonConfig) -> None:
             pass
 
 
+# ---------------------------------------------------------------------------
+# Authoritative liveness via fcntl.flock on a per-cwd lockfile.
+#
+# The PID-based check used previously was unsound: after the daemon died, the
+# OS could reuse the recorded PID for an unrelated local process; ``os.kill(p, 0)``
+# would then succeed and ``stop_daemon`` would SIGTERM that innocent process.
+#
+# An exclusive ``flock`` is owned by the running daemon process for its
+# lifetime.  The kernel releases the lock automatically when the process exits
+# (clean or crash), so probing the lock from another process gives a definitive
+# "is anyone alive?" answer with no PID-reuse hazard.
+# ---------------------------------------------------------------------------
+
+
+def _open_lock_fd(cwd: Path) -> int:
+    """Open the lockfile, creating the parent dir + file as needed."""
+    lock_path = cwd / _LOCK_FILENAME
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    return os.open(str(lock_path), os.O_RDWR | os.O_CREAT, _FILE_PERMS)
+
+
+def acquire_daemon_lock(cwd: Path) -> int:
+    """Acquire the exclusive daemon lock.  Returns an fd that must be held open.
+
+    Raises ``BlockingIOError`` if another daemon already holds the lock.
+    """
+    fd = _open_lock_fd(cwd)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        raise
+    # Record our PID inside the file so external tooling can identify the owner.
+    try:
+        os.ftruncate(fd, 0)
+        os.write(fd, f"{os.getpid()}\n".encode("ascii"))
+    except Exception:
+        pass
+    return fd
+
+
 def is_daemon_running(cwd: Path) -> bool:
-    """Return True if a daemon process is alive for this project directory."""
-    state = read_daemon_state(cwd)
-    if state is None:
-        return False
-    pid = state.get("pid")
-    if not isinstance(pid, int):
+    """Return True if a daemon process holds the per-cwd lockfile."""
+    lock_path = cwd / _LOCK_FILENAME
+    if not lock_path.exists():
         return False
     try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
+        fd = os.open(str(lock_path), os.O_RDWR)
+    except OSError:
         return False
-    except PermissionError:
-        return True  # process exists but we can't signal it
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True  # someone holds it → alive
+        # We acquired the lock → no daemon running.  Release immediately.
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        return False
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -196,17 +269,32 @@ async def stop_daemon(cwd: Path) -> bool:
 
 
 def start_daemon(config: WeComDaemonConfig) -> None:
-    """Fork the daemon to the background and return in the parent immediately.
+    """Fork the daemon to the background.
 
     Uses the standard Unix double-fork idiom so the daemon is fully detached
     from the controlling terminal and cannot reacquire one.
+
+    Refuses to start if another daemon already holds the per-cwd lockfile.
     """
+    if is_daemon_running(config.cwd):
+        raise RuntimeError(
+            f"WeCom daemon already running for {config.cwd} (lockfile held)."
+        )
+
     pid = os.fork()
     if pid > 0:
-        # Parent: wait briefly so the grandchild writes its state file, then return.
+        # Parent: wait briefly so the grandchild has time to acquire the
+        # lock, bind the socket, and write its state file.  We then verify
+        # the daemon is actually alive — if not, raise so the caller sees
+        # the failure (instead of a silent "started" with no daemon).
         import time
-        time.sleep(0.3)
-        return
+        for _ in range(20):  # up to ~2 s
+            time.sleep(0.1)
+            if is_daemon_running(config.cwd):
+                return
+        raise RuntimeError(
+            "WeCom daemon failed to start within 2s — check the log file."
+        )
 
     # --- First child ---
     os.setsid()  # New session — detach from terminal
@@ -218,29 +306,71 @@ def start_daemon(config: WeComDaemonConfig) -> None:
 
     # --- Grandchild (the actual daemon) ---
     _redirect_stdio(config.log_file)
+    # Acquire the lock NOW so racing peers immediately see we're alive.
+    # If somebody else snuck in between the parent's check and here, exit.
+    try:
+        lock_fd = acquire_daemon_lock(config.cwd)
+    except BlockingIOError:
+        logger.error("WeCom daemon: another instance acquired the lock — exiting.")
+        os._exit(0)
     try:
         asyncio.run(_daemon_main(config))
     except Exception:
         logger.exception("WeCom daemon crashed")
     finally:
+        # Releasing the fd releases the flock; the OS would do this anyway.
+        try:
+            os.close(lock_fd)
+        except OSError:
+            pass
         os._exit(0)
 
 
 def run_daemon_foreground(config: WeComDaemonConfig) -> None:
     """Run the daemon in the foreground (for debugging). Blocking."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    asyncio.run(_daemon_main(config))
+    try:
+        lock_fd = acquire_daemon_lock(config.cwd)
+    except BlockingIOError as exc:
+        raise RuntimeError(
+            f"WeCom daemon already running for {config.cwd} (lockfile held)."
+        ) from exc
+    try:
+        asyncio.run(_daemon_main(config))
+    finally:
+        try:
+            os.close(lock_fd)
+        except OSError:
+            pass
 
 
 def _redirect_stdio(log_file: Path) -> None:
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    log_fd = os.open(str(log_file), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    # Owner-only perms: the log contains chatids, message bodies and bot_id.
+    log_fd = os.open(str(log_file), os.O_WRONLY | os.O_CREAT | os.O_APPEND, _FILE_PERMS)
+    # If the file existed already with looser perms, tighten now.
+    try:
+        os.fchmod(log_fd, _FILE_PERMS)
+    except OSError:
+        pass
     os.dup2(log_fd, sys.stdout.fileno())
     os.dup2(log_fd, sys.stderr.fileno())
     os.close(log_fd)
     devnull_fd = os.open(os.devnull, os.O_RDONLY)
     os.dup2(devnull_fd, sys.stdin.fileno())
     os.close(devnull_fd)
+
+    # Close every other inherited fd so the daemon doesn't keep the parent
+    # CLI's terminal / pipes / sockets / langgraph fds alive.  Skipping 0..2
+    # which we've just rewired above.
+    try:
+        max_fd = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+        if max_fd in (resource.RLIM_INFINITY, -1) or max_fd > 65536:
+            max_fd = 65536
+    except Exception:
+        max_fd = 1024
+    os.closerange(3, max_fd)
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -341,16 +471,26 @@ async def _daemon_main(config: WeComDaemonConfig) -> None:
         bridge_holder.append(bridge)
 
         # --- Unix socket IPC server ---
-        _write_daemon_state(config)
-        logger.info("Daemon state written to %s", config.state_file)
-
+        # Bind socket FIRST, then write state file.  The previous order let
+        # external callers see a "running" state file with a socket that
+        # hadn't started listening yet, leading them to fall back to SIGTERM
+        # against the half-started daemon.
+        config.socket_path.parent.mkdir(parents=True, exist_ok=True)
         # Remove stale socket file from a previous crash before binding.
         config.socket_path.unlink(missing_ok=True)
         socket_server = await asyncio.start_unix_server(
             lambda r, w: _handle_socket_client(r, w, bridge, handler, stop_event),
             path=str(config.socket_path),
         )
+        # Tighten perms so other local users can't connect and issue "stop".
+        try:
+            os.chmod(str(config.socket_path), _FILE_PERMS)
+        except OSError as exc:
+            logger.warning("Could not chmod daemon socket: %s", exc)
         logger.info("IPC socket listening at %s", config.socket_path)
+
+        _write_daemon_state(config)
+        logger.info("Daemon state written to %s", config.state_file)
 
         # --- Scheduler ---
         scheduler_task = asyncio.create_task(
@@ -431,98 +571,158 @@ async def _run_scheduler(
 
     store = _CwdFilteredStore()
 
-    async def _inject_message(task_id: str, run_id: str, prompt: str) -> None:
-        task = store.load_task(task_id)
-        if task is None:
-            # Task was deleted between evaluation and injection — release the lock.
-            if runner_holder:
-                runner_holder[0].finish_run(run_id, task_id, status="failed", error="task not found")
-            return
-
-        # Resolve WeCom delivery chatid from task's delivery spec.
-        channels = getattr(task.delivery, "channels", []) or []
-        wecom_ch = next(
-            (ch for ch in channels if isinstance(ch, dict) and ch.get("type") == "wecom"),
-            None,
+    # Reconcile orphaned 'running' runs left behind by a previous daemon kill.
+    # Without this, scheduled_task_runs accumulates rows that never resolve,
+    # and scheduled_tasks.last_status stays stuck at 'running' so the run-now
+    # check in SchedulerRunner.tick wouldn't matter — but the UI / history
+    # would show ghost activity forever.
+    try:
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        reconciled = store.reconcile_orphan_runs(
+            str(config.cwd),
+            finished_at=now_iso,
+            status="failed",
+            error="daemon restart (previous run never finished)",
         )
-        chatid = str(wecom_ch.get("chatid") or "").strip() if wecom_ch else ""
-
-        if not chatid:
-            if wecom_ch is not None:
-                logger.warning(
-                    "Scheduled task %r has an empty WeCom chatid in delivery spec; "
-                    "messages will not be delivered to WeCom",
-                    task_id,
-                )
-            else:
-                logger.warning(
-                    "Scheduled task %r has no WeCom delivery channel configured; "
-                    "messages will not be delivered to WeCom",
-                    task_id,
-                )
-
-        # Send start notification if we have a WeCom target.  Use the same
-        # robust-delivery helper as the final result so the start notice can
-        # survive a transient reconnect during long agent turns.
-        if chatid and bridge_holder:
-            await _deliver_scheduled_text(
-                bridge_holder[0],
-                chatid,
-                f"⏳ 定时任务开始执行：{task.title}",
-                label="start-notice",
-                task_title=task.title,
+        if reconciled:
+            logger.warning(
+                "Scheduler reconciled %d orphan 'running' run(s) from a previous daemon",
+                reconciled,
             )
+    except Exception:
+        logger.exception("reconcile_orphan_runs failed at scheduler startup")
 
-        # Use a dedicated thread per task (not the user's chat thread) so scheduled
-        # runs don't pollute the user's conversation history.  We also embed the
-        # real WeCom chatid under a sentinel key so file-send tools triggered by
-        # the agent can reach the user instead of the synthetic chatid.
-        synthetic_frame: dict[str, Any] = {
-            "body": {
-                "chatid": f"__scheduled_{task_id}",
-            },
-        }
-        if chatid:
-            synthetic_frame["body"]["_wecom_target_chatid"] = chatid
-
+    async def _inject_message(task_id: str, run_id: str, prompt: str) -> None:
+        # The whole body runs under a try/finally so that *any* unexpected
+        # error (DB failure, delivery exception, programming bug) still calls
+        # finish_run().  Without this, SchedulerRunner._running_task_ids would
+        # keep the task slot held until daemon restart and the task would
+        # never fire again.
         status = "success"
         error_msg: str | None = None
-        result = ""
+
         try:
-            result = await handler.run_turn(prompt, synthetic_frame, _noop_on_content)
-        except Exception as exc:
-            logger.exception("Scheduled task %r agent turn failed", task_id)
-            status = "failed"
-            error_msg = str(exc)
-
-        # Push final result to WeCom, retrying transient connection issues but
-        # bailing out fast on server-side rejections (bad chatid, permission, ...).
-        if chatid and bridge_holder:
-            if status == "success":
-                content = f"✅ 定时任务已完成：{task.title}"
-                if result:
-                    # Mirror TUI's 1200-char truncation for scheduled results.
-                    summary = result if len(result) <= 1200 else result[:1200].rstrip() + "\n\n(摘要过长，已截断)"
-                    content += f"\n\n{summary}"
-            else:
-                content = f"❌ 定时任务执行失败：{task.title}"
-                if error_msg:
-                    content += f"\n\n{error_msg}"
-            delivered = await _deliver_scheduled_text(
-                bridge_holder[0],
-                chatid,
-                content,
-                label="final-result",
-                task_title=task.title,
-            )
-            if not delivered and status == "success":
-                # The agent succeeded but we couldn't notify — record this as
-                # a delivery failure so users (and the run-history UI) see it.
-                error_msg = "WeCom delivery failed after retries"
+            task = store.load_task(task_id)
+            if task is None:
+                # Task was deleted between evaluation and injection.
                 status = "failed"
+                error_msg = "task not found"
+                return
 
-        if runner_holder:
-            runner_holder[0].finish_run(run_id, task_id, status=status, error=error_msg)
+            # Resolve WeCom delivery chatid from task's delivery spec.
+            channels = getattr(task.delivery, "channels", []) or []
+            wecom_ch = next(
+                (ch for ch in channels if isinstance(ch, dict) and ch.get("type") == "wecom"),
+                None,
+            )
+            chatid = str(wecom_ch.get("chatid") or "").strip() if wecom_ch else ""
+
+            if not chatid:
+                if wecom_ch is not None:
+                    logger.warning(
+                        "Scheduled task %r has an empty WeCom chatid in delivery spec; "
+                        "messages will not be delivered to WeCom",
+                        task_id,
+                    )
+                else:
+                    logger.warning(
+                        "Scheduled task %r has no WeCom delivery channel configured; "
+                        "messages will not be delivered to WeCom",
+                        task_id,
+                    )
+
+            # Send start notification if we have a WeCom target.  Use the same
+            # robust-delivery helper as the final result so the start notice can
+            # survive a transient reconnect during long agent turns.
+            if chatid and bridge_holder:
+                try:
+                    await _deliver_scheduled_text(
+                        bridge_holder[0],
+                        chatid,
+                        f"⏳ 定时任务开始执行：{task.title}",
+                        label="start-notice",
+                        task_title=task.title,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning("Start-notice delivery failed", exc_info=True)
+
+            # Use a dedicated thread per task (not the user's chat thread) so scheduled
+            # runs don't pollute the user's conversation history.  We also embed the
+            # real WeCom chatid under a sentinel key so file-send tools triggered by
+            # the agent can reach the user instead of the synthetic chatid.
+            synthetic_frame: dict[str, Any] = {
+                "body": {
+                    "chatid": f"__scheduled_{task_id}",
+                },
+            }
+            if chatid:
+                synthetic_frame["body"]["_wecom_target_chatid"] = chatid
+
+            result = ""
+            try:
+                result = await handler.run_turn(prompt, synthetic_frame, _noop_on_content)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception("Scheduled task %r agent turn failed", task_id)
+                status = "failed"
+                error_msg = str(exc)
+
+            # Push final result to WeCom, retrying transient connection issues but
+            # bailing out fast on server-side rejections (bad chatid, permission, ...).
+            if chatid and bridge_holder:
+                if status == "success":
+                    content = f"✅ 定时任务已完成：{task.title}"
+                    if result:
+                        # Mirror TUI's 1200-char truncation for scheduled results.
+                        summary = result if len(result) <= 1200 else result[:1200].rstrip() + "\n\n(摘要过长，已截断)"
+                        content += f"\n\n{summary}"
+                else:
+                    content = f"❌ 定时任务执行失败：{task.title}"
+                    if error_msg:
+                        content += f"\n\n{error_msg}"
+                try:
+                    delivered = await _deliver_scheduled_text(
+                        bridge_holder[0],
+                        chatid,
+                        content,
+                        label="final-result",
+                        task_title=task.title,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.exception("Final-result delivery raised unexpectedly")
+                    delivered = False
+                    if status == "success":
+                        status = "failed"
+                        error_msg = f"delivery error: {exc}"
+                if not delivered and status == "success":
+                    # The agent succeeded but we couldn't notify — record this as
+                    # a delivery failure so users (and the run-history UI) see it.
+                    error_msg = "WeCom delivery failed after retries"
+                    status = "failed"
+
+        except asyncio.CancelledError:
+            # Cancellation is the daemon shutting down — record so the run
+            # doesn't sit in 'running' state forever.
+            status = "failed"
+            error_msg = "cancelled (daemon shutdown)"
+            raise
+        except Exception as exc:  # noqa: BLE001 — last-ditch safety net
+            logger.exception("Unexpected error in scheduled task injection")
+            status = "failed"
+            error_msg = f"injection error: {exc}"
+        finally:
+            if runner_holder:
+                try:
+                    runner_holder[0].finish_run(
+                        run_id, task_id, status=status, error=error_msg,
+                    )
+                except Exception:
+                    logger.exception("finish_run failed for run_id=%s", run_id)
 
     runner = SchedulerRunner(
         store,
@@ -664,21 +864,24 @@ async def _handle_socket_client(
     handler: Any,
     stop_event: asyncio.Event,
 ) -> None:
+    pending_stop = False
     try:
         raw = await asyncio.wait_for(reader.readline(), timeout=_SOCKET_TIMEOUT)
         request = json.loads(raw.decode())
         cmd = request.get("cmd", "")
 
         if cmd == "status":
+            # Reflect the actual transport state (subscribe ACK seen) rather
+            # than the bridge's intent flag, which is True from boot to stop.
             response: dict[str, Any] = {
                 "ok": True,
                 "pid": os.getpid(),
-                "connected": bridge.active,
+                "connected": bridge.ready.is_set(),
                 "messages_handled": handler.messages_handled,
             }
         elif cmd == "stop":
             response = {"ok": True}
-            stop_event.set()
+            pending_stop = True
         else:
             response = {"ok": False, "error": f"Unknown cmd: {cmd}"}
 
@@ -692,3 +895,7 @@ async def _handle_socket_client(
             await writer.wait_closed()
         except Exception:
             pass
+        # Signal shutdown only AFTER the response has been fully delivered
+        # and the connection closed, so the client always sees {"ok": true}.
+        if pending_stop:
+            stop_event.set()
