@@ -627,6 +627,24 @@ def test_wecom_file_frame_requires_active_send_target() -> None:
         raise AssertionError("expected missing target to fail")
 
 
+def test_wecom_file_frame_uses_target_for_scheduled_synthetic_frame() -> None:
+    """Scheduled-task synthetic frames carry the real chatid under
+    ``body._wecom_target_chatid`` and use ``__scheduled_<id>`` for thread
+    isolation; file sends must reach the real chatid, not the synthetic one."""
+    frame = {
+        "headers": {"req_id": "inbound-sched-1"},
+        "body": {
+            "chatid": "__scheduled_task-42",
+            "_wecom_target_chatid": "wr_real_chat",
+        },
+    }
+
+    payload = build_wecom_file_frame(frame, "media-1")
+
+    assert payload["cmd"] == "aibot_send_msg"
+    assert payload["body"]["chatid"] == "wr_real_chat"
+
+
 def test_wecom_text_frame_sends_active_markdown_to_chat() -> None:
     payload = build_wecom_text_frame("chat-1", "hello")
 

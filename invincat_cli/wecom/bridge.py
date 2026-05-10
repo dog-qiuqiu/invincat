@@ -27,6 +27,27 @@ WECOM_STALE_CONNECTION_SECONDS = 90.0
 WECOM_MAX_MESSAGE_TASKS = 20
 
 
+class WeComServerError(RuntimeError):
+    """Raised when WeCom returns a non-zero errcode for a request frame.
+
+    Distinguishes server-side rejections (bad chatid, missing permission, etc.)
+    from transport-level failures so callers can decide whether to retry.
+    """
+
+    def __init__(self, errcode: Any, errmsg: str, *, cmd: str = "", req_id: str = "") -> None:
+        super().__init__(
+            f"WeCom request failed: cmd={cmd} req_id={req_id} errcode={errcode} errmsg={errmsg}"
+        )
+        self.errcode = errcode
+        self.errmsg = errmsg
+        self.cmd = cmd
+        self.req_id = req_id
+
+
+class WeComOfflineError(RuntimeError):
+    """Raised when no live WeCom websocket is available to send on."""
+
+
 class WeComBridge:
     """Manage the WeCom websocket, outbox, request matching, and reconnects."""
 
@@ -50,9 +71,15 @@ class WeComBridge:
         self._seen_req_ids: OrderedDict[str, None] = OrderedDict()
         self._message_tasks: set[asyncio.Task[None]] = set()
         self._pending_requests: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._bridge_ready: asyncio.Event = asyncio.Event()
 
     def stop(self) -> None:
         self.active = False
+
+    @property
+    def ready(self) -> asyncio.Event:
+        """Set when the WeCom subscribe ACK has been received; cleared on disconnect."""
+        return self._bridge_ready
 
     def enqueue(self, payload: dict[str, Any]) -> None:
         self._outbox.append(payload)
@@ -85,9 +112,9 @@ class WeComBridge:
                             ensure_ascii=False,
                         )
                     )
-                    await self._on_status("WeCom connected and subscribed.")
+                    await self._on_status("WeCom connected, awaiting subscription acknowledgement.")
                     self._discard_stale_progress_frames()
-                    await self.flush_outbox()
+                    # flush_outbox is called after subscribe ACK arrives in _handle_control_frame
                     heartbeat_task = asyncio.create_task(self._heartbeat(ws))
                     saw_subscribe_ack = False
                     while self.active and not self._should_exit():
@@ -103,6 +130,20 @@ class WeComBridge:
                         if pending is not None and not pending.done():
                             pending.set_result(frame)
                             continue
+                        # Surface unmatched server-side errors (responses to fire-and-forget
+                        # frames like aibot_respond_msg / aibot_send_msg). Without this they
+                        # were silently dropped and the caller never learned the chatid was
+                        # invalid or the bot lacked permission.
+                        cmd = frame.get("cmd")
+                        errcode = frame.get("errcode", 0)
+                        if cmd in {"aibot_send_msg", "aibot_respond_msg"} and errcode not in (0, None):
+                            logger.warning(
+                                "wecom unmatched response with error cmd=%s req_id=%s errcode=%s errmsg=%s",
+                                cmd,
+                                req_id,
+                                errcode,
+                                frame.get("errmsg", ""),
+                            )
                         if await self._handle_control_frame(
                             frame,
                             saw_subscribe_ack=saw_subscribe_ack,
@@ -120,16 +161,19 @@ class WeComBridge:
                     heartbeat_task.cancel()
                     with suppress(asyncio.CancelledError):
                         await heartbeat_task
+                self._bridge_ready.clear()
                 self._ws = None
                 reconnect_delay = 1
             except asyncio.CancelledError:
                 if heartbeat_task is not None:
                     heartbeat_task.cancel()
+                self._bridge_ready.clear()
                 self._ws = None
                 break
             except Exception as exc:
                 if heartbeat_task is not None:
                     heartbeat_task.cancel()
+                self._bridge_ready.clear()
                 self._ws = None
                 logger.warning("wecom bridge disconnected: %s", exc, exc_info=True)
                 reason = str(exc).strip() or type(exc).__name__
@@ -173,6 +217,7 @@ class WeComBridge:
                 except Exception as send_exc:
                     logger.warning("wecom outbox send failed: %s", send_exc, exc_info=True)
                     if self._ws is ws:
+                        self._bridge_ready.clear()
                         self._ws = None
                     await self._close_ws(ws)
                     return False
@@ -185,10 +230,16 @@ class WeComBridge:
         *,
         timeout: float = 30.0,
     ) -> dict[str, Any]:
-        """Send a WeCom request frame and wait for its matching req_id response."""
+        """Send a WeCom request frame and wait for its matching req_id response.
+
+        Raises:
+            WeComOfflineError: when the websocket is not currently connected.
+            WeComServerError: when the server returns a non-zero errcode.
+            RuntimeError: on timeout or other transport errors.
+        """
         ws = self._ws
         if ws is None:
-            raise RuntimeError("WeCom connection is offline")
+            raise WeComOfflineError("WeCom connection is offline")
         req_id = wecom_frame_req_id(payload)
         if not req_id:
             raise RuntimeError("WeCom request payload is missing headers.req_id")
@@ -208,6 +259,7 @@ class WeComBridge:
             response = await asyncio.wait_for(fut, timeout=timeout)
         except TimeoutError as exc:
             if self._ws is ws:
+                self._bridge_ready.clear()
                 self._ws = None
             await self._close_ws(ws)
             raise RuntimeError(
@@ -215,6 +267,7 @@ class WeComBridge:
             ) from exc
         except Exception:
             if self._ws is ws:
+                self._bridge_ready.clear()
                 self._ws = None
             await self._close_ws(ws)
             raise
@@ -232,8 +285,13 @@ class WeComBridge:
             sorted(resp_body.keys()) if isinstance(resp_body, dict) else type(resp_body).__name__,
         )
         if errcode not in (0, None):
-            errmsg = response.get("errmsg", "")
-            raise RuntimeError(f"WeCom request failed: errcode={errcode} errmsg={errmsg}")
+            errmsg = str(response.get("errmsg", ""))
+            raise WeComServerError(
+                errcode,
+                errmsg,
+                cmd=str(payload.get("cmd", "")),
+                req_id=req_id,
+            )
         return response
 
     async def _recv_raw(self, ws: Any) -> str:  # noqa: ANN401
@@ -282,6 +340,8 @@ class WeComBridge:
         if not saw_subscribe_ack:
             if errcode == 0:
                 await self._on_status("WeCom subscription acknowledged.")
+                self._bridge_ready.set()
+                await self.flush_outbox()
             else:
                 await self._on_error(
                     f"WeCom subscribe failed: errcode={errcode} errmsg={errmsg}"

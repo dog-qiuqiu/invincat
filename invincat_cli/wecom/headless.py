@@ -322,18 +322,39 @@ class HeadlessWeComHandler:
             misfire_policy = payload.get("misfire_policy", "run_once")
             slug = re.sub(r"[^\w\-]", "-", title.lower())[:40].strip("-")
 
-            # Use the actual inbound frame's chatid as delivery target.
+            # Resolve the WeCom delivery target from the inbound frame.
             # Synthetic frames from scheduled runs start with __scheduled_ — skip those
             # to prevent sub-tasks from inheriting a non-real chatid.
+            # IMPORTANT: WeCom single-chat callbacks have no body.chatid (only body.from.userid),
+            # so we MUST NOT gate on body.chatid being non-empty — let
+            # resolve_wecom_active_chat_id() do the userid fallback for single chats.
             delivery = DeliverySpec()
             frame_chatid = str((inbound_frame.get("body") or {}).get("chatid", ""))
-            if frame_chatid and not frame_chatid.startswith("__scheduled_"):
+            if not frame_chatid.startswith("__scheduled_"):
+                chatid_to_use = ""
                 try:
-                    chatid = resolve_wecom_active_chat_id(inbound_frame)
-                    if chatid:
-                        delivery = DeliverySpec(channels=[{"type": "wecom", "chatid": chatid}])
+                    chatid_to_use = resolve_wecom_active_chat_id(inbound_frame) or ""
                 except Exception:
-                    logger.warning("Could not resolve WeCom delivery chatid for new scheduled task", exc_info=True)
+                    logger.warning(
+                        "resolve_wecom_active_chat_id failed for scheduled task %r; "
+                        "WeCom delivery will not be configured (frame_chatid=%r)",
+                        payload.get("task_id", ""),
+                        frame_chatid,
+                        exc_info=True,
+                    )
+                if chatid_to_use:
+                    delivery = DeliverySpec(channels=[{"type": "wecom", "chatid": chatid_to_use}])
+                    logger.info(
+                        "Scheduled task %r WeCom delivery configured: chatid=%s (single-chat fallback=%s)",
+                        payload.get("task_id", ""),
+                        chatid_to_use,
+                        not bool(frame_chatid),
+                    )
+                else:
+                    logger.warning(
+                        "WeCom chatid is empty for scheduled task %r; WeCom delivery will not be configured",
+                        payload.get("task_id", ""),
+                    )
 
             now = datetime.now(timezone.utc)
             next_run = _parse_dt(run_at) if schedule_type == "once" else compute_next_run(cron, now, tz)

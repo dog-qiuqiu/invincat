@@ -27,8 +27,10 @@ _STATE_FILENAME = ".invincat/wecom_daemon.json"
 _LOG_FILENAME = ".invincat/wecom_daemon.log"
 _SOCKET_FILENAME = ".invincat/wecom_daemon.sock"
 _SOCKET_TIMEOUT = 5.0
-_DELIVERY_RETRIES = 4       # 1 initial attempt + 3 retries
-_DELIVERY_RETRY_DELAY = 15  # seconds between retries
+_DELIVERY_RETRIES = 8                 # 1 initial attempt + 7 retries
+_DELIVERY_RETRY_DELAY = 15            # seconds between retries
+_DELIVERY_READY_TIMEOUT = 30          # per-attempt wait for bridge subscribe ACK
+_DELIVERY_REQUEST_TIMEOUT = 30        # per-attempt WeCom request response timeout
 
 
 # ---------------------------------------------------------------------------
@@ -445,17 +447,43 @@ async def _run_scheduler(
         )
         chatid = str(wecom_ch.get("chatid") or "").strip() if wecom_ch else ""
 
-        # Send start notification if we have a WeCom target.
+        if not chatid:
+            if wecom_ch is not None:
+                logger.warning(
+                    "Scheduled task %r has an empty WeCom chatid in delivery spec; "
+                    "messages will not be delivered to WeCom",
+                    task_id,
+                )
+            else:
+                logger.warning(
+                    "Scheduled task %r has no WeCom delivery channel configured; "
+                    "messages will not be delivered to WeCom",
+                    task_id,
+                )
+
+        # Send start notification if we have a WeCom target.  Use the same
+        # robust-delivery helper as the final result so the start notice can
+        # survive a transient reconnect during long agent turns.
         if chatid and bridge_holder:
-            from invincat_cli.wecom.protocol import build_wecom_text_frame
-            bridge_holder[0].enqueue(
-                build_wecom_text_frame(chatid, f"⏳ 定时任务开始执行：{task.title}")
+            await _deliver_scheduled_text(
+                bridge_holder[0],
+                chatid,
+                f"⏳ 定时任务开始执行：{task.title}",
+                label="start-notice",
+                task_title=task.title,
             )
-            await bridge_holder[0].flush_outbox()
 
         # Use a dedicated thread per task (not the user's chat thread) so scheduled
-        # runs don't pollute the user's conversation history.
-        synthetic_frame = {"body": {"chatid": f"__scheduled_{task_id}"}}
+        # runs don't pollute the user's conversation history.  We also embed the
+        # real WeCom chatid under a sentinel key so file-send tools triggered by
+        # the agent can reach the user instead of the synthetic chatid.
+        synthetic_frame: dict[str, Any] = {
+            "body": {
+                "chatid": f"__scheduled_{task_id}",
+            },
+        }
+        if chatid:
+            synthetic_frame["body"]["_wecom_target_chatid"] = chatid
 
         status = "success"
         error_msg: str | None = None
@@ -467,9 +495,9 @@ async def _run_scheduler(
             status = "failed"
             error_msg = str(exc)
 
-        # Push final result to WeCom, with retry on transient disconnects.
+        # Push final result to WeCom, retrying transient connection issues but
+        # bailing out fast on server-side rejections (bad chatid, permission, ...).
         if chatid and bridge_holder:
-            from invincat_cli.wecom.protocol import build_wecom_text_frame
             if status == "success":
                 content = f"✅ 定时任务已完成：{task.title}"
                 if result:
@@ -480,22 +508,18 @@ async def _run_scheduler(
                 content = f"❌ 定时任务执行失败：{task.title}"
                 if error_msg:
                     content += f"\n\n{error_msg}"
-            bridge = bridge_holder[0]
-            bridge.enqueue(build_wecom_text_frame(chatid, content))
-            for attempt in range(_DELIVERY_RETRIES):
-                if await bridge.flush_outbox():
-                    break
-                if attempt < _DELIVERY_RETRIES - 1:
-                    logger.warning(
-                        "WeCom scheduled delivery failed (attempt %d/%d), retrying in %ds (chatid=%s)",
-                        attempt + 1, _DELIVERY_RETRIES, _DELIVERY_RETRY_DELAY, chatid,
-                    )
-                    await asyncio.sleep(_DELIVERY_RETRY_DELAY)
-            else:
-                logger.error(
-                    "WeCom scheduled delivery permanently failed after %d attempts (chatid=%s task=%r)",
-                    _DELIVERY_RETRIES, chatid, task.title,
-                )
+            delivered = await _deliver_scheduled_text(
+                bridge_holder[0],
+                chatid,
+                content,
+                label="final-result",
+                task_title=task.title,
+            )
+            if not delivered and status == "success":
+                # The agent succeeded but we couldn't notify — record this as
+                # a delivery failure so users (and the run-history UI) see it.
+                error_msg = "WeCom delivery failed after retries"
+                status = "failed"
 
         if runner_holder:
             runner_holder[0].finish_run(run_id, task_id, status=status, error=error_msg)
@@ -509,8 +533,22 @@ async def _run_scheduler(
     runner_holder.append(runner)
     logger.info("WeCom daemon scheduler started (cwd=%s)", config.cwd)
 
+    # Wait for the bridge to finish the WeCom subscribe handshake before the first
+    # tick.  Without this, scheduled messages queued immediately after startup would
+    # be sent before WeCom acknowledges the subscription and could be silently dropped.
+    _BRIDGE_READY_TIMEOUT = 120
     try:
-        await asyncio.sleep(3)
+        if bridge_holder:
+            try:
+                await asyncio.wait_for(bridge_holder[0].ready.wait(), timeout=_BRIDGE_READY_TIMEOUT)
+                logger.info("Scheduler: WeCom bridge ready, starting first tick")
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Scheduler: WeCom bridge not ready after %ds, proceeding anyway",
+                    _BRIDGE_READY_TIMEOUT,
+                )
+        else:
+            await asyncio.sleep(5)
     except asyncio.CancelledError:
         return
 
@@ -527,6 +565,92 @@ async def _run_scheduler(
             logger.exception("Scheduler tick error")
 
     logger.info("WeCom daemon scheduler stopped")
+
+
+async def _deliver_scheduled_text(
+    bridge: Any,
+    chatid: str,
+    content: str,
+    *,
+    label: str,
+    task_title: str,
+) -> bool:
+    """Deliver a scheduled-task notification via WeCom active push, with retries.
+
+    Uses :py:meth:`WeComBridge.send_request` so the server's response is awaited
+    and any non-zero ``errcode`` surfaces as :class:`WeComServerError`.
+    Distinguishes:
+
+    - **Transient failures** (offline socket, timeout, generic transport): retry
+      with backoff up to ``_DELIVERY_RETRIES`` times, waiting for ``bridge.ready``
+      between attempts so a reconnect-in-progress doesn't burn retry budget.
+    - **Server rejections** (``errcode != 0``, e.g. invalid chatid / no
+      permission / msgtype unsupported): log loudly and bail without retry —
+      retrying won't change the outcome.
+
+    Returns True if WeCom acknowledged the message.
+    """
+    from invincat_cli.wecom.bridge import WeComOfflineError, WeComServerError
+    from invincat_cli.wecom.protocol import build_wecom_text_frame
+
+    payload = build_wecom_text_frame(chatid, content)
+
+    for attempt in range(1, _DELIVERY_RETRIES + 1):
+        # Wait for the bridge subscribe handshake to complete before sending.
+        # During a reconnect this can take several seconds; the per-attempt
+        # ready-timeout caps it without consuming the whole retry budget.
+        try:
+            await asyncio.wait_for(bridge.ready.wait(), timeout=_DELIVERY_READY_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "wecom scheduled delivery (%s) bridge not ready after %ds (attempt %d/%d, task=%r)",
+                label, _DELIVERY_READY_TIMEOUT, attempt, _DELIVERY_RETRIES, task_title,
+            )
+            if attempt < _DELIVERY_RETRIES:
+                await asyncio.sleep(_DELIVERY_RETRY_DELAY)
+            continue
+
+        try:
+            await bridge.send_request(payload, timeout=_DELIVERY_REQUEST_TIMEOUT)
+            logger.info(
+                "wecom scheduled delivery (%s) succeeded chatid=%s task=%r attempt=%d",
+                label, chatid, task_title, attempt,
+            )
+            return True
+        except WeComServerError as exc:
+            # Server-side rejection: retrying won't help (chatid invalid, bot
+            # not authorised for this chat, msgtype unsupported, ...).
+            logger.error(
+                "wecom scheduled delivery (%s) rejected by server: errcode=%s errmsg=%s "
+                "chatid=%s task=%r — not retrying",
+                label, exc.errcode, exc.errmsg, chatid, task_title,
+            )
+            return False
+        except WeComOfflineError:
+            logger.warning(
+                "wecom scheduled delivery (%s) offline (attempt %d/%d, chatid=%s task=%r)",
+                label, attempt, _DELIVERY_RETRIES, chatid, task_title,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "wecom scheduled delivery (%s) timed out (attempt %d/%d, chatid=%s task=%r)",
+                label, attempt, _DELIVERY_RETRIES, chatid, task_title,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "wecom scheduled delivery (%s) transient error (attempt %d/%d, chatid=%s task=%r): %s",
+                label, attempt, _DELIVERY_RETRIES, chatid, task_title, exc,
+            )
+        if attempt < _DELIVERY_RETRIES:
+            await asyncio.sleep(_DELIVERY_RETRY_DELAY)
+
+    logger.error(
+        "wecom scheduled delivery (%s) permanently failed after %d attempts chatid=%s task=%r",
+        label, _DELIVERY_RETRIES, chatid, task_title,
+    )
+    return False
 
 
 async def _noop_on_content(_content: str) -> None:
