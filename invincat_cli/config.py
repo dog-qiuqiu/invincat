@@ -2155,6 +2155,20 @@ def _apply_deepseek_thinking_defaults(kwargs: dict[str, Any]) -> dict[str, Any]:
     return patched
 
 
+def _sanitize_deepseek_thinking_params(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Remove DeepSeek-incompatible reasoning params when thinking is disabled."""
+    patched = copy.deepcopy(kwargs)
+    extra_body = patched.get("extra_body")
+    if not isinstance(extra_body, dict):
+        return patched
+    thinking = extra_body.get("thinking")
+    if not isinstance(thinking, dict):
+        return patched
+    if thinking.get("type") == "disabled":
+        patched.pop("reasoning_effort", None)
+    return patched
+
+
 @dataclass(frozen=True)
 class ModelResult:
     """Result of creating a chat model, bundling the model with its metadata.
@@ -2336,6 +2350,7 @@ def create_model(
         model_kwargs = (
             _apply_deepseek_thinking_defaults(kwargs) if enable_thinking_default else kwargs
         )
+        model_kwargs = _sanitize_deepseek_thinking_params(model_kwargs)
         model = DeepSeekChatOpenAICompat(model=model_name, **model_kwargs)
     else:
         model = _create_model_via_init(model_name, provider, kwargs)

@@ -204,6 +204,42 @@ class TestModelCreation:
         with pytest.raises(ModelConfigError, match="model name is required"):
             create_model("openai:")
 
+    @patch("invincat_cli.models.deepseek_chat_openai.DeepSeekChatOpenAICompat")
+    @patch("invincat_cli.model_config.ModelConfig.load")
+    @patch(
+        "invincat_cli.config._get_provider_kwargs",
+        return_value={
+            "api_key": "test-key",
+            "base_url": "https://api.deepseek.com/v1",
+            "reasoning_effort": "medium",
+            "extra_body": {"thinking": {"type": "disabled"}},
+        },
+    )
+    def test_create_model_strips_reasoning_effort_when_deepseek_thinking_disabled(
+        self,
+        _mock_kwargs,
+        mock_model_config_load,
+        mock_deepseek_model,
+    ):
+        """DeepSeek rejects reasoning_effort when thinking is explicitly disabled."""
+        from invincat_cli.config import create_model
+
+        mock_model = Mock()
+        mock_model.profile = {}
+        mock_deepseek_model.return_value = mock_model
+
+        mock_cfg = Mock()
+        mock_cfg.get_class_path.return_value = None
+        mock_cfg.get_profile_overrides.return_value = {}
+        mock_model_config_load.return_value = mock_cfg
+
+        create_model("openai:deepseek-chat")
+
+        _, kwargs = mock_deepseek_model.call_args
+        assert kwargs["model"] == "deepseek-chat"
+        assert kwargs["extra_body"]["thinking"]["type"] == "disabled"
+        assert "reasoning_effort" not in kwargs
+
     def test_register_model_merges_extra_params(self):
         """Registering a model can persist nested constructor params."""
         from invincat_cli.model_config import register_provider_model
