@@ -33,10 +33,12 @@ class HeadlessWeComHandler:
         agent: Any,
         cwd: Path,
         send_request: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]],
+        on_schedule_run_now: Callable[[Any], Awaitable[None]] | None = None,
     ) -> None:
         self._agent = agent
         self._cwd = cwd
         self._send_request = send_request
+        self._on_schedule_run_now = on_schedule_run_now
         # chatid → (thread_id, lock)
         self._sessions: dict[str, tuple[str, asyncio.Lock]] = {}
         self._messages_handled = 0
@@ -213,6 +215,16 @@ class HeadlessWeComHandler:
                     elif isinstance(message_obj, ToolMessage):
                         tool_name = getattr(message_obj, "name", "")
 
+                        # Persist schedule management payloads that the TUI would
+                        # normally handle via on_schedule_payload / _handle_schedule_tool_payload.
+                        from invincat_cli.scheduler.tool import parse_schedule_tool_result
+                        sched_payload = parse_schedule_tool_result(message_obj.content)
+                        if sched_payload is not None:
+                            try:
+                                await self._process_schedule_payload(sched_payload, inbound_frame)
+                            except Exception:
+                                logger.warning("Schedule payload processing failed", exc_info=True)
+
                         if tool_name == WECOM_FILE_TOOL_NAME:
                             payload = parse_wecom_file_request(message_obj.content)
                             if payload is not None:
@@ -264,6 +276,137 @@ class HeadlessWeComHandler:
             stream_input = Command(resume=pending_resumes)
 
         return accumulated.strip() or "（空回复）"
+
+    async def _process_schedule_payload(
+        self,
+        payload: dict[str, Any],
+        inbound_frame: dict[str, Any],
+    ) -> None:
+        """Persist a schedule management payload from the agent to the DB.
+
+        Mirrors app.py._handle_schedule_tool_payload for daemon (headless) mode.
+        """
+        import re
+        import uuid
+        from datetime import datetime, timezone
+
+        from invincat_cli.scheduler.models import DeliverySpec, ReportSpec, ScheduledTask
+        from invincat_cli.scheduler.runner import _parse_dt, compute_next_run
+        from invincat_cli.scheduler.store import SchedulerStore
+        from invincat_cli.scheduler.tool import (
+            SCHEDULE_CANCEL_TYPE,
+            SCHEDULE_CREATE_TYPE,
+            SCHEDULE_RUN_NOW_TYPE,
+            SCHEDULE_UPDATE_TYPE,
+        )
+        from invincat_cli.wecom.protocol import resolve_wecom_active_chat_id
+
+        ptype = payload.get("type")
+        store = SchedulerStore()
+
+        if ptype == SCHEDULE_CREATE_TYPE:
+            task_id = payload.get("task_id") or str(uuid.uuid4())
+            title = payload.get("title", "Untitled")
+            cron = payload.get("cron", "0 8 * * *")
+            tz = payload.get("timezone", "Asia/Shanghai")
+            prompt_text = payload.get("prompt", "")
+            schedule_type = payload.get("schedule_type", "recurring")
+            if schedule_type not in {"recurring", "once"}:
+                schedule_type = "recurring"
+            run_at = payload.get("run_at")
+            delete_after_run = bool(payload.get("delete_after_run", False))
+            output_mode = payload.get("output_mode", "message")
+            if output_mode not in {"message", "report"}:
+                output_mode = "message"
+            report_format = payload.get("report_format", "markdown")
+            misfire_policy = payload.get("misfire_policy", "run_once")
+            slug = re.sub(r"[^\w\-]", "-", title.lower())[:40].strip("-")
+
+            # Use the actual inbound frame's chatid as delivery target.
+            # Synthetic frames from scheduled runs start with __scheduled_ — skip those
+            # to prevent sub-tasks from inheriting a non-real chatid.
+            delivery = DeliverySpec()
+            frame_chatid = str((inbound_frame.get("body") or {}).get("chatid", ""))
+            if frame_chatid and not frame_chatid.startswith("__scheduled_"):
+                try:
+                    chatid = resolve_wecom_active_chat_id(inbound_frame)
+                    if chatid:
+                        delivery = DeliverySpec(channels=[{"type": "wecom", "chatid": chatid}])
+                except Exception:
+                    logger.warning("Could not resolve WeCom delivery chatid for new scheduled task", exc_info=True)
+
+            now = datetime.now(timezone.utc)
+            next_run = _parse_dt(run_at) if schedule_type == "once" else compute_next_run(cron, now, tz)
+            task = ScheduledTask(
+                id=task_id,
+                title=title,
+                enabled=True,
+                prompt=prompt_text,
+                cron=cron,
+                timezone=tz,
+                cwd=str(self._cwd),
+                delivery=delivery,
+                report=ReportSpec(
+                    mode=output_mode,
+                    output_dir="reports",
+                    filename_template=f"{slug}-{{date}}.{report_format.lower().replace('markdown', 'md')}",
+                    format=report_format,
+                ),
+                created_at=now.isoformat(),
+                updated_at=now.isoformat(),
+                next_run_at=next_run.isoformat() if next_run else None,
+                last_run_at=None,
+                last_status="never",
+                last_error=None,
+                run_count=0,
+                failure_count=0,
+                misfire_policy=misfire_policy,
+                schedule_type=schedule_type,
+                run_at=run_at if schedule_type == "once" else None,
+                delete_after_run=delete_after_run,
+            )
+            store.save_task(task)
+            logger.info(
+                "Scheduled task created: %r id=%s next_run=%s delivery=%s",
+                title, task_id, task.next_run_at,
+                [c.get("type") for c in (delivery.channels or [])],
+            )
+
+        elif ptype == SCHEDULE_UPDATE_TYPE:
+            task_id = payload.get("task_id", "")
+            task = store.load_task(task_id)
+            if task is None:
+                logger.warning("schedule_update: task %r not found", task_id)
+                return
+            updates = payload.get("updates", {})
+            if "title" in updates:
+                task.title = updates["title"]
+            if "cron" in updates:
+                task.cron = updates["cron"]
+                next_run = compute_next_run(task.cron, datetime.now(timezone.utc), task.timezone)
+                task.next_run_at = next_run.isoformat() if next_run else None
+            if "prompt" in updates:
+                task.prompt = updates["prompt"]
+            if "enabled" in updates:
+                task.enabled = bool(updates["enabled"])
+            if "timezone" in updates:
+                task.timezone = updates["timezone"]
+            task.updated_at = datetime.now(timezone.utc).isoformat()
+            store.save_task(task)
+            logger.info("Scheduled task updated: %r id=%s", task.title, task_id)
+
+        elif ptype == SCHEDULE_CANCEL_TYPE:
+            task_id = payload.get("task_id", "")
+            store.delete_task(task_id)
+            logger.info("Scheduled task deleted: id=%s", task_id)
+
+        elif ptype == SCHEDULE_RUN_NOW_TYPE:
+            if self._on_schedule_run_now is not None:
+                task_id = payload.get("task_id", "")
+                task = store.load_task(task_id)
+                if task is not None:
+                    await self._on_schedule_run_now(task)
+                    logger.info("Scheduled task fired immediately: %r id=%s", task.title, task_id)
 
     @staticmethod
     def _extract_ai_text(message: Any) -> str:

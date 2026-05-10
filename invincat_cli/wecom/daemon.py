@@ -27,6 +27,8 @@ _STATE_FILENAME = ".invincat/wecom_daemon.json"
 _LOG_FILENAME = ".invincat/wecom_daemon.log"
 _SOCKET_FILENAME = ".invincat/wecom_daemon.sock"
 _SOCKET_TIMEOUT = 5.0
+_DELIVERY_RETRIES = 4       # 1 initial attempt + 3 retries
+_DELIVERY_RETRY_DELAY = 15  # seconds between retries
 
 
 # ---------------------------------------------------------------------------
@@ -290,11 +292,17 @@ async def _daemon_main(config: WeComDaemonConfig) -> None:
         from invincat_cli.wecom.session import WeComMessageResponder
 
         bridge_holder: list[WeComBridge] = []  # populated after bridge is created
+        scheduler_runner_holder: list[Any] = []  # populated by _run_scheduler
+
+        async def _fire_task_now(task: Any) -> None:
+            if scheduler_runner_holder:
+                await scheduler_runner_holder[0].fire_now(task)
 
         handler = HeadlessWeComHandler(
             agent=agent,
             cwd=config.cwd,
             send_request=lambda payload: _bridge_send_request(bridge_holder, payload),
+            on_schedule_run_now=_fire_task_now,
         )
 
         # --- WeCom bridge ---
@@ -344,7 +352,7 @@ async def _daemon_main(config: WeComDaemonConfig) -> None:
 
         # --- Scheduler ---
         scheduler_task = asyncio.create_task(
-            _run_scheduler(config, handler, bridge_holder, stop_event)
+            _run_scheduler(config, handler, bridge_holder, stop_event, scheduler_runner_holder)
         )
 
         # --- Run bridge ---
@@ -404,6 +412,7 @@ async def _run_scheduler(
     handler: Any,
     bridge_holder: list[Any],
     stop_event: asyncio.Event,
+    runner_holder: list[Any],
 ) -> None:
     """Background task: tick the scheduler every 60 s and deliver results via WeCom."""
     from invincat_cli.scheduler.runner import SchedulerRunner
@@ -419,7 +428,6 @@ async def _run_scheduler(
             ]
 
     store = _CwdFilteredStore()
-    runner_holder: list[SchedulerRunner] = []
 
     async def _inject_message(task_id: str, run_id: str, prompt: str) -> None:
         task = store.load_task(task_id)
@@ -459,19 +467,35 @@ async def _run_scheduler(
             status = "failed"
             error_msg = str(exc)
 
-        # Push final result to WeCom.
+        # Push final result to WeCom, with retry on transient disconnects.
         if chatid and bridge_holder:
             from invincat_cli.wecom.protocol import build_wecom_text_frame
             if status == "success":
                 content = f"✅ 定时任务已完成：{task.title}"
                 if result:
-                    content += f"\n\n{result}"
+                    # Mirror TUI's 1200-char truncation for scheduled results.
+                    summary = result if len(result) <= 1200 else result[:1200].rstrip() + "\n\n(摘要过长，已截断)"
+                    content += f"\n\n{summary}"
             else:
                 content = f"❌ 定时任务执行失败：{task.title}"
                 if error_msg:
                     content += f"\n\n{error_msg}"
-            bridge_holder[0].enqueue(build_wecom_text_frame(chatid, content))
-            await bridge_holder[0].flush_outbox()
+            bridge = bridge_holder[0]
+            bridge.enqueue(build_wecom_text_frame(chatid, content))
+            for attempt in range(_DELIVERY_RETRIES):
+                if await bridge.flush_outbox():
+                    break
+                if attempt < _DELIVERY_RETRIES - 1:
+                    logger.warning(
+                        "WeCom scheduled delivery failed (attempt %d/%d), retrying in %ds (chatid=%s)",
+                        attempt + 1, _DELIVERY_RETRIES, _DELIVERY_RETRY_DELAY, chatid,
+                    )
+                    await asyncio.sleep(_DELIVERY_RETRY_DELAY)
+            else:
+                logger.error(
+                    "WeCom scheduled delivery permanently failed after %d attempts (chatid=%s task=%r)",
+                    _DELIVERY_RETRIES, chatid, task.title,
+                )
 
         if runner_holder:
             runner_holder[0].finish_run(run_id, task_id, status=status, error=error_msg)
