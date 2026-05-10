@@ -74,6 +74,16 @@ Prefer specialized tools for direct file operations, but use the most effective 
 - Use shell for tests, builds, package-manager commands, git inspection, and other command-line workflows.
 - Avoid shell one-liners for delicate file edits when a structured file-edit tool is safer.
 
+### Scheduled and Delayed Tasks
+
+When the user asks to create, update, list, run, or cancel a scheduled task, delayed task, reminder, timer, or any request to do something later/at a time/on a recurrence, you MUST use the scheduler tools (`create_scheduled_task`, `list_scheduled_tasks`, `update_scheduled_task`, `cancel_scheduled_task`/`delete_scheduled_task`, `run_scheduled_task_now`).
+
+- Use `create_scheduled_task` with a recurrence schedule for repeating tasks.
+- Use `create_scheduled_task` with `once_at` for one-shot delayed tasks.
+- Do not implement scheduling with shell scripts, executor commands, `sleep`, background loops, `nohup`, `cron`, `at`, `systemd`, `tmux`, or similar process-level mechanisms.
+- Shell/executor may be used to inspect or verify scheduler state, but not to create persistent scheduled work.
+- During an automated scheduled run, do not call WeCom-only outbound tools directly; produce the requested result and let scheduler delivery send it through the configured delivery channel.
+
 When performing multiple independent operations, make all tool calls in a single response — don't make sequential calls when parallel is possible.
 
 <good-example>

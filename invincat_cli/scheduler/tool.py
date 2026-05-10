@@ -48,6 +48,26 @@ def _tool_name(t: Any) -> str:  # noqa: ANN401
     return ""
 
 
+def parse_once_at(value: str, timezone_name: str) -> str:
+    """Parse an absolute one-shot run time and return an ISO UTC timestamp."""
+    from datetime import datetime, timezone
+    import zoneinfo
+
+    raw = value.strip()
+    if not raw:
+        raise ValueError("once_at must not be empty")
+    normalized = raw.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError(
+            "once_at must be an ISO datetime, e.g. 2026-05-10T20:00:00+08:00"
+        ) from exc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=zoneinfo.ZoneInfo(timezone_name))
+    return dt.astimezone(timezone.utc).isoformat()
+
+
 def parse_schedule_tool_result(content: Any) -> dict[str, Any] | None:  # noqa: ANN401
     """Try to parse a ToolMessage content as a schedule management payload."""
     if isinstance(content, list):
@@ -114,31 +134,49 @@ class ScheduleMiddleware(AgentMiddleware):
             output_mode: str = "message",
             report_format: str = "markdown",
             misfire_policy: str = "run_once",
+            once_at: str | None = None,
+            delete_after_run: bool = False,
         ) -> str:
-            """Create a recurring scheduled task.
+            """Create a scheduled or one-shot delayed task.
+
+            Use this tool for all user requests that ask to run something later,
+            at a specific time, or on a recurrence. Do not emulate scheduling
+            with shell scripts, sleep loops, cron, or background executor jobs.
 
             Args:
                 title: Short human-readable title (e.g. "Daily project analysis").
-                schedule: When to run. Supported:
+                schedule: When to run for recurring tasks. Supported:
                     - "daily HH:MM" (e.g. "daily 08:00")
                     - "weekly <weekday> HH:MM" (e.g. "weekly mon 08:00")
                     - "monthly <day> HH:MM" (e.g. "monthly 1 08:00")
                     - "interval <N>h" or "interval <N>m"
                     - "cron 0 8 * * *"
                     - bare cron: "0 8 * * *"
+                    For one-shot delayed tasks, pass any valid value such as "once" and set once_at.
                 prompt: The task instructions to execute on each run.
                 timezone: IANA timezone name (default "Asia/Shanghai").
                 delivery: Delivery channel. Use "tui" normally; WeCom turns are delivered back to WeCom automatically.
                 output_mode: "message" for lightweight text result (default), or "report" to require a saved report file.
                 report_format: Output format, "markdown" or "text".
                 misfire_policy: "run_once" (default) or "skip" if TUI was closed.
+                once_at: Optional ISO datetime for a one-shot task, e.g. 2026-05-10T20:00:00+08:00.
+                delete_after_run: Delete a one-shot task after it finishes instead of disabling it.
             """
             from invincat_cli.scheduler.parser import parse_schedule
 
-            try:
-                cron = parse_schedule(schedule)
-            except ValueError as exc:
-                return json.dumps({"error": str(exc)}, ensure_ascii=False)
+            schedule_type = "once" if once_at else "recurring"
+            run_at = None
+            if once_at:
+                try:
+                    run_at = parse_once_at(once_at, timezone)
+                except ValueError as exc:
+                    return json.dumps({"error": str(exc)}, ensure_ascii=False)
+                cron = "0 0 * * *"
+            else:
+                try:
+                    cron = parse_schedule(schedule)
+                except ValueError as exc:
+                    return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
             if output_mode not in {"message", "report"}:
                 return json.dumps(
@@ -155,6 +193,9 @@ class ScheduleMiddleware(AgentMiddleware):
                 "prompt": prompt,
                 "timezone": timezone,
                 "delivery": delivery,
+                "schedule_type": schedule_type,
+                "run_at": run_at,
+                "delete_after_run": delete_after_run,
                 "output_mode": output_mode,
                 "report_format": report_format,
                 "misfire_policy": misfire_policy,
@@ -181,6 +222,9 @@ class ScheduleMiddleware(AgentMiddleware):
                     "title": t.title,
                     "enabled": t.enabled,
                     "cron": t.cron,
+                    "schedule_type": t.schedule_type,
+                    "run_at": t.run_at,
+                    "delete_after_run": t.delete_after_run,
                     "timezone": t.timezone,
                     "next_run_at": t.next_run_at,
                     "last_status": t.last_status,

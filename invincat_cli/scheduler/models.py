@@ -7,6 +7,7 @@ from typing import Literal
 
 
 MisfirePolicy = Literal["skip", "run_once"]
+ScheduleType = Literal["recurring", "once"]
 TaskStatus = Literal["never", "success", "failed", "running", "missed", "timeout"]
 DeliveryStatus = Literal["none", "pending", "success", "failed", "queued"]
 
@@ -45,6 +46,9 @@ class ScheduledTask:
     run_count: int
     failure_count: int
     misfire_policy: MisfirePolicy = "run_once"
+    schedule_type: ScheduleType = "recurring"
+    run_at: str | None = None
+    delete_after_run: bool = False
     timeout_seconds: int = 600
     """Maximum seconds a scheduled run may take before being marked timeout."""
 

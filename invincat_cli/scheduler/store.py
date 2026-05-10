@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
     run_count   INTEGER NOT NULL DEFAULT 0,
     failure_count INTEGER NOT NULL DEFAULT 0,
     misfire_policy TEXT NOT NULL DEFAULT 'run_once',
+    schedule_type TEXT NOT NULL DEFAULT 'recurring',
+    run_at TEXT,
+    delete_after_run INTEGER NOT NULL DEFAULT 0,
     timeout_seconds INTEGER NOT NULL DEFAULT 600
 );
 
@@ -71,6 +74,12 @@ _RUN_COLUMN_MIGRATIONS = {
     "delivery_attempts": "ALTER TABLE scheduled_task_runs ADD COLUMN delivery_attempts INTEGER NOT NULL DEFAULT 0",
 }
 
+_TASK_COLUMN_MIGRATIONS = {
+    "schedule_type": "ALTER TABLE scheduled_tasks ADD COLUMN schedule_type TEXT NOT NULL DEFAULT 'recurring'",
+    "run_at": "ALTER TABLE scheduled_tasks ADD COLUMN run_at TEXT",
+    "delete_after_run": "ALTER TABLE scheduled_tasks ADD COLUMN delete_after_run INTEGER NOT NULL DEFAULT 0",
+}
+
 
 def _connect(path: Path | None = None) -> sqlite3.Connection:
     db_path = path or get_scheduler_db_path()
@@ -83,6 +92,14 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
+    task_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(scheduled_tasks)").fetchall()
+    }
+    for column, sql in _TASK_COLUMN_MIGRATIONS.items():
+        if column not in task_columns:
+            conn.execute(sql)
+
     run_columns = {
         row["name"]
         for row in conn.execute("PRAGMA table_info(scheduled_task_runs)").fetchall()
@@ -116,12 +133,14 @@ class SchedulerStore:
                     (id, title, enabled, prompt, cron, timezone, cwd,
                      delivery, report, created_at, updated_at,
                      next_run_at, last_run_at, last_status, last_error,
-                     run_count, failure_count, misfire_policy, timeout_seconds)
+                     run_count, failure_count, misfire_policy,
+                     schedule_type, run_at, delete_after_run, timeout_seconds)
                 VALUES
                     (:id,:title,:enabled,:prompt,:cron,:timezone,:cwd,
                      :delivery,:report,:created_at,:updated_at,
                      :next_run_at,:last_run_at,:last_status,:last_error,
-                     :run_count,:failure_count,:misfire_policy,:timeout_seconds)
+                     :run_count,:failure_count,:misfire_policy,
+                     :schedule_type,:run_at,:delete_after_run,:timeout_seconds)
                 ON CONFLICT(id) DO UPDATE SET
                     title=excluded.title,
                     enabled=excluded.enabled,
@@ -139,6 +158,9 @@ class SchedulerStore:
                     run_count=excluded.run_count,
                     failure_count=excluded.failure_count,
                     misfire_policy=excluded.misfire_policy,
+                    schedule_type=excluded.schedule_type,
+                    run_at=excluded.run_at,
+                    delete_after_run=excluded.delete_after_run,
                     timeout_seconds=excluded.timeout_seconds
                 """,
                 _task_to_row(task),
@@ -208,6 +230,15 @@ class SchedulerStore:
             conn.execute(
                 "UPDATE scheduled_tasks SET enabled=?, updated_at=? WHERE id=?",
                 (int(enabled), now, task_id),
+            )
+            conn.commit()
+
+    def disable_task_after_run(self, task_id: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with _connect(self._db_path) as conn:
+            conn.execute(
+                "UPDATE scheduled_tasks SET enabled=0, next_run_at=NULL, updated_at=? WHERE id=?",
+                (now, task_id),
             )
             conn.commit()
 
@@ -348,6 +379,9 @@ def _task_to_row(task: Any) -> dict:
         "run_count": task.run_count,
         "failure_count": task.failure_count,
         "misfire_policy": task.misfire_policy,
+        "schedule_type": task.schedule_type,
+        "run_at": task.run_at,
+        "delete_after_run": int(task.delete_after_run),
         "timeout_seconds": task.timeout_seconds,
     }
 
@@ -376,6 +410,9 @@ def _row_to_task(row: sqlite3.Row) -> "ScheduledTask":  # noqa: F821
         run_count=row["run_count"],
         failure_count=row["failure_count"],
         misfire_policy=row["misfire_policy"],
+        schedule_type=row["schedule_type"],
+        run_at=row["run_at"],
+        delete_after_run=bool(row["delete_after_run"]),
         timeout_seconds=row["timeout_seconds"],
     )
 

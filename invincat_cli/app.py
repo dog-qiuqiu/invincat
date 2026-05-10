@@ -4296,7 +4296,7 @@ class DeepAgentsApp(App):
         from invincat_cli.i18n import t
         from invincat_cli.scheduler.models import DeliverySpec, ReportSpec, ScheduledTask
         from invincat_cli.scheduler.parser import describe_schedule
-        from invincat_cli.scheduler.runner import compute_next_run
+        from invincat_cli.scheduler.runner import _parse_dt, compute_next_run
         from invincat_cli.wecom.protocol import resolve_wecom_active_chat_id
 
         ptype = payload.get("type")
@@ -4309,6 +4309,11 @@ class DeepAgentsApp(App):
             cron = payload.get("cron", "0 8 * * *")
             tz = payload.get("timezone", "Asia/Shanghai")
             prompt_text = payload.get("prompt", "")
+            schedule_type = payload.get("schedule_type", "recurring")
+            if schedule_type not in {"recurring", "once"}:
+                schedule_type = "recurring"
+            run_at = payload.get("run_at")
+            delete_after_run = bool(payload.get("delete_after_run", False))
             output_mode = payload.get("output_mode", "message")
             if output_mode not in {"message", "report"}:
                 output_mode = "message"
@@ -4331,7 +4336,7 @@ class DeepAgentsApp(App):
                     logger.warning("Could not resolve WeCom delivery target", exc_info=True)
 
             now = datetime.now(timezone.utc)
-            next_run = compute_next_run(cron, now, tz)
+            next_run = _parse_dt(run_at) if schedule_type == "once" else compute_next_run(cron, now, tz)
 
             task = ScheduledTask(
                 id=task_id,
@@ -4357,6 +4362,9 @@ class DeepAgentsApp(App):
                 run_count=0,
                 failure_count=0,
                 misfire_policy=misfire_policy,
+                schedule_type=schedule_type,
+                run_at=run_at if schedule_type == "once" else None,
+                delete_after_run=delete_after_run,
             )
             self._scheduler_store.save_task(task)
 

@@ -22,6 +22,7 @@ from invincat_cli.scheduler.runner import (
     _build_scheduled_prompt,
     _parse_dt,
     compute_next_run,
+    task_next_run,
 )
 from invincat_cli.scheduler.store import SchedulerStore
 from invincat_cli.scheduler.tool import (
@@ -304,6 +305,23 @@ def test_store_persists_after_reload(tmp_path: Path) -> None:
     assert loaded.title == "Persistent"
 
 
+def test_store_preserves_one_shot_fields(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    run_at = datetime.now(timezone.utc).isoformat()
+    task = _make_task()
+    task.schedule_type = "once"
+    task.run_at = run_at
+    task.delete_after_run = True
+
+    store.save_task(task)
+
+    loaded = store.load_task(task.id)
+    assert loaded is not None
+    assert loaded.schedule_type == "once"
+    assert loaded.run_at == run_at
+    assert loaded.delete_after_run is True
+
+
 # ---------------------------------------------------------------------------
 # runner: misfire policy
 # ---------------------------------------------------------------------------
@@ -478,6 +496,71 @@ def test_runner_drain_pending_skips_disabled_task(tmp_path: Path) -> None:
     assert not runner._pending_task_ids
 
 
+def test_one_shot_task_next_run_uses_run_at() -> None:
+    run_at = datetime.now(timezone.utc).replace(microsecond=0)
+    task = _make_task()
+    task.schedule_type = "once"
+    task.run_at = run_at.isoformat()
+
+    assert task_next_run(task, datetime.now(timezone.utc)) == run_at
+
+
+def test_one_shot_task_is_disabled_after_finish(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    task = _make_task(next_run_at=past)
+    task.schedule_type = "once"
+    task.run_at = past
+    store.save_task(task)
+
+    fired: list[tuple[str, str]] = []
+
+    async def inject(task_id: str, run_id: str, prompt: str) -> None:
+        fired.append((task_id, run_id))
+
+    runner = SchedulerRunner(
+        store,
+        inject_message=inject,
+        notify=MagicMock(),
+        is_busy=lambda: False,
+    )
+    asyncio.run(runner.tick())
+    task_id, run_id = fired[0]
+    runner.finish_run(run_id, task_id, status="success")
+
+    loaded = store.load_task(task_id)
+    assert loaded is not None
+    assert loaded.enabled is False
+    assert loaded.next_run_at is None
+
+
+def test_one_shot_task_can_delete_after_finish(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    task = _make_task(next_run_at=past)
+    task.schedule_type = "once"
+    task.run_at = past
+    task.delete_after_run = True
+    store.save_task(task)
+
+    fired: list[tuple[str, str]] = []
+
+    async def inject(task_id: str, run_id: str, prompt: str) -> None:
+        fired.append((task_id, run_id))
+
+    runner = SchedulerRunner(
+        store,
+        inject_message=inject,
+        notify=MagicMock(),
+        is_busy=lambda: False,
+    )
+    asyncio.run(runner.tick())
+    task_id, run_id = fired[0]
+    runner.finish_run(run_id, task_id, status="success")
+
+    assert store.load_task(task_id) is None
+
+
 def test_runner_disabled_task_not_triggered(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
@@ -608,6 +691,24 @@ def test_schedule_middleware_create_tool_accepts_report_mode(tmp_path: Path) -> 
     assert data["output_mode"] == "report"
 
 
+def test_schedule_middleware_create_tool_accepts_once_at(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    mw = ScheduleMiddleware(store=store)
+    create_tool = next(t for t in mw.tools if t.name == "create_scheduled_task")
+    result = _invoke_tool(create_tool, {
+        "title": "One shot",
+        "schedule": "once",
+        "prompt": "Remind me",
+        "once_at": "2026-05-10T20:00:00+08:00",
+        "delete_after_run": True,
+    })
+    data = json.loads(result)
+    assert data["type"] == SCHEDULE_CREATE_TYPE
+    assert data["schedule_type"] == "once"
+    assert data["run_at"] == "2026-05-10T12:00:00+00:00"
+    assert data["delete_after_run"] is True
+
+
 def test_schedule_middleware_delete_tool_alias_returns_cancel_payload(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     mw = ScheduleMiddleware(store=store)
@@ -635,6 +736,7 @@ def test_schedule_middleware_list_includes_delivery_and_output_mode(tmp_path: Pa
     assert data["type"] == SCHEDULE_LIST_TYPE
     assert data["tasks"][0]["delivery"] == [{"type": "wecom", "chatid": "chat-1"}]
     assert data["tasks"][0]["output_mode"] == "report"
+    assert data["tasks"][0]["schedule_type"] == "recurring"
 
 
 def test_schedule_middleware_create_tool_invalid_schedule(tmp_path: Path) -> None:

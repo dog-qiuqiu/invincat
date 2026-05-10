@@ -35,6 +35,13 @@ def compute_next_run(cron: str, after: datetime, tz_name: str) -> datetime | Non
         return None
 
 
+def task_next_run(task: "ScheduledTask", after: datetime) -> datetime | None:
+    """Return the next run time for recurring or one-shot tasks."""
+    if getattr(task, "schedule_type", "recurring") == "once":
+        return _parse_dt(getattr(task, "run_at", None))
+    return compute_next_run(task.cron, after, task.timezone)
+
+
 def _slug(title: str) -> str:
     return re.sub(r"[^\w\-]", "-", title.lower())[:40].strip("-")
 
@@ -141,7 +148,7 @@ class SchedulerRunner:
         next_run = _parse_dt(task.next_run_at)
         if next_run is None:
             # First-ever tick: compute and save next_run_at
-            next_run = compute_next_run(task.cron, now, task.timezone)
+            next_run = task_next_run(task, now)
             if next_run:
                 self._store.update_task_status(
                     task.id,
@@ -159,7 +166,7 @@ class SchedulerRunner:
         if lag_seconds > _MISFIRE_MAX_SECONDS:
             # Too old — skip silently and advance next_run
             logger.info("Skipping very old misfire for task %r (%ds ago)", task.title, lag_seconds)
-            next_run2 = compute_next_run(task.cron, now, task.timezone)
+            next_run2 = None if task.schedule_type == "once" else task_next_run(task, now)
             self._store.update_task_status(
                 task.id,
                 last_status="missed",
@@ -170,7 +177,7 @@ class SchedulerRunner:
         was_missed = lag_seconds > _MISFIRE_TOLERANCE_SECONDS
         if was_missed and task.misfire_policy == "skip":
             logger.info("Skipping missed task %r per policy", task.title)
-            next_run2 = compute_next_run(task.cron, now, task.timezone)
+            next_run2 = None if task.schedule_type == "once" else task_next_run(task, now)
             self._store.update_task_status(
                 task.id,
                 last_status="missed",
@@ -227,7 +234,7 @@ class SchedulerRunner:
             cwd=task.cwd,
         )
         self._store.save_run(run)
-        next_run = compute_next_run(task.cron, now, task.timezone)
+        next_run = None if task.schedule_type == "once" else compute_next_run(task.cron, now, task.timezone)
         self._store.update_task_status(
             task.id,
             last_status="running",
@@ -326,6 +333,12 @@ class SchedulerRunner:
             run_count_delta=1,
             failure_count_delta=1 if status in ("failed", "timeout") else 0,
         )
+        task = self._store.load_task(task_id)
+        if task is not None and task.schedule_type == "once":
+            if task.delete_after_run:
+                self._store.delete_task(task_id)
+            else:
+                self._store.disable_task_after_run(task_id)
         self._running_task_ids.discard(task_id)
 
 
