@@ -68,6 +68,11 @@ def parse_once_at(value: str, timezone_name: str) -> str:
     return dt.astimezone(timezone.utc).isoformat()
 
 
+def _is_once_schedule_marker(schedule: str) -> bool:
+    normalized = schedule.strip().lower().replace("_", "-")
+    return normalized in {"once", "one-shot", "oneshot", "delay", "delayed"}
+
+
 def parse_schedule_tool_result(content: Any) -> dict[str, Any] | None:  # noqa: ANN401
     """Try to parse a ToolMessage content as a schedule management payload."""
     if isinstance(content, list):
@@ -142,6 +147,8 @@ class ScheduleMiddleware(AgentMiddleware):
             Use this tool for all user requests that ask to run something later,
             at a specific time, or on a recurrence. Do not emulate scheduling
             with shell scripts, sleep loops, cron, or background executor jobs.
+            For recurring tasks, do not pass once_at. For one-shot tasks, pass
+            schedule="once" and an exact absolute once_at datetime.
 
             Args:
                 title: Short human-readable title (e.g. "Daily project analysis").
@@ -167,6 +174,17 @@ class ScheduleMiddleware(AgentMiddleware):
             schedule_type = "once" if once_at else "recurring"
             run_at = None
             if once_at:
+                if not _is_once_schedule_marker(schedule):
+                    return json.dumps(
+                        {
+                            "error": (
+                                "once_at is only valid for one-shot tasks. "
+                                "Use schedule='once' with once_at, or omit once_at "
+                                "for recurring schedules."
+                            )
+                        },
+                        ensure_ascii=False,
+                    )
                 try:
                     run_at = parse_once_at(once_at, timezone)
                 except ValueError as exc:

@@ -128,6 +128,32 @@ _AUTO_OFFLOAD_COOLDOWN_SECONDS = 300
 
 _SCHEDULED_TRANSIENT_RETRY_DELAY_SECONDS = 3.0
 
+
+def _describe_schedule_for_display(
+    cron: str,
+    timezone_name: str,
+    schedule_type: str,
+) -> str:
+    """Return user-facing schedule text without exposing one-shot placeholder cron."""
+    if schedule_type == "once":
+        return "once"
+    from invincat_cli.scheduler.parser import describe_schedule
+
+    return describe_schedule(cron, timezone_name)
+
+
+def _format_schedule_time_for_display(value: Any, timezone_name: str) -> str:
+    """Format a scheduled timestamp with an explicit UTC offset."""
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    if not isinstance(value, datetime):
+        return "unknown"
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(ZoneInfo(timezone_name)).isoformat(timespec="minutes")
+
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -4343,7 +4369,6 @@ class DeepAgentsApp(App):
 
         from invincat_cli.i18n import t
         from invincat_cli.scheduler.models import DeliverySpec, ReportSpec, ScheduledTask
-        from invincat_cli.scheduler.parser import describe_schedule
         from invincat_cli.scheduler.runner import _parse_dt, compute_next_run
         from invincat_cli.wecom.protocol import resolve_wecom_active_chat_id
 
@@ -4416,12 +4441,8 @@ class DeepAgentsApp(App):
             )
             self._scheduler_store.save_task(task)
 
-            next_run_str = (
-                next_run.astimezone(__import__("zoneinfo").ZoneInfo(tz)).strftime("%Y-%m-%d %H:%M %Z")
-                if next_run
-                else "unknown"
-            )
-            schedule_desc = describe_schedule(cron, tz)
+            next_run_str = _format_schedule_time_for_display(next_run, tz)
+            schedule_desc = _describe_schedule_for_display(cron, tz, schedule_type)
             report_path = (
                 f"reports/{slug}-{{date}}.md"
                 if output_mode == "report"

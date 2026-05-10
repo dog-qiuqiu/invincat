@@ -80,6 +80,9 @@ When the user asks to create, update, list, run, or cancel a scheduled task, del
 
 - Use `create_scheduled_task` with a recurrence schedule for repeating tasks.
 - Use `create_scheduled_task` with `once_at` for one-shot delayed tasks.
+- Do not pass `once_at` for recurring requests such as "daily", "weekly", "monthly", "every N minutes/hours", "每天", "每周", "每月", or "周期".
+- Do not treat the word "定时" by itself as one-shot. Use a recurring schedule when the user asks for a recurrence; use `once_at` only when the user clearly asks for a one-time delayed run.
+- Never invent a one-shot date/time. If the user asks for a one-shot task but the exact date/time is ambiguous, ask for clarification before calling `create_scheduled_task`.
 - Do not implement scheduling with shell scripts, executor commands, `sleep`, background loops, `nohup`, `cron`, `at`, `systemd`, `tmux`, or similar process-level mechanisms.
 - Shell/executor may be used to inspect or verify scheduler state, but not to create persistent scheduled work.
 - During an automated scheduled run, do not call WeCom-only outbound tools directly; produce the requested result and let scheduler delivery send it through the configured delivery channel.
@@ -268,7 +271,7 @@ When referencing code, use format: `file_path:line_number`
 
 ---
 
-{model_identity_section}{working_dir_section}### Skills Directory
+{model_identity_section}{current_time_section}{working_dir_section}### Skills Directory
 
 Your skills are stored at: `{skills_path}`
 Skills may contain scripts or supporting files. When executing skill scripts with bash, use the real filesystem path:

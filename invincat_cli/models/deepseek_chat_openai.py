@@ -55,6 +55,13 @@ def _iter_messages(input_: LanguageModelInput) -> list[BaseMessage] | None:
     return None
 
 
+def _thinking_disabled(payload: dict) -> bool:
+    extra_body = payload.get("extra_body")
+    if not isinstance(extra_body, dict):
+        return False
+    thinking = extra_body.get("thinking")
+    return isinstance(thinking, dict) and thinking.get("type") == "disabled"
+
 
 class DeepSeekChatOpenAICompat(ChatOpenAI):
     """Compatibility wrapper for DeepSeek through OpenAI-compatible APIs."""
@@ -67,6 +74,8 @@ class DeepSeekChatOpenAICompat(ChatOpenAI):
         **kwargs: Any,
     ) -> dict:
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        if _thinking_disabled(payload):
+            payload.pop("reasoning_effort", None)
         messages = _iter_messages(input_)
         payload_messages = payload.get("messages")
         if not messages or not isinstance(payload_messages, list):

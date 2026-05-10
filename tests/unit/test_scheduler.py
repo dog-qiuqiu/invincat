@@ -709,6 +709,45 @@ def test_schedule_middleware_create_tool_accepts_once_at(tmp_path: Path) -> None
     assert data["delete_after_run"] is True
 
 
+def test_schedule_middleware_rejects_once_at_with_recurring_schedule(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    mw = ScheduleMiddleware(store=store)
+    create_tool = next(t for t in mw.tools if t.name == "create_scheduled_task")
+    result = _invoke_tool(create_tool, {
+        "title": "Conflicting",
+        "schedule": "daily 00:00",
+        "prompt": "Run daily",
+        "once_at": "2026-05-17T22:09:00+08:00",
+    })
+    data = json.loads(result)
+    assert "error" in data
+    assert "once_at is only valid for one-shot tasks" in data["error"]
+
+
+def test_schedule_create_display_uses_once_for_one_shot_placeholder_cron() -> None:
+    from invincat_cli.app import _describe_schedule_for_display
+
+    assert (
+        _describe_schedule_for_display("0 0 * * *", "Asia/Shanghai", "once")
+        == "once"
+    )
+    assert (
+        _describe_schedule_for_display("0 0 * * *", "Asia/Shanghai", "recurring")
+        == "daily 00:00"
+    )
+
+
+def test_schedule_time_display_uses_explicit_offset() -> None:
+    from invincat_cli.app import _format_schedule_time_for_display
+
+    value = datetime(2026, 5, 17, 14, 9, tzinfo=timezone.utc)
+
+    assert (
+        _format_schedule_time_for_display(value, "Asia/Shanghai")
+        == "2026-05-17T22:09+08:00"
+    )
+
+
 def test_schedule_middleware_delete_tool_alias_returns_cancel_payload(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     mw = ScheduleMiddleware(store=store)
