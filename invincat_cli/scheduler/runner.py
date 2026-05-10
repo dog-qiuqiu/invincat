@@ -164,25 +164,34 @@ class SchedulerRunner:
         lag_seconds = (now - next_run).total_seconds()
 
         if lag_seconds > _MISFIRE_MAX_SECONDS:
-            # Too old — skip silently and advance next_run
+            # Too old — skip silently.
             logger.info("Skipping very old misfire for task %r (%ds ago)", task.title, lag_seconds)
-            next_run2 = None if task.schedule_type == "once" else task_next_run(task, now)
-            self._store.update_task_status(
-                task.id,
-                last_status="missed",
-                next_run_at=next_run2.isoformat() if next_run2 else None,
-            )
+            if task.schedule_type == "once":
+                # One-shot task can never run again — disable it and clear next_run_at.
+                self._store.update_task_status(task.id, last_status="missed", clear_next_run_at=True)
+                self._store.set_task_enabled(task.id, False)
+            else:
+                next_run2 = task_next_run(task, now)
+                self._store.update_task_status(
+                    task.id,
+                    last_status="missed",
+                    next_run_at=next_run2.isoformat() if next_run2 else None,
+                )
             return
 
         was_missed = lag_seconds > _MISFIRE_TOLERANCE_SECONDS
         if was_missed and task.misfire_policy == "skip":
             logger.info("Skipping missed task %r per policy", task.title)
-            next_run2 = None if task.schedule_type == "once" else task_next_run(task, now)
-            self._store.update_task_status(
-                task.id,
-                last_status="missed",
-                next_run_at=next_run2.isoformat() if next_run2 else None,
-            )
+            if task.schedule_type == "once":
+                self._store.update_task_status(task.id, last_status="missed", clear_next_run_at=True)
+                self._store.set_task_enabled(task.id, False)
+            else:
+                next_run2 = task_next_run(task, now)
+                self._store.update_task_status(
+                    task.id,
+                    last_status="missed",
+                    next_run_at=next_run2.isoformat() if next_run2 else None,
+                )
             return
 
         if was_missed:
@@ -234,12 +243,14 @@ class SchedulerRunner:
             cwd=task.cwd,
         )
         self._store.save_run(run)
-        next_run = None if task.schedule_type == "once" else compute_next_run(task.cron, now, task.timezone)
+        is_once = task.schedule_type == "once"
+        next_run = None if is_once else compute_next_run(task.cron, now, task.timezone)
         self._store.update_task_status(
             task.id,
             last_status="running",
             last_run_at=now.isoformat(),
             next_run_at=next_run.isoformat() if next_run else None,
+            clear_next_run_at=is_once,
         )
         self._running_task_ids.add(task.id)
 
@@ -266,6 +277,11 @@ class SchedulerRunner:
             return
         if task_id in self._running_task_ids:
             logger.warning("Scheduled task %r timed out after %ds", task_id, timeout_seconds)
+            # Remove ourselves from the registry BEFORE calling _finish_run so that
+            # _finish_run does not cancel this coroutine from within itself — which
+            # would inject CancelledError at the next await and prevent _on_timeout
+            # from ever running.
+            self._timeout_tasks.pop(run_id, None)
             self._finish_run(
                 run_id,
                 task_id,
@@ -313,18 +329,23 @@ class SchedulerRunner:
 
         now = datetime.now(timezone.utc).isoformat()
         run = self._store.load_run(run_id)
-        if run is not None:
-            if run.finished_at is not None:
-                # Already completed (e.g. timeout fired before agent finished).
-                # Release the lock but do not double-count stats or overwrite status.
-                self._running_task_ids.discard(task_id)
-                return
-            run.finished_at = now
-            run.status = status
-            run.report_path = report_path
-            run.error = error
-            run.thread_id = thread_id
-            self._store.save_run(run)
+        if run is None:
+            # Run record missing — release lock without touching stats to avoid
+            # corrupting counters based on a state we cannot verify.
+            logger.warning("Run %r not found in store; releasing lock without updating stats", run_id)
+            self._running_task_ids.discard(task_id)
+            return
+        if run.finished_at is not None:
+            # Already completed (e.g. timeout fired before agent finished).
+            # Release the lock but do not double-count stats or overwrite status.
+            self._running_task_ids.discard(task_id)
+            return
+        run.finished_at = now
+        run.status = status
+        run.report_path = report_path
+        run.error = error
+        run.thread_id = thread_id
+        self._store.save_run(run)
 
         self._store.update_task_status(
             task_id,

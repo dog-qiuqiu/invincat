@@ -193,6 +193,7 @@ class SchedulerStore:
         last_status: str,
         last_run_at: str | None = None,
         next_run_at: str | None = None,
+        clear_next_run_at: bool = False,
         last_error: str | None = None,
         run_count_delta: int = 0,
         failure_count_delta: int = 0,
@@ -204,7 +205,7 @@ class SchedulerStore:
                 UPDATE scheduled_tasks SET
                     last_status=?,
                     last_run_at=COALESCE(?,last_run_at),
-                    next_run_at=COALESCE(?,next_run_at),
+                    next_run_at=CASE WHEN ? THEN NULL ELSE COALESCE(?,next_run_at) END,
                     last_error=?,
                     run_count=run_count+?,
                     failure_count=failure_count+?,
@@ -214,6 +215,7 @@ class SchedulerStore:
                 (
                     last_status,
                     last_run_at,
+                    int(clear_next_run_at),
                     next_run_at,
                     last_error,
                     run_count_delta,

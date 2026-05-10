@@ -1035,6 +1035,7 @@ class DeepAgentsApp(App):
         self._scheduler_runner: SchedulerRunner | None = None
         self._scheduler_interval_handle: Any | None = None
         self._active_scheduled_run: tuple[str, str] | None = None  # (run_id, task_id)
+        self._scheduled_run_message_offset: int = 0  # message count before this scheduled turn started
         self._scheduled_turn_status: str = "success"
         self._scheduled_turn_error: str | None = None
         self._scheduled_turn_retry_used: bool = False
@@ -4224,9 +4225,11 @@ class DeepAgentsApp(App):
             except Exception:
                 logger.warning("Failed to resolve scheduled report path for WeCom delivery", exc_info=True)
 
+        all_messages = self._message_store.get_all_messages()
+        run_messages = all_messages[self._scheduled_run_message_offset:]
         assistant_messages = [
             m.content.strip()
-            for m in self._message_store.get_all_messages()
+            for m in run_messages
             if m.type == MessageType.ASSISTANT and m.content.strip()
         ]
         summary = assistant_messages[-1] if assistant_messages else ""
@@ -5562,6 +5565,7 @@ class DeepAgentsApp(App):
             # Track whether this queued message is a scheduled run
             if msg.scheduled_run_id and msg.scheduled_task_id:
                 self._active_scheduled_run = (msg.scheduled_run_id, msg.scheduled_task_id)
+                self._scheduled_run_message_offset = self._message_store.total_count
                 self._scheduled_turn_status = "success"
                 self._scheduled_turn_error = None
                 self._scheduled_turn_retry_used = False
