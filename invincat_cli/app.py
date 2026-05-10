@@ -126,6 +126,34 @@ _AUTO_OFFLOAD_THRESHOLD = 0.8
 # occurs when system-prompt overhead dominates the token count.
 _AUTO_OFFLOAD_COOLDOWN_SECONDS = 300
 
+_SCHEDULED_TRANSIENT_RETRY_DELAY_SECONDS = 3.0
+
+
+def _describe_schedule_for_display(
+    cron: str,
+    timezone_name: str,
+    schedule_type: str,
+) -> str:
+    """Return user-facing schedule text without exposing one-shot placeholder cron."""
+    if schedule_type == "once":
+        return "once"
+    from invincat_cli.scheduler.parser import describe_schedule
+
+    return describe_schedule(cron, timezone_name)
+
+
+def _format_schedule_time_for_display(value: Any, timezone_name: str) -> str:
+    """Format a scheduled timestamp with an explicit UTC offset."""
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    if not isinstance(value, datetime):
+        return "unknown"
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(ZoneInfo(timezone_name)).isoformat(timespec="minutes")
+
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -239,6 +267,53 @@ def _looks_like_masked_internal_error(exc: BaseException) -> bool:
         message = str(payload.get("message", "")).strip().lower()
         return message == "an internal error occurred"
     return "an internal error occurred" in str(exc).lower()
+
+
+def _is_scheduled_retryable_error(exc: BaseException) -> bool:
+    """Return True for transient model/network errors worth retrying once."""
+    names = {cls.__name__ for cls in type(exc).__mro__}
+    if names & {
+        "ConnectError",
+        "ConnectTimeout",
+        "ReadError",
+        "ReadTimeout",
+        "RemoteProtocolError",
+        "TransportError",
+        "WriteError",
+        "WriteTimeout",
+        "PoolTimeout",
+        "NetworkError",
+        "APIConnectionError",
+        "APITimeoutError",
+        "InternalServerError",
+        "RateLimitError",
+    }:
+        return True
+    payload = _extract_exception_payload(exc)
+    text_parts = [type(exc).__name__, str(exc)]
+    if payload is not None:
+        text_parts.extend(str(v) for v in payload.values())
+    text = " ".join(text_parts).lower()
+    return any(
+        marker in text
+        for marker in (
+            "readerror",
+            "read error",
+            "timeout",
+            "timed out",
+            "connection",
+            "network",
+            "transport",
+            "temporarily unavailable",
+            "rate limit",
+            "429",
+            "500",
+            "502",
+            "503",
+            "504",
+            "an internal error occurred",
+        )
+    )
 
 
 # Disable cursor guide at module load (before Textual takes over)
@@ -522,6 +597,12 @@ class QueuedMessage:
 
     mode: InputMode
     """The input mode that determines message routing."""
+
+    scheduled_run_id: str | None = None
+    """Run ID if this message was injected by the scheduler, else None."""
+
+    scheduled_task_id: str | None = None
+    """Task ID if this message was injected by the scheduler, else None."""
 
 
 DeferredActionKind = Literal["model_switch", "thread_switch", "chat_output", "plan_handoff"]
@@ -945,6 +1026,19 @@ class DeepAgentsApp(App):
         self._wecom_task: asyncio.Task[None] | None = None
         self._wecom_bridge: WeComBridge | None = None
         self._wecom_lock = asyncio.Lock()
+        self._current_wecom_inbound_frame: dict[str, Any] | None = None
+
+        from invincat_cli.scheduler.store import SchedulerStore
+        from invincat_cli.scheduler.runner import SchedulerRunner
+
+        self._scheduler_store = SchedulerStore()
+        self._scheduler_runner: SchedulerRunner | None = None
+        self._scheduler_interval_handle: Any | None = None
+        self._active_scheduled_run: tuple[str, str] | None = None  # (run_id, task_id)
+        self._scheduled_run_message_offset: int = 0  # message count before this scheduled turn started
+        self._scheduled_turn_status: str = "success"
+        self._scheduled_turn_error: str | None = None
+        self._scheduled_turn_retry_used: bool = False
 
     def _remote_agent(self) -> RemoteAgent | None:
         """Return the agent narrowed to `RemoteAgent`, or `None`.
@@ -1231,6 +1325,9 @@ class DeepAgentsApp(App):
             exclusive=True,
             group="startup-tool-check",
         )
+
+        # Start scheduler runner — checks for due tasks every 60 seconds.
+        self._start_scheduler()
 
         # Auto-submit initial prompt if provided via -m flag.
         # This check must come first because _lc_thread_id and _agent are
@@ -3910,6 +4007,8 @@ class DeepAgentsApp(App):
             await self._handle_wecombot_command(command, action="status")
         elif cmd == "/wecombot-stop":
             await self._handle_wecombot_command(command, action="stop")
+        elif cmd == "/schedule" or cmd.startswith("/schedule "):
+            await self._handle_schedule_command(command)
         elif cmd == "/theme":
             await self._show_theme_selector()
         elif cmd == "/language":
@@ -4032,6 +4131,464 @@ class DeepAgentsApp(App):
         # Anchor to bottom so command output stays visible
         with suppress(NoMatches, ScreenStackError):
             self.query_one("#chat", VerticalScroll).anchor()
+
+    # ------------------------------------------------------------------
+    # Scheduler integration
+    # ------------------------------------------------------------------
+
+    def _start_scheduler(self) -> None:
+        """Create SchedulerRunner and start the 60-second tick interval."""
+        from invincat_cli.scheduler.runner import SchedulerRunner
+
+        self._scheduler_runner = SchedulerRunner(
+            self._scheduler_store,
+            inject_message=self._inject_scheduled_message,
+            notify=lambda msg: self.notify(msg, timeout=6),
+            is_busy=lambda: self._agent_running or self._shell_running,
+            on_timeout=self._handle_scheduled_timeout,
+        )
+        self._scheduler_interval_handle = self.set_interval(
+            60, self._scheduler_tick, pause=False
+        )
+        # Fire once immediately (after a short delay) for misfire recovery.
+        self.set_timer(3, self._scheduler_tick)
+
+    async def _scheduler_tick(self) -> None:
+        if self._scheduler_runner is not None:
+            await self._scheduler_runner.tick()
+
+    async def _handle_scheduled_timeout(self, run_id: str, task_id: str) -> None:
+        await self._deliver_scheduled_result_to_wecom(
+            task_id=task_id,
+            run_id=run_id,
+            status="timeout",
+            error="Scheduled task timed out",
+        )
+
+    async def _deliver_scheduled_result_to_wecom(
+        self,
+        *,
+        task_id: str,
+        run_id: str,
+        status: str,
+        error: str | None,
+    ) -> None:
+        """Best-effort active WeCom delivery for a completed scheduled run."""
+        from datetime import datetime, timezone
+        from pathlib import Path
+        from zoneinfo import ZoneInfo
+
+        from invincat_cli.scheduler.delivery import check_report_exists
+        from invincat_cli.wecom.media import upload_wecom_outbound_media
+        from invincat_cli.wecom.protocol import (
+            build_wecom_file_frame_for_chat,
+            build_wecom_text_frame,
+        )
+        from invincat_cli.widgets.message_store import MessageType
+
+        task = self._scheduler_store.load_task(task_id)
+        run = self._scheduler_store.load_run(run_id)
+        if task is None or run is None:
+            return
+
+        channels = getattr(task.delivery, "channels", []) or []
+        wecom_channels = [ch for ch in channels if isinstance(ch, dict) and ch.get("type") == "wecom"]
+        if not wecom_channels:
+            self._scheduler_store.update_run_delivery(
+                run_id,
+                status="none",
+                error=None,
+                attempts_delta=0,
+            )
+            return
+
+        chatid = str(wecom_channels[0].get("chatid") or "").strip()
+        if not chatid:
+            self._scheduler_store.update_run_delivery(
+                run_id,
+                status="failed",
+                error="missing chatid",
+            )
+            await self._mount_message(
+                ErrorMessage("Scheduled task WeCom delivery skipped: missing chatid.")
+            )
+            return
+
+        report_path: str | None = None
+        if task.report.mode == "report":
+            try:
+                scheduled_for = datetime.fromisoformat(run.scheduled_for)
+                if scheduled_for.tzinfo is None:
+                    scheduled_for = scheduled_for.replace(tzinfo=timezone.utc)
+                date_str = scheduled_for.astimezone(ZoneInfo(task.timezone)).strftime("%Y-%m-%d")
+                report_path = check_report_exists(task, date_str)
+            except Exception:
+                logger.warning("Failed to resolve scheduled report path for WeCom delivery", exc_info=True)
+
+        all_messages = self._message_store.get_all_messages()
+        run_messages = all_messages[self._scheduled_run_message_offset:]
+        assistant_messages = [
+            m.content.strip()
+            for m in run_messages
+            if m.type == MessageType.ASSISTANT and m.content.strip()
+        ]
+        summary = assistant_messages[-1] if assistant_messages else ""
+        if len(summary) > 1200:
+            summary = summary[:1200].rstrip() + "\n\n(摘要过长，已截断)"
+
+        if status == "success":
+            content = f"定时任务已完成：{task.title}"
+            if summary:
+                content += f"\n\n{summary}"
+            if report_path:
+                content += f"\n\n报告文件：{report_path}"
+        else:
+            content = f"定时任务执行失败：{task.title}"
+            if error:
+                content += f"\n\n{error}"
+
+        try:
+            if self._wecom_bridge is None:
+                self._scheduler_store.update_run_delivery(
+                    run_id,
+                    status="failed",
+                    error="WeCom bridge is offline",
+                )
+                await self._mount_message(
+                    ErrorMessage("Scheduled task WeCom delivery failed: WeCom bridge is offline.")
+                )
+                return
+            self._wecom_enqueue(build_wecom_text_frame(chatid, content))
+            flushed = await self._wecom_flush_outbox()
+            if not flushed:
+                self._scheduler_store.update_run_delivery(
+                    run_id,
+                    status="queued",
+                    error="waiting for bridge reconnect",
+                )
+                await self._mount_message(
+                    AppMessage(
+                        "Scheduled task WeCom delivery queued; waiting for bridge reconnect."
+                    )
+                )
+            else:
+                self._scheduler_store.update_run_delivery(
+                    run_id,
+                    status="success",
+                    error=None,
+                    delivered_at=datetime.now(timezone.utc).isoformat(),
+                )
+            if status == "success" and report_path:
+                if self._wecom_bridge is None:
+                    await self._mount_message(
+                        ErrorMessage(
+                            "Scheduled task WeCom file delivery skipped: WeCom bridge is offline."
+                        )
+                    )
+                    return
+                media_id = await upload_wecom_outbound_media(
+                    Path(report_path),
+                    send_request=self._wecom_send_request,
+                )
+                await self._wecom_send_request(build_wecom_file_frame_for_chat(chatid, media_id))
+        except Exception as exc:
+            self._scheduler_store.update_run_delivery(
+                run_id,
+                status="failed",
+                error=str(exc),
+            )
+            logger.warning("Scheduled task WeCom delivery failed: %s", exc, exc_info=True)
+            await self._mount_message(
+                ErrorMessage(f"Scheduled task WeCom delivery failed: {exc}")
+            )
+
+    def _active_scheduled_wecom_chat_id(self) -> str | None:
+        """Return the WeCom chat id for the active scheduled run, if any."""
+        if self._active_scheduled_run is None:
+            return None
+        _run_id, task_id = self._active_scheduled_run
+        task = self._scheduler_store.load_task(task_id)
+        if task is None:
+            return None
+        channels = getattr(task.delivery, "channels", []) or []
+        for channel in channels:
+            if not isinstance(channel, dict) or channel.get("type") != "wecom":
+                continue
+            chatid = str(channel.get("chatid") or "").strip()
+            if chatid:
+                return chatid
+        return None
+
+    async def _send_scheduled_wecom_file_request(self, payload: dict[str, Any]) -> None:
+        """Send a file requested by send_wecom_file during a scheduled WeCom run."""
+        from invincat_cli.wecom.media import upload_wecom_outbound_media
+        from invincat_cli.wecom.protocol import build_wecom_file_frame_for_chat
+
+        chatid = self._active_scheduled_wecom_chat_id()
+        if not chatid:
+            raise RuntimeError("Scheduled task has no WeCom delivery target")
+        if self._wecom_bridge is None:
+            raise RuntimeError("WeCom bridge is offline")
+
+        raw_path = str(payload.get("path") or "").strip()
+        if not raw_path:
+            raise ValueError("send_wecom_file payload missing path")
+        path = Path(raw_path).expanduser().resolve()
+        root = Path(self._cwd).expanduser().resolve()
+        try:
+            path.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(
+                f"WeCom file sending is limited to the current project: {root}"
+            ) from exc
+        if not path.is_file():
+            raise ValueError(f"File does not exist or is not a regular file: {path}")
+
+        media_id = await upload_wecom_outbound_media(
+            path,
+            send_request=self._wecom_send_request,
+        )
+        await self._wecom_send_request(build_wecom_file_frame_for_chat(chatid, media_id))
+
+    async def _inject_scheduled_message(self, task_id: str, run_id: str, prompt: str) -> None:
+        """Inject a scheduled task prompt into the TUI message queue."""
+        from invincat_cli.i18n import t
+
+        task = self._scheduler_store.load_task(task_id)
+        title = task.title if task else task_id
+        await self._mount_message(AppMessage(t("schedule.running").format(title=title)))
+        self._pending_messages.append(QueuedMessage(
+            text=prompt,
+            mode="normal",
+            scheduled_run_id=run_id,
+            scheduled_task_id=task_id,
+        ))
+        if not (self._agent_running or self._shell_running):
+            await self._process_next_from_queue()
+
+    async def _handle_schedule_tool_payload(self, payload: dict) -> None:
+        """Handle a structured schedule tool payload from the agent."""
+        from datetime import datetime, timezone
+
+        from invincat_cli.i18n import t
+        from invincat_cli.scheduler.models import DeliverySpec, ReportSpec, ScheduledTask
+        from invincat_cli.scheduler.runner import _parse_dt, compute_next_run
+        from invincat_cli.wecom.protocol import resolve_wecom_active_chat_id
+
+        ptype = payload.get("type")
+
+        if ptype == "schedule_create":
+            import re
+
+            task_id = payload.get("task_id") or str(__import__("uuid").uuid4())
+            title = payload.get("title", "Untitled")
+            cron = payload.get("cron", "0 8 * * *")
+            tz = payload.get("timezone", "Asia/Shanghai")
+            prompt_text = payload.get("prompt", "")
+            schedule_type = payload.get("schedule_type", "recurring")
+            if schedule_type not in {"recurring", "once"}:
+                schedule_type = "recurring"
+            run_at = payload.get("run_at")
+            delete_after_run = bool(payload.get("delete_after_run", False))
+            output_mode = payload.get("output_mode", "message")
+            if output_mode not in {"message", "report"}:
+                output_mode = "message"
+            report_format = payload.get("report_format", "markdown")
+            misfire_policy = payload.get("misfire_policy", "run_once")
+            slug = re.sub(r"[^\w\-]", "-", title.lower())[:40].strip("-")
+            delivery_channel = payload.get("delivery", "tui")
+            delivery = DeliverySpec()
+            if self._current_wecom_inbound_frame is not None and delivery_channel in {"tui", "wecom"}:
+                try:
+                    delivery = DeliverySpec(
+                        channels=[
+                            {
+                                "type": "wecom",
+                                "chatid": resolve_wecom_active_chat_id(self._current_wecom_inbound_frame),
+                            }
+                        ]
+                    )
+                except Exception:
+                    logger.warning("Could not resolve WeCom delivery target", exc_info=True)
+
+            now = datetime.now(timezone.utc)
+            next_run = _parse_dt(run_at) if schedule_type == "once" else compute_next_run(cron, now, tz)
+
+            task = ScheduledTask(
+                id=task_id,
+                title=title,
+                enabled=True,
+                prompt=prompt_text,
+                cron=cron,
+                timezone=tz,
+                cwd=self._cwd,
+                delivery=delivery,
+                report=ReportSpec(
+                    mode=output_mode,
+                    output_dir="reports",
+                    filename_template=f"{slug}-{{date}}.{report_format.lower().replace('markdown', 'md')}",
+                    format=report_format,
+                ),
+                created_at=now.isoformat(),
+                updated_at=now.isoformat(),
+                next_run_at=next_run.isoformat() if next_run else None,
+                last_run_at=None,
+                last_status="never",
+                last_error=None,
+                run_count=0,
+                failure_count=0,
+                misfire_policy=misfire_policy,
+                schedule_type=schedule_type,
+                run_at=run_at if schedule_type == "once" else None,
+                delete_after_run=delete_after_run,
+            )
+            self._scheduler_store.save_task(task)
+
+            next_run_str = _format_schedule_time_for_display(next_run, tz)
+            schedule_desc = _describe_schedule_for_display(cron, tz, schedule_type)
+            report_path = (
+                f"reports/{slug}-{{date}}.md"
+                if output_mode == "report"
+                else "message only"
+            )
+            await self._mount_message(
+                AppMessage(
+                    t("schedule.created").format(
+                        title=title,
+                        schedule=schedule_desc,
+                        timezone=tz,
+                        next_run=next_run_str,
+                        report_path=report_path,
+                    )
+                )
+            )
+
+        elif ptype == "schedule_update":
+            task_id = payload.get("task_id", "")
+            task = self._scheduler_store.load_task(task_id)
+            if task is None:
+                await self._mount_message(
+                    AppMessage(t("schedule.not_found").format(task_id=task_id))
+                )
+                return
+            updates = payload.get("updates", {})
+            if "title" in updates:
+                task.title = updates["title"]
+            if "cron" in updates:
+                task.cron = updates["cron"]
+                now = datetime.now(timezone.utc)
+                next_run = compute_next_run(task.cron, now, task.timezone)
+                task.next_run_at = next_run.isoformat() if next_run else None
+            if "prompt" in updates:
+                task.prompt = updates["prompt"]
+            if "enabled" in updates:
+                task.enabled = bool(updates["enabled"])
+            if "timezone" in updates:
+                task.timezone = updates["timezone"]
+            task.updated_at = datetime.now(timezone.utc).isoformat()
+            self._scheduler_store.save_task(task)
+            await self._mount_message(
+                AppMessage(t("schedule.updated").format(title=task.title))
+            )
+
+        elif ptype == "schedule_cancel":
+            task_id = payload.get("task_id", "")
+            task = self._scheduler_store.load_task(task_id)
+            title = task.title if task else task_id
+            self._scheduler_store.delete_task(task_id)
+            await self._mount_message(
+                AppMessage(t("schedule.deleted").format(title=title))
+            )
+
+        elif ptype == "schedule_run_now":
+            task_id = payload.get("task_id", "")
+            title = payload.get("title", task_id)
+            task = self._scheduler_store.load_task(task_id)
+            if task is None:
+                await self._mount_message(
+                    AppMessage(t("schedule.not_found").format(task_id=task_id))
+                )
+                return
+            await self._mount_message(
+                AppMessage(t("schedule.run_queued").format(title=title))
+            )
+            if self._scheduler_runner is not None:
+                await self._scheduler_runner.fire_now(task)
+
+        elif ptype == "schedule_list":
+            tasks = payload.get("tasks", [])
+            if not tasks:
+                await self._mount_message(AppMessage(t("schedule.list_empty")))
+            else:
+                from invincat_cli.scheduler.parser import describe_schedule
+
+                lines = [t("schedule.list_header").format(count=len(tasks))]
+                for task_info in tasks:
+                    status_icon = "✓" if task_info.get("enabled") else "✗"
+                    desc = describe_schedule(task_info.get("cron", ""))
+                    next_run = task_info.get("next_run_at", "")[:16].replace("T", " ")
+                    lines.append(
+                        f"  {status_icon} {task_info['title']} — {desc} — next: {next_run}"
+                        f"  [id: {task_info['id'][:8]}]"
+                    )
+                await self._mount_message(AppMessage("\n".join(lines)))
+
+    async def _handle_schedule_command(self, command: str) -> None:
+        """Open the schedule manager modal screen."""
+        await self._show_schedule_manager()
+
+    async def _show_schedule_manager(self) -> None:
+        """Push the ScheduleManagerScreen modal."""
+        from invincat_cli.widgets.schedule_manager import ScheduleManagerScreen, ScheduleAction
+        from invincat_cli.i18n import t
+
+        screen = ScheduleManagerScreen(store=self._scheduler_store)
+
+        def handle_result(result: "ScheduleAction | None") -> None:
+            if self._chat_input:
+                self._chat_input.focus_input()
+            if result is None:
+                return
+            # Execute the chosen action after the modal closes
+            self.call_later(self._execute_schedule_action, result)
+
+        self.push_screen(screen, handle_result)
+
+    async def _execute_schedule_action(self, action: "ScheduleAction") -> None:  # noqa: F821
+        """Execute a schedule action returned by the manager modal."""
+        from invincat_cli.i18n import t
+
+        task = self._scheduler_store.load_task(action.task_id)
+        if task is None:
+            await self._mount_message(
+                AppMessage(t("schedule.not_found").format(task_id=action.task_id))
+            )
+            return
+
+        if action.kind == "run_now":
+            await self._mount_message(
+                AppMessage(t("schedule.run_queued").format(title=task.title))
+            )
+            if self._scheduler_runner is not None:
+                await self._scheduler_runner.fire_now(task)
+
+        elif action.kind == "pause":
+            self._scheduler_store.set_task_enabled(task.id, False)
+            await self._mount_message(
+                AppMessage(t("schedule.paused").format(title=task.title))
+            )
+
+        elif action.kind == "resume":
+            self._scheduler_store.set_task_enabled(task.id, True)
+            await self._mount_message(
+                AppMessage(t("schedule.resumed").format(title=task.title))
+            )
+
+        elif action.kind == "delete":
+            self._scheduler_store.delete_task(task.id)
+            await self._mount_message(
+                AppMessage(t("schedule.deleted").format(title=task.title))
+            )
 
     async def _handle_wecombot_command(self, command: str, *, action: str) -> None:
         """Manage WeCom bridge lifecycle in current CLI session.
@@ -4198,6 +4755,16 @@ class DeepAgentsApp(App):
                 on_wecom_file_request=on_wecom_file_request,
             )
 
+        previous_wecom_frame: dict[str, Any] | None = None
+
+        def _enter_wecom_turn_context() -> None:
+            nonlocal previous_wecom_frame
+            previous_wecom_frame = self._current_wecom_inbound_frame
+            self._current_wecom_inbound_frame = inbound_frame
+
+        def _exit_wecom_turn_context() -> None:
+            self._current_wecom_inbound_frame = previous_wecom_frame
+
         runner = WeComTurnRunner(
             lock=self._wecom_lock,
             cwd=self._cwd,
@@ -4213,6 +4780,8 @@ class DeepAgentsApp(App):
             send_request=self._wecom_send_request,
             cancel_timed_out_turn=self._cancel_wecom_timed_out_turn,
             on_content=on_content,
+            enter_turn_context=_enter_wecom_turn_context,
+            exit_turn_context=_exit_wecom_turn_context,
         )
         return await runner.run(text, inbound_frame=inbound_frame)
 
@@ -4767,6 +5336,12 @@ class DeepAgentsApp(App):
         with suppress(NoMatches, ScreenStackError):
             self.query_one("#chat", VerticalScroll).anchor()
 
+        # If this is a direct user message (not dequeued from the scheduled
+        # queue), discard any stale scheduled-run context that may have been
+        # left from an interrupted scheduled turn.
+        if not self._processing_pending:
+            self._active_scheduled_run = None
+
         # Check if agent is available
         target_agent = agent_override or self._agent
         if target_agent and self._ui_adapter and self._session_state:
@@ -4799,6 +5374,18 @@ class DeepAgentsApp(App):
             )
             return True
         else:
+            # Agent not available — if processing a scheduled run, mark it
+            # failed immediately so it doesn't stay stuck in "running" state.
+            if self._active_scheduled_run is not None:
+                run_id, task_id = self._active_scheduled_run
+                self._active_scheduled_run = None
+                if self._scheduler_runner is not None:
+                    with suppress(Exception):
+                        self._scheduler_runner.finish_run(
+                            run_id, task_id,
+                            status="failed",
+                            error="Agent not available",
+                        )
             await self._mount_message(
                 AppMessage(t("agent.not_configured_session"))
             )
@@ -4850,6 +5437,13 @@ class DeepAgentsApp(App):
         self._inflight_turn_stats = turn_stats
         self._inflight_turn_start = time.monotonic()
         original_thread_id = self._session_state.thread_id
+        retry_after_exc: BaseException | None = None
+        effective_wecom_file_request = on_wecom_file_request
+        if (
+            effective_wecom_file_request is None
+            and self._active_scheduled_wecom_chat_id() is not None
+        ):
+            effective_wecom_file_request = self._send_scheduled_wecom_file_request
         try:
             if thread_id_override:
                 self._session_state.thread_id = thread_id_override
@@ -4869,15 +5463,39 @@ class DeepAgentsApp(App):
                     model_params=self._model_params_override or {},
                     memory_model=self._memory_model_override,
                     memory_model_params=self._memory_model_params_override or {},
-                    wecom_enabled=on_wecom_file_request is not None,
+                    wecom_enabled=effective_wecom_file_request is not None,
+                    scheduled_run=self._active_scheduled_run is not None,
                 ),
                 turn_stats=turn_stats,
                 on_text_delta=on_text_delta,
-                on_wecom_file_request=on_wecom_file_request,
+                on_wecom_file_request=effective_wecom_file_request,
+                on_schedule_payload=self._handle_schedule_tool_payload,
             )
             if post_turn_hook is not None:
                 await post_turn_hook()
         except Exception as e:  # Resilient tool rendering
+            scheduled_retryable = (
+                self._active_scheduled_run is not None
+                and not self._scheduled_turn_retry_used
+                and _is_scheduled_retryable_error(e)
+            )
+            if scheduled_retryable:
+                self._scheduled_turn_retry_used = True
+                retry_after_exc = e
+                logger.warning(
+                    "Scheduled run transient agent error; retrying once after %.1fs",
+                    _SCHEDULED_TRANSIENT_RETRY_DELAY_SECONDS,
+                    exc_info=True,
+                )
+                with suppress(Exception):
+                    await self._mount_message(
+                        AppMessage(
+                            "Scheduled task hit a transient model/network error; retrying once..."
+                        )
+                    )
+            else:
+                self._scheduled_turn_status = "failed"
+                self._scheduled_turn_error = _format_exception_details(e)
             logger.exception("Agent execution failed")
             error_detail = _format_exception_details(e)
             if _looks_like_masked_internal_error(e) and self._server_proc is not None:
@@ -4896,14 +5514,15 @@ class DeepAgentsApp(App):
                 self._ui_adapter.finalize_pending_tools_with_error(
                     t("agent.error").format(error=error_detail)
                 )
-            try:
-                await self._mount_message(
-                    ErrorMessage(t("agent.error").format(error=error_detail))
-                )
-            except Exception:
-                logger.debug(
-                    "Could not mount error message (app closing?)", exc_info=True
-                )
+            if not scheduled_retryable:
+                try:
+                    await self._mount_message(
+                        ErrorMessage(t("agent.error").format(error=error_detail))
+                    )
+                except Exception:
+                    logger.debug(
+                        "Could not mount error message (app closing?)", exc_info=True
+                    )
         finally:
             if thread_id_override and self._session_state is not None:
                 self._session_state.thread_id = original_thread_id
@@ -4915,6 +5534,19 @@ class DeepAgentsApp(App):
             if self._inflight_turn_stats is not None:
                 self._session_stats.merge(turn_stats)
                 self._inflight_turn_stats = None
+            if retry_after_exc is not None:
+                await asyncio.sleep(_SCHEDULED_TRANSIENT_RETRY_DELAY_SECONDS)
+                await self._run_agent_task(
+                    message,
+                    message_kwargs=message_kwargs,
+                    generation=generation,
+                    agent_override=agent_override,
+                    thread_id_override=thread_id_override,
+                    post_turn_hook=post_turn_hook,
+                    on_text_delta=on_text_delta,
+                    on_wecom_file_request=on_wecom_file_request,
+                )
+                return
             await self._cleanup_agent_task(generation=generation)
 
     async def _process_next_from_queue(self) -> None:
@@ -4930,14 +5562,36 @@ class DeepAgentsApp(App):
         try:
             msg = self._pending_messages.popleft()
 
+            # Track whether this queued message is a scheduled run
+            if msg.scheduled_run_id and msg.scheduled_task_id:
+                self._active_scheduled_run = (msg.scheduled_run_id, msg.scheduled_task_id)
+                self._scheduled_run_message_offset = self._message_store.total_count
+                self._scheduled_turn_status = "success"
+                self._scheduled_turn_error = None
+                self._scheduled_turn_retry_used = False
+            else:
+                self._active_scheduled_run = None
+
             # Remove the ephemeral queued-message widget
             if self._queued_widgets:
                 widget = self._queued_widgets.popleft()
                 await widget.remove()
 
             await self._process_message(msg.text, msg.mode)
-        except Exception:
+        except Exception as _queue_exc:
             logger.exception("Failed to process queued message")
+            # If this was a scheduled message, mark the run as failed so it
+            # doesn't stay stuck in "running" status.
+            if self._active_scheduled_run is not None:
+                run_id, task_id = self._active_scheduled_run
+                self._active_scheduled_run = None
+                if self._scheduler_runner is not None:
+                    with suppress(Exception):
+                        self._scheduler_runner.finish_run(
+                            run_id, task_id,
+                            status="failed",
+                            error=str(_queue_exc),
+                        )
             await self._mount_message(
                 ErrorMessage(
                     t("queue.process_failed").format(message=msg.text[:60])
@@ -4983,6 +5637,18 @@ class DeepAgentsApp(App):
         if not is_current_generation:
             # A newer agent took over — skip queue drain, deferred actions, and
             # auto-offload so they don't interfere with the new agent's turn.
+            # But still clear any stale scheduled-run context so the next
+            # user turn isn't wrongly treated as a scheduled run.
+            if self._active_scheduled_run is not None:
+                run_id, task_id = self._active_scheduled_run
+                self._active_scheduled_run = None
+                if self._scheduler_runner is not None:
+                    with suppress(Exception):
+                        self._scheduler_runner.finish_run(
+                            run_id, task_id,
+                            status="failed",
+                            error="Interrupted by user",
+                        )
             logger.debug(
                 "Skipping stale cleanup for generation %d (current: %d)",
                 generation,
@@ -5016,6 +5682,38 @@ class DeepAgentsApp(App):
 
         # Notify user if memory files were updated this turn
         await self._maybe_notify_memory_update()
+
+        # Record completion of a scheduled run (must happen before draining the
+        # queue so the next message doesn't overwrite _active_scheduled_run first).
+        if self._active_scheduled_run is not None:
+            run_id, task_id = self._active_scheduled_run
+            self._active_scheduled_run = None
+            if self._scheduler_runner is not None:
+                run = self._scheduler_store.load_run(run_id)
+                if run is None or run.finished_at is None:
+                    try:
+                        await self._deliver_scheduled_result_to_wecom(
+                            task_id=task_id,
+                            run_id=run_id,
+                            status=self._scheduled_turn_status,
+                            error=self._scheduled_turn_error,
+                        )
+                    except Exception:
+                        logger.exception("Failed to deliver scheduled run %r to WeCom", run_id)
+                try:
+                    self._scheduler_runner.finish_run(
+                        run_id,
+                        task_id,
+                        status=self._scheduled_turn_status,
+                        error=self._scheduled_turn_error,
+                    )
+                except Exception:
+                    logger.exception("Failed to finish scheduled run %r", run_id)
+            self._scheduled_turn_error = None
+            self._scheduled_turn_retry_used = False
+
+        if self._scheduler_runner is not None and not (self._agent_running or self._shell_running):
+            await self._scheduler_runner.drain_pending_now()
 
         # Process next message from queue if any
         await self._process_next_from_queue()

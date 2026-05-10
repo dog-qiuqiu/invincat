@@ -41,3 +41,10 @@ class CLIContext(TypedDict, total=False):
     WeCom-only tools use this flag to expose their schemas only for
     `/wecombot` turns.
     """
+
+    scheduled_run: bool
+    """Whether this turn was triggered by the scheduler (not by the user).
+
+    When True, ``ScheduleMiddleware`` hides all task-management tools to
+    prevent recursive scheduled-task creation.
+    """

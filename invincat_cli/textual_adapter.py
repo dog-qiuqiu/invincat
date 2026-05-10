@@ -506,6 +506,7 @@ async def execute_task_textual(
     turn_stats: SessionStats | None = None,
     on_text_delta: Callable[[str, str], Awaitable[None]] | None = None,
     on_wecom_file_request: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    on_schedule_payload: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
 
@@ -542,6 +543,8 @@ async def execute_task_textual(
         on_wecom_file_request: Optional callback invoked when the WeCom-only
             `send_wecom_file` tool requests sending a file through the active
             WeCom bridge.
+        on_schedule_payload: Optional callback invoked when a schedule management
+            tool (create/update/cancel/run_now) produces a structured payload.
 
     Returns:
         Stats accumulated over this turn (request count, token counts,
@@ -954,6 +957,21 @@ async def execute_task_textual(
                                                     "WeCom file request callback failed",
                                                     exc_info=True,
                                                 )
+
+                                if on_schedule_payload is not None:
+                                    from invincat_cli.scheduler.tool import (
+                                        parse_schedule_tool_result,
+                                    )
+
+                                    sched_payload = parse_schedule_tool_result(message.content)
+                                    if sched_payload is not None:
+                                        try:
+                                            await on_schedule_payload(sched_payload)
+                                        except Exception:
+                                            logger.warning(
+                                                "Schedule payload callback failed",
+                                                exc_info=True,
+                                            )
 
                                 logger.debug(
                                     "ToolMessage received: name=%s, status=%s, raw_tool_id=%s (type=%s), active_keys=%s",

@@ -8,6 +8,7 @@ import re
 import shutil
 import tempfile
 import tomllib
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -621,6 +622,14 @@ def get_system_prompt(
         context_limit=settings.model_context_limit,
         unsupported_modalities=settings.model_unsupported_modalities,
     )
+    now_local = datetime.now().astimezone()
+    current_time_section = (
+        "### Current Date and Time\n\n"
+        f"Local time is `{now_local.isoformat(timespec='seconds')}`.\n\n"
+        "Use this timestamp as the reference for relative scheduling phrases "
+        "such as today, tomorrow, tonight, later, in N minutes/hours/days, "
+        "今天, 明天, 今晚, 稍后, and N 分钟/小时/天后.\n\n"
+    )
 
     # Build working directory section (local vs sandbox)
     if sandbox_type:
@@ -671,6 +680,7 @@ def get_system_prompt(
         .replace("{interactive_preamble}", interactive_preamble)
         .replace("{ambiguity_guidance}", ambiguity_guidance)
         .replace("{model_identity_section}", model_identity_section)
+        .replace("{current_time_section}", current_time_section)
         .replace("{working_dir_section}", working_dir_section)
         .replace("{skills_path}", skills_path)
     )
@@ -1133,6 +1143,11 @@ def create_cli_agent(
     agent_middleware.append(
         WeComFileMiddleware(allowed_root=effective_cwd or Path.cwd())
     )
+
+    from invincat_cli.scheduler.store import SchedulerStore
+    from invincat_cli.scheduler.tool import ScheduleMiddleware
+
+    agent_middleware.append(ScheduleMiddleware(store=SchedulerStore()))
 
     # Add memory middleware
     if enable_memory:

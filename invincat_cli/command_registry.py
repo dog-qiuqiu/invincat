@@ -208,6 +208,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="locale i18n chinese english",
     ),
     SlashCommand(
+        name="/schedule",
+        description_key="schedule",
+        bypass_tier=BypassTier.IMMEDIATE_UI,
+        hidden_keywords="cron timer task recurring run list pause resume delete",
+    ),
+    SlashCommand(
         name="/quit",
         description_key="quit",
         bypass_tier=BypassTier.ALWAYS,

@@ -33,6 +33,7 @@ from invincat_cli.wecom.protocol import (
     build_wecom_agent_input,
     build_wecom_file_frame,
     build_wecom_ping_frame,
+    build_wecom_text_frame,
     extract_wecom_inbound_media,
     extract_wecom_mixed_text,
     extract_wecom_voice_text,
@@ -626,6 +627,18 @@ def test_wecom_file_frame_requires_active_send_target() -> None:
         raise AssertionError("expected missing target to fail")
 
 
+def test_wecom_text_frame_sends_active_markdown_to_chat() -> None:
+    payload = build_wecom_text_frame("chat-1", "hello")
+
+    assert payload["cmd"] == "aibot_send_msg"
+    assert payload["headers"]["req_id"].startswith("aibot_send_msg_")
+    assert payload["body"] == {
+        "msgtype": "markdown",
+        "markdown": {"content": "hello"},
+        "chatid": "chat-1",
+    }
+
+
 def test_wecom_upload_outbound_media_uses_init_chunks_and_finish(tmp_path: Path) -> None:
     path = tmp_path / "report.txt"
     path.write_text("hello", encoding="utf-8")
@@ -749,6 +762,40 @@ def test_wecom_turn_runner_returns_new_assistant_message(tmp_path: Path) -> None
 
     assert handled == ["hello"]
     assert answer == "answer"
+
+
+def test_wecom_turn_runner_does_not_hold_lock_while_waiting_for_idle(tmp_path: Path) -> None:
+    lock = asyncio.Lock()
+
+    async def _handle_user_message(
+        _message: str,
+        _on_text_delta,
+        _on_wecom_file_request,
+    ) -> None:
+        raise AssertionError("should not inject while busy")
+
+    async def _send_request(_payload: dict) -> dict:
+        return {"body": {}}
+
+    runner = WeComTurnRunner(
+        lock=lock,
+        cwd=tmp_path,
+        is_busy=lambda: True,
+        get_messages=lambda: [],
+        handle_user_message=_handle_user_message,
+        send_request=_send_request,
+        cancel_timed_out_turn=lambda: None,
+    )
+
+    async def _run_and_check() -> None:
+        task = asyncio.create_task(runner.run("hello", inbound_frame={"body": {}}))
+        await asyncio.sleep(0.2)
+        assert not lock.locked()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(_run_and_check())
 
 
 def test_wecom_message_responder_streams_ack_content_and_final() -> None:
