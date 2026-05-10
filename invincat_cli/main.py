@@ -432,19 +432,10 @@ def parse_args() -> argparse.Namespace:
     )
     add_json_output_arg(update_parser)
 
-    wecombot_parser = subparsers.add_parser(
+    subparsers.add_parser(
         "wecombot",
-        help="Manage the WeCom bot background daemon",
-        add_help=True,
-    )
-    wecombot_sub = wecombot_parser.add_subparsers(dest="wecombot_command")
-    wecombot_sub.add_parser("start", help="Start the WeCom daemon in the background")
-    wecombot_sub.add_parser("stop", help="Stop the running WeCom daemon")
-    wecombot_sub.add_parser("status", help="Show WeCom daemon status")
-    wecombot_sub.add_parser("logs", help="Show daemon log file path and tail")
-    wecombot_sub.add_parser(
-        "run",
         help="Run the WeCom daemon in the foreground (for debugging)",
+        add_help=True,
     )
 
     # Default interactive mode — argument order here determines the
@@ -1499,7 +1490,7 @@ def cli_main() -> None:
             else:
                 show_agents_help()
         elif args.command == "wecombot":
-            _handle_wecombot_command(args, console)
+            _run_wecombot_foreground(console)
         elif args.command == "skills":
             from invincat_cli.skills import execute_skills_command
 
@@ -1721,103 +1712,20 @@ def cli_main() -> None:
         sys.exit(0)
 
 
-def _handle_wecombot_command(args: Any, console: Any) -> None:
-    """Dispatch wecombot subcommands (start / stop / status / logs / run)."""
+def _run_wecombot_foreground(console: Any) -> None:
+    """Run the WeCom daemon in the foreground (for debugging)."""
     from pathlib import Path
 
+    from invincat_cli.wecom.daemon import WeComDaemonConfig, run_daemon_foreground
+
     cwd = Path.cwd()
-    subcmd = getattr(args, "wecombot_command", None)
-
-    if subcmd == "start":
-        from invincat_cli.wecom.daemon import (
-            WeComDaemonConfig,
-            is_daemon_running,
-            start_daemon,
-        )
-
-        if is_daemon_running(cwd):
-            console.print("[yellow]WeCom daemon is already running.[/yellow]")
-            sys.exit(0)
-        try:
-            config = WeComDaemonConfig.from_env(cwd)
-        except ValueError as exc:
-            console.print(f"[bold red]Error:[/bold red] {exc}")
-            sys.exit(1)
-        start_daemon(config)
-        console.print(
-            f"[green]WeCom daemon started[/green] (cwd={cwd})\n"
-            f"Logs: {config.log_file}\n"
-            "Use [cyan]wecombot status[/cyan] to check or "
-            "[cyan]wecombot stop[/cyan] to stop."
-        )
-
-    elif subcmd == "stop":
-        from invincat_cli.wecom.daemon import is_daemon_running, stop_daemon
-
-        if not is_daemon_running(cwd):
-            console.print("WeCom daemon is not running.")
-            sys.exit(0)
-        stopped = asyncio.run(stop_daemon(cwd))
-        if stopped:
-            console.print("[green]WeCom daemon stopped.[/green]")
-        else:
-            console.print("[yellow]Stop signal sent (daemon may take a moment to exit).[/yellow]")
-
-    elif subcmd == "status":
-        from invincat_cli.wecom.daemon import get_daemon_status
-
-        info = asyncio.run(get_daemon_status(cwd))
-        if not info.get("running"):
-            console.print("WeCom daemon: [red]not running[/red]")
-        else:
-            connected = info.get("connected")
-            conn_label = (
-                "[green]connected[/green]"
-                if connected
-                else ("[red]disconnected[/red]" if connected is False else "unknown")
-            )
-            console.print(
-                f"WeCom daemon: [green]running[/green]\n"
-                f"  PID:              {info.get('pid', '?')}\n"
-                f"  Started:          {info.get('started_at', '?')}\n"
-                f"  WeCom connection: {conn_label}\n"
-                f"  Messages handled: {info.get('messages_handled', '?')}"
-            )
-
-    elif subcmd == "logs":
-        log_file = cwd / ".invincat" / "wecom_daemon.log"
-        if not log_file.exists():
-            console.print(f"Log file not found: {log_file}")
-            sys.exit(1)
-        console.print(f"Log file: {log_file}")
-        try:
-            tail = log_file.read_text(encoding="utf-8", errors="replace")
-            lines = tail.splitlines()
-            for line in lines[-50:]:
-                console.print(line)
-        except OSError as exc:
-            console.print(f"[red]Cannot read log: {exc}[/red]")
-
-    elif subcmd == "run":
-        from invincat_cli.wecom.daemon import WeComDaemonConfig, run_daemon_foreground
-
-        try:
-            config = WeComDaemonConfig.from_env(cwd)
-        except ValueError as exc:
-            console.print(f"[bold red]Error:[/bold red] {exc}")
-            sys.exit(1)
-        console.print(f"Running WeCom daemon in foreground (cwd={cwd})...")
-        run_daemon_foreground(config)
-
-    else:
-        console.print(
-            "Usage: wecombot [start|stop|status|logs|run]\n\n"
-            "  start   Start the WeCom daemon in the background\n"
-            "  stop    Stop the running daemon\n"
-            "  status  Show daemon status\n"
-            "  logs    Show the last 50 lines of the daemon log\n"
-            "  run     Run in foreground (debugging)"
-        )
+    try:
+        config = WeComDaemonConfig.from_env(cwd)
+    except ValueError as exc:
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        sys.exit(1)
+    console.print(f"Running WeCom daemon in foreground (cwd={cwd})...")
+    run_daemon_foreground(config)
     sys.exit(0)
 
 
