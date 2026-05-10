@@ -18,6 +18,7 @@ Invincat is designed for real engineering work in local repositories, not demo-o
 - Long-context durability: micro compression + offload keep long sessions usable without losing operational history.
 - Practical memory model: user/project memory stores persist conventions across sessions and are inspectable via `/memory`.
 - Extensible architecture: MCP tools, skills, and subagents allow adapting the assistant to team-specific workflows.
+- Built-in scheduler: create recurring or one-shot tasks in natural language; results are delivered to the TUI or WeCom automatically.
 
 ## Agent Architecture
 
@@ -490,6 +491,7 @@ Type `/` in the input box and press `Tab` to view and autocomplete all commands.
 
 | Command | Description |
 |---------|-------------|
+| `/schedule` | Open scheduled task manager (view, run, pause, delete) |
 | `/mcp` | View connected MCP servers and tools |
 | `/editor` | Edit current input in external editor |
 | `/wecombot-start` | Start the WeCom bot bridge for the current CLI session |
@@ -508,6 +510,131 @@ Type `/` in the input box and press `Tab` to view and autocomplete all commands.
 | `/version` | Display version number |
 | `/reload` | Reload configuration files |
 | `/trace` | Open current conversation in LangSmith (requires configuration) |
+
+---
+
+## Scheduled Tasks
+
+Invincat has a built-in scheduler that runs tasks automatically on a schedule — while you're away — and delivers results to the TUI or WeCom.
+
+### Creating Tasks
+
+No special commands needed. Just describe what you want in natural language:
+
+```
+Analyze yesterday's project logs every morning at 9 AM and summarize key errors
+Check for dependency updates every Monday at 8:30 AM
+Run unit tests every 2 hours and notify me if any fail
+```
+
+The AI will create a persistent task (stored in `~/.invincat/scheduler.db`) that survives CLI restarts.
+
+#### One-Shot Delayed Tasks
+
+For a task that runs exactly once at a specific time:
+
+```
+Remind me to back up the database tonight at 11 PM
+Check this PR's status tomorrow at 3 PM
+Run the full test suite on 2026-06-01T09:00:00
+```
+
+One-shot tasks are automatically disabled (or deleted) after they run.
+
+### Schedule Format
+
+The AI converts your natural-language descriptions to one of these formats:
+
+| Expression | Example | Equivalent cron |
+|-----------|---------|-----------------|
+| `daily HH:MM` | `daily 09:00` | `0 9 * * *` |
+| `weekly <day> HH:MM` | `weekly mon 08:30` | `30 8 * * 1` |
+| `monthly <day> HH:MM` | `monthly 1 10:00` | `0 10 1 * *` |
+| `interval Nh` | `interval 2h` | `0 */2 * * *` |
+| `interval Nm` | `interval 30m` | `*/30 * * * *` |
+| Raw cron | `0 8 * * 1-5` | used as-is |
+
+One-shot tasks use an ISO 8601 datetime with timezone, e.g. `2026-06-01T09:00:00+08:00`.
+
+### Output Modes
+
+**message** (default): the AI replies with a concise summary when the task completes. Best for status checks and simple queries.
+
+**report**: the AI writes a full analysis to a file (`reports/{task-slug}-{date}.md` by default). Best for periodic reports you want to keep.
+
+```
+Analyze project logs every morning at 9 AM and save the report to a file
+```
+
+### Task Manager
+
+Run `/schedule` to open the visual task manager:
+
+```
+/schedule
+```
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` / `j` / `k` | Navigate tasks |
+| `Enter` | Run selected task immediately |
+| `p` | Pause / resume task |
+| `d` (twice to confirm) | Delete task |
+| `r` | Refresh list |
+| `Esc` | Close |
+
+The status bar shows run count, failure count, and last-run time for the selected task.
+
+You can also manage tasks through conversation:
+
+```
+List all scheduled tasks
+Pause the "daily log analysis" task
+Delete the weekly report task
+Run the "dependency check" task now
+```
+
+### WeCom Delivery
+
+Tasks created from a WeCom conversation are automatically delivered back to that chat — no extra configuration needed. The system records the target chat ID at creation time and pushes results when the run completes. In report mode, the report file is sent as an attachment.
+
+### How Scheduling Works
+
+```
+CLI starts
+   │
+   ▼
+SchedulerRunner ticks every 60 seconds
+   │
+   ├─ Task due? → check if TUI is idle
+   │               ├─ Idle  → inject into message queue → Main Agent processes it
+   │               └─ Busy  → hold in pending queue until idle
+   │
+   ├─ Missed by < 5 min   → fire immediately (or per misfire policy)
+   ├─ Missed 5 min–24 h   → run_once: catch up once  |  skip: skip this run
+   └─ Missed > 24 h        → mark "missed", skip
+
+When Main Agent runs a scheduled task:
+   └─ Task-management tools hidden  (prevents recursive task creation)
+   └─ On completion → finish_run() → update stats → push WeCom notification
+```
+
+**Key behaviors:**
+- Scheduled tasks run inside a normal Main Agent turn, sharing the same memory, tools, and context
+- The same task never runs concurrently — a new fire is blocked until the previous run finishes
+- Default timeout is 600 seconds; tasks exceeding this are marked `timeout` and notified
+- During a scheduled run, task-management tools are hidden from the agent
+
+### Misfire Policy
+
+| Scenario | Behavior |
+|----------|----------|
+| Delayed < 5 minutes (TUI busy or brief lag) | Fire immediately |
+| Delayed 5 min – 24 h, policy `run_once` | Fire once to catch up |
+| Delayed 5 min – 24 h, policy `skip` | Skip, wait for next scheduled time |
+| Delayed > 24 hours | Mark `missed`, disable if one-shot |
+
+You can specify the policy when creating a task, e.g. "if the task is missed, just skip it".
 
 ---
 
