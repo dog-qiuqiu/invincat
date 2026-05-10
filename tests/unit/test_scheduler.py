@@ -916,3 +916,65 @@ def test_runner_timeout_invokes_callback(tmp_path: Path) -> None:
     assert loaded is not None
     assert loaded.status == "timeout"
     assert timed_out == [("run-1", "task-1")]
+
+
+def test_app_resolves_active_scheduled_wecom_chat_id(tmp_path: Path) -> None:
+    from invincat_cli.app import DeepAgentsApp
+
+    store = _make_store(tmp_path)
+    task = _make_task(task_id="task-1")
+    task.delivery = DeliverySpec(channels=[{"type": "wecom", "chatid": "chat-1"}])
+    store.save_task(task)
+
+    app = DeepAgentsApp.__new__(DeepAgentsApp)
+    app._active_scheduled_run = ("run-1", "task-1")
+    app._scheduler_store = store
+
+    assert app._active_scheduled_wecom_chat_id() == "chat-1"
+
+
+def test_scheduled_wecom_file_request_sends_to_task_chat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from invincat_cli.app import DeepAgentsApp
+
+    store = _make_store(tmp_path)
+    task = _make_task(task_id="task-1")
+    task.delivery = DeliverySpec(channels=[{"type": "wecom", "chatid": "chat-1"}])
+    store.save_task(task)
+
+    sent_payloads: list[dict] = []
+
+    async def fake_upload(path: Path, *, send_request) -> str:  # noqa: ANN001
+        assert path == (tmp_path / "report.md").resolve()
+        return "media-1"
+
+    async def fake_send_request(payload: dict) -> dict:
+        sent_payloads.append(payload)
+        return {"errcode": 0}
+
+    monkeypatch.setattr(
+        "invincat_cli.wecom.media.upload_wecom_outbound_media",
+        fake_upload,
+    )
+
+    report = tmp_path / "report.md"
+    report.write_text("hello", encoding="utf-8")
+
+    app = DeepAgentsApp.__new__(DeepAgentsApp)
+    app._active_scheduled_run = ("run-1", "task-1")
+    app._scheduler_store = store
+    app._wecom_bridge = object()
+    app._cwd = str(tmp_path)
+    app._wecom_send_request = fake_send_request
+
+    asyncio.run(
+        app._send_scheduled_wecom_file_request(
+            {"path": str(report), "filename": "report.md"}
+        )
+    )
+
+    assert sent_payloads
+    assert sent_payloads[0]["body"]["chatid"] == "chat-1"
+    assert sent_payloads[0]["body"]["file"]["media_id"] == "media-1"

@@ -4273,6 +4273,54 @@ class DeepAgentsApp(App):
                 ErrorMessage(f"Scheduled task WeCom delivery failed: {exc}")
             )
 
+    def _active_scheduled_wecom_chat_id(self) -> str | None:
+        """Return the WeCom chat id for the active scheduled run, if any."""
+        if self._active_scheduled_run is None:
+            return None
+        _run_id, task_id = self._active_scheduled_run
+        task = self._scheduler_store.load_task(task_id)
+        if task is None:
+            return None
+        channels = getattr(task.delivery, "channels", []) or []
+        for channel in channels:
+            if not isinstance(channel, dict) or channel.get("type") != "wecom":
+                continue
+            chatid = str(channel.get("chatid") or "").strip()
+            if chatid:
+                return chatid
+        return None
+
+    async def _send_scheduled_wecom_file_request(self, payload: dict[str, Any]) -> None:
+        """Send a file requested by send_wecom_file during a scheduled WeCom run."""
+        from invincat_cli.wecom.media import upload_wecom_outbound_media
+        from invincat_cli.wecom.protocol import build_wecom_file_frame_for_chat
+
+        chatid = self._active_scheduled_wecom_chat_id()
+        if not chatid:
+            raise RuntimeError("Scheduled task has no WeCom delivery target")
+        if self._wecom_bridge is None:
+            raise RuntimeError("WeCom bridge is offline")
+
+        raw_path = str(payload.get("path") or "").strip()
+        if not raw_path:
+            raise ValueError("send_wecom_file payload missing path")
+        path = Path(raw_path).expanduser().resolve()
+        root = Path(self._cwd).expanduser().resolve()
+        try:
+            path.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(
+                f"WeCom file sending is limited to the current project: {root}"
+            ) from exc
+        if not path.is_file():
+            raise ValueError(f"File does not exist or is not a regular file: {path}")
+
+        media_id = await upload_wecom_outbound_media(
+            path,
+            send_request=self._wecom_send_request,
+        )
+        await self._wecom_send_request(build_wecom_file_frame_for_chat(chatid, media_id))
+
     async def _inject_scheduled_message(self, task_id: str, run_id: str, prompt: str) -> None:
         """Inject a scheduled task prompt into the TUI message queue."""
         from invincat_cli.i18n import t
@@ -5366,6 +5414,12 @@ class DeepAgentsApp(App):
         self._inflight_turn_start = time.monotonic()
         original_thread_id = self._session_state.thread_id
         retry_after_exc: BaseException | None = None
+        effective_wecom_file_request = on_wecom_file_request
+        if (
+            effective_wecom_file_request is None
+            and self._active_scheduled_wecom_chat_id() is not None
+        ):
+            effective_wecom_file_request = self._send_scheduled_wecom_file_request
         try:
             if thread_id_override:
                 self._session_state.thread_id = thread_id_override
@@ -5385,12 +5439,12 @@ class DeepAgentsApp(App):
                     model_params=self._model_params_override or {},
                     memory_model=self._memory_model_override,
                     memory_model_params=self._memory_model_params_override or {},
-                    wecom_enabled=on_wecom_file_request is not None,
+                    wecom_enabled=effective_wecom_file_request is not None,
                     scheduled_run=self._active_scheduled_run is not None,
                 ),
                 turn_stats=turn_stats,
                 on_text_delta=on_text_delta,
-                on_wecom_file_request=on_wecom_file_request,
+                on_wecom_file_request=effective_wecom_file_request,
                 on_schedule_payload=self._handle_schedule_tool_payload,
             )
             if post_turn_hook is not None:
