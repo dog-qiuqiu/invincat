@@ -1009,6 +1009,11 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
         console.print(f"[bold red]Error:[/bold red] {msg}")
         sys.exit(1)
     except (OSError, ValueError) as exc:
+        # When --stdin was not explicit, treat an unreadable stdin (e.g. a
+        # half-dead fd left behind by nohup/systemd on Linux) as "no piped
+        # input" rather than failing. Daemon-like launches commonly land here.
+        if not explicit_stdin:
+            return
         from rich.markup import escape
 
         console.print(
