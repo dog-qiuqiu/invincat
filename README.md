@@ -674,6 +674,38 @@ Manage lifecycle:
 | `/wecombot-status` | Show whether the bridge task is running |
 | `/wecombot-stop` | Stop the bridge task and close the active connection |
 
+### Foreground Daemon
+
+You can also run the WeCom bridge without opening the TUI:
+
+```bash
+cd /path/to/your/project
+export WECOM_BOT_ID="your_bot_id"
+export WECOM_BOT_SECRET="your_bot_secret"
+invincat-cli wecombot
+```
+
+`invincat-cli wecombot` starts the same per-project WeCom daemon in the
+foreground. It is useful for debugging, running under `systemd`/`supervisor`,
+or keeping WeCom callbacks and scheduled-task delivery alive without an
+interactive terminal UI.
+
+Behavior and files:
+
+- The daemon uses the current working directory as the project root for turns,
+  file access, downloads, and scheduled-task filtering.
+- It reads `WECOM_BOT_ID`, `WECOM_BOT_SECRET`, and optional `WECOM_WS_URL` from
+  the environment.
+- It writes runtime files under the current project's `.invincat/` directory:
+  `wecom_daemon.json`, `wecom_daemon.log`, `wecom_daemon.lock`, and
+  `wecom_daemon.sock`.
+- It exits with an error if another WeCom daemon already holds the per-project
+  lock.
+- Press `Ctrl+C` or stop the supervising process to shut it down.
+- Headless daemon turns do not enable unrestricted shell by default. Set
+  `DEEPAGENTS_CLI_SHELL_ALLOW_LIST` to a comma-separated allowlist,
+  `recommended`, or `all` if shell execution is needed.
+
 ### Reply Behavior
 
 - The bridge uses WeCom `msgtype=stream` replies with a stable `stream_id`, so

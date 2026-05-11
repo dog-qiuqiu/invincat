@@ -661,6 +661,28 @@ export DEEPAGENTS_CLI_SHELL_ALLOW_LIST="recommended"
 | `/wecombot-status` | 查看桥接任务是否运行中 |
 | `/wecombot-stop` | 停止桥接任务并关闭当前连接 |
 
+### 前台 daemon 用法
+
+也可以不打开 TUI，直接在当前项目目录中前台运行企业微信桥接：
+
+```bash
+cd /path/to/your/project
+export WECOM_BOT_ID="your_bot_id"
+export WECOM_BOT_SECRET="your_bot_secret"
+invincat-cli wecombot
+```
+
+`invincat-cli wecombot` 会启动同一个“按项目隔离”的企业微信 daemon，但运行在前台。它适合调试、交给 `systemd`/`supervisor` 托管，或在没有交互式 TUI 的情况下保持企业微信回调和定时任务推送在线。
+
+行为和运行文件：
+
+- daemon 使用启动时的当前工作目录作为项目目录，影响 agent 回合的工作目录、文件访问、入站媒体下载位置和定时任务过滤。
+- 它从环境变量读取 `WECOM_BOT_ID`、`WECOM_BOT_SECRET`，以及可选的 `WECOM_WS_URL`。
+- 运行状态文件写在当前项目的 `.invincat/` 目录下：`wecom_daemon.json`、`wecom_daemon.log`、`wecom_daemon.lock`、`wecom_daemon.sock`。
+- 如果同一项目目录已经有 daemon 持有 lock，会直接报错退出。
+- 按 `Ctrl+C`，或停止托管该进程的 supervisor/systemd 服务，即可关闭。
+- headless daemon 回合默认不会开启无限制 shell。需要 shell 能力时，设置 `DEEPAGENTS_CLI_SHELL_ALLOW_LIST` 为逗号分隔命令列表、`recommended` 或 `all`。
+
 ### 回复机制
 
 - 桥接使用企业微信 `msgtype=stream`，同一回合使用稳定的 `stream_id`，因此企业微信侧看到的是同一条消息持续更新，而不是多条气泡刷屏。
