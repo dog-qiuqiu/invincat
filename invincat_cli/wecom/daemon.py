@@ -667,15 +667,9 @@ def _make_build_agent_input(cwd: Path):
 
 
 def _scheduled_task_wecom_chatid(task: Any) -> str:
-    delivery = getattr(task, "delivery", None)
-    channels = getattr(delivery, "channels", []) or []
-    for channel in channels:
-        if not isinstance(channel, dict) or channel.get("type") != "wecom":
-            continue
-        chatid = str(channel.get("chatid") or "").strip()
-        if chatid:
-            return chatid
-    return ""
+    from invincat_cli.scheduler.delivery import scheduled_task_wecom_chatid
+
+    return scheduled_task_wecom_chatid(task)
 
 
 def _task_visible_to_wecom_daemon(task: Any, cwd: Path) -> bool:

@@ -154,6 +154,19 @@ def _format_schedule_time_for_display(value: Any, timezone_name: str) -> str:
     return value.astimezone(ZoneInfo(timezone_name)).isoformat(timespec="minutes")
 
 
+def _wecom_daemon_claims_scheduled_task(task: Any, cwd: str | Path) -> bool:
+    """Return True when a running WeCom daemon should own this scheduled task."""
+    from invincat_cli.scheduler.delivery import scheduled_task_wecom_chatid
+    from invincat_cli.wecom.daemon import is_daemon_running
+
+    cwd_str = str(cwd)
+    if getattr(task, "cwd", None) != cwd_str:
+        return False
+    if not scheduled_task_wecom_chatid(task):
+        return False
+    return is_daemon_running(Path(cwd_str))
+
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -4145,9 +4158,17 @@ class DeepAgentsApp(App):
     def _start_scheduler(self) -> None:
         """Create SchedulerRunner and start the 60-second tick interval."""
         from invincat_cli.scheduler.runner import SchedulerRunner
+        from invincat_cli.scheduler.store import FilteredSchedulerStore
+
+        runner_store = FilteredSchedulerStore(
+            db_path=getattr(self._scheduler_store, "_db_path", None),
+            exclude_task=lambda task: _wecom_daemon_claims_scheduled_task(
+                task, self._cwd
+            ),
+        )
 
         self._scheduler_runner = SchedulerRunner(
-            self._scheduler_store,
+            runner_store,
             inject_message=self._inject_scheduled_message,
             notify=lambda msg: self.notify(msg, timeout=6),
             is_busy=lambda: self._agent_running or self._shell_running,
@@ -4560,6 +4581,13 @@ class DeepAgentsApp(App):
                     AppMessage(t("schedule.not_found").format(task_id=task_id))
                 )
                 return
+            if _wecom_daemon_claims_scheduled_task(task, self._cwd):
+                await self._mount_message(
+                    AppMessage(
+                        "WeCom daemon is running; this scheduled task is handled by the daemon."
+                    )
+                )
+                return
             await self._mount_message(
                 AppMessage(t("schedule.run_queued").format(title=title))
             )
@@ -4617,6 +4645,13 @@ class DeepAgentsApp(App):
             return
 
         if action.kind == "run_now":
+            if _wecom_daemon_claims_scheduled_task(task, self._cwd):
+                await self._mount_message(
+                    AppMessage(
+                        "WeCom daemon is running; this scheduled task is handled by the daemon."
+                    )
+                )
+                return
             await self._mount_message(
                 AppMessage(t("schedule.run_queued").format(title=task.title))
             )

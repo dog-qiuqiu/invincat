@@ -7,6 +7,7 @@ import logging
 import errno
 import os
 import sqlite3
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -666,6 +667,43 @@ class CwdScopedSchedulerStore(SchedulerStore):
         if task is None or task.cwd != self._scope_cwd:
             return None
         return task
+
+
+class FilteredSchedulerStore(SchedulerStore):
+    """SchedulerStore view that excludes matching tasks from runner claims."""
+
+    def __init__(
+        self,
+        *,
+        exclude_task: Callable[[Any], bool],
+        db_path: Path | None = None,
+    ) -> None:
+        self._exclude_task = exclude_task
+        super().__init__(db_path=db_path)
+
+    def _is_excluded(self, task: Any) -> bool:
+        try:
+            return bool(self._exclude_task(task))
+        except Exception:
+            logger.warning("Scheduler task filter failed", exc_info=True)
+            return False
+
+    def list_tasks(
+        self,
+        *,
+        enabled_only: bool = False,
+        cwd: str | None = None,
+    ) -> list["ScheduledTask"]:  # noqa: F821
+        return [
+            task for task in super().list_tasks(enabled_only=enabled_only, cwd=cwd)
+            if not self._is_excluded(task)
+        ]
+
+    def try_start_run(self, task_id: str, run: Any, **kwargs: Any) -> bool:
+        task = super().load_task(task_id)
+        if task is not None and self._is_excluded(task):
+            return False
+        return super().try_start_run(task_id, run, **kwargs)
 
 
 # ------------------------------------------------------------------

@@ -20,6 +20,7 @@ from invincat_cli.scheduler.models import (
     ScheduledTask,
     TaskRun,
 )
+from invincat_cli.scheduler.delivery import is_wecom_deliverable_task
 from invincat_cli.scheduler.parser import describe_schedule, parse_schedule
 from invincat_cli.scheduler.runner import (
     SchedulerRunner,
@@ -28,7 +29,11 @@ from invincat_cli.scheduler.runner import (
     compute_next_run,
     task_next_run,
 )
-from invincat_cli.scheduler.store import CwdScopedSchedulerStore, SchedulerStore
+from invincat_cli.scheduler.store import (
+    CwdScopedSchedulerStore,
+    FilteredSchedulerStore,
+    SchedulerStore,
+)
 from invincat_cli.scheduler.tool import (
     SCHEDULE_CANCEL_TYPE,
     SCHEDULE_CREATE_TYPE,
@@ -998,6 +1003,31 @@ def test_schedule_time_display_uses_explicit_offset() -> None:
     )
 
 
+def test_tui_delegates_wecom_delivery_tasks_to_running_daemon(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from invincat_cli.app import _wecom_daemon_claims_scheduled_task
+
+    monkeypatch.setattr(
+        "invincat_cli.wecom.daemon.is_daemon_running",
+        lambda cwd: str(cwd) == str(tmp_path),
+    )
+    tui_task = _make_task(cwd=str(tmp_path))
+    wecom_task = _make_task(cwd=str(tmp_path))
+    wecom_task.delivery = DeliverySpec(
+        channels=[{"type": "wecom", "chatid": "chat-1"}]
+    )
+    other_cwd_task = _make_task(cwd=str(tmp_path / "other"))
+    other_cwd_task.delivery = DeliverySpec(
+        channels=[{"type": "wecom", "chatid": "chat-1"}]
+    )
+
+    assert _wecom_daemon_claims_scheduled_task(tui_task, tmp_path) is False
+    assert _wecom_daemon_claims_scheduled_task(wecom_task, tmp_path) is True
+    assert _wecom_daemon_claims_scheduled_task(other_cwd_task, tmp_path) is False
+
+
 def test_schedule_middleware_delete_tool_alias_returns_cancel_payload(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     store.save_task(_make_task(task_id="task-1"))
@@ -1381,6 +1411,55 @@ def test_runner_filters_tasks_by_cwd(tmp_path: Path) -> None:
     loaded_b = store.load_task("b")
     assert loaded_b is not None
     assert loaded_b.last_status == "never"
+
+
+def test_filtered_store_excludes_wecom_tasks_from_tui_runner(tmp_path: Path) -> None:
+    db_path = tmp_path / "scheduler.db"
+    base_store = SchedulerStore(db_path=db_path)
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    base_store.save_task(_make_task(task_id="tui", next_run_at=past, cwd="/tmp"))
+    wecom_task = _make_task(task_id="wecom", next_run_at=past, cwd="/tmp")
+    wecom_task.delivery = DeliverySpec(channels=[{"type": "wecom", "chatid": "chat-1"}])
+    base_store.save_task(wecom_task)
+
+    store = FilteredSchedulerStore(
+        db_path=db_path,
+        exclude_task=is_wecom_deliverable_task,
+    )
+    fired: list[str] = []
+
+    async def inject(task_id: str, _run_id: str, _prompt: str) -> None:
+        fired.append(task_id)
+
+    runner = SchedulerRunner(
+        store,
+        inject_message=inject,
+        notify=MagicMock(),
+        is_busy=lambda: False,
+        cwd="/tmp",
+    )
+
+    asyncio.run(runner.tick())
+
+    assert fired == ["tui"]
+    loaded_wecom = base_store.load_task("wecom")
+    assert loaded_wecom is not None
+    assert loaded_wecom.last_status == "never"
+
+    run = TaskRun(
+        id="manual-wecom-run",
+        task_id="wecom",
+        scheduled_for=datetime.now(timezone.utc).isoformat(),
+        started_at=datetime.now(timezone.utc).isoformat(),
+        finished_at=None,
+        status="running",
+        report_path=None,
+        error=None,
+        thread_id=None,
+        cwd="/tmp",
+    )
+    assert store.try_start_run("wecom", run) is False
+    assert base_store.load_run("manual-wecom-run") is None
 
 
 def test_runner_timeout_invokes_callback(tmp_path: Path) -> None:
