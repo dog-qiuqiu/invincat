@@ -205,6 +205,7 @@ async def start_server_and_get_agent(
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
     interactive: bool = True,
+    scheduler_cwd_scope: str | None = None,
     host: str = "127.0.0.1",
     port: int = 2024,
 ) -> tuple[RemoteAgent, ServerProcess, MCPSessionManager | None]:
@@ -226,6 +227,8 @@ async def start_server_and_get_agent(
         no_mcp: Disable MCP.
         trust_project_mcp: Trust project MCP servers.
         interactive: Whether the agent is interactive.
+        scheduler_cwd_scope: Optional cwd that schedule-management tools are
+            allowed to see.
         host: Server host.
         port: Server port.
 
@@ -256,6 +259,7 @@ async def start_server_and_get_agent(
         no_mcp=no_mcp,
         trust_project_mcp=trust_project_mcp,
         interactive=interactive,
+        scheduler_cwd_scope=scheduler_cwd_scope,
     )
     _apply_server_config(config)
 

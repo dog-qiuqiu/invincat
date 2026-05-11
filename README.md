@@ -108,16 +108,22 @@ Invincat uses two model targets:
 - If no dedicated memory model is configured, memory extraction follows the current primary model.
 - If the dedicated memory model fails to initialize at runtime, memory extraction automatically falls back to the primary model for that turn.
 
-### Supported Providers
+### Common Providers
 
-| Provider | Example Models |
-|----------|----------------|
-| `anthropic` | `claude-sonnet-4-6`, `claude-opus-4-7` |
-| `openai` | `gpt-4o`, `o3` |
-| `google_genai` | `gemini-2.0-flash`, `gemini-2.5-pro` |
-| `openrouter` | Supports all models on OpenRouter |
+| Provider | Credential |
+|----------|------------|
+| `anthropic` | `ANTHROPIC_API_KEY` |
+| `openai` | `OPENAI_API_KEY` |
+| `google_genai` | `GOOGLE_API_KEY` |
+| `openrouter` | `OPENROUTER_API_KEY` |
+| `deepseek` | `DEEPSEEK_API_KEY` |
+| `azure_openai` | `AZURE_OPENAI_API_KEY` |
+| `groq` | `GROQ_API_KEY` |
+| `mistralai` | `MISTRAL_API_KEY` |
+| `together` | `TOGETHER_API_KEY` |
+| `xai` | `XAI_API_KEY` |
 
-For OpenAI-compatible interfaces (DeepSeek, Zhipu, local Ollama, etc.), simply set the `base_url` to connect.
+Provider credentials can also be overridden with the `DEEPAGENTS_CLI_` prefix, for example `DEEPAGENTS_CLI_OPENAI_API_KEY`. Providers not listed here may still work through the LangChain model registry or an OpenAI-compatible `base_url`.
 
 ### Environment Variables
 
@@ -653,21 +659,72 @@ where the CLI is already running:
 export WECOM_BOT_ID="your_bot_id"
 export WECOM_BOT_SECRET="your_bot_secret"
 export WECOM_WS_URL="wss://openws.work.weixin.qq.com" # optional
+# Optional: only accept callbacks from these users or chats.
+export WECOM_ALLOWED_USERIDS="userid1,userid2"
+export WECOM_ALLOWED_CHATIDS="chatid1,chatid2"
+# Optional: enable shell commands for headless daemon turns.
+export DEEPAGENTS_CLI_SHELL_ALLOW_LIST="recommended"
 ```
 
-Start the bridge inside the CLI:
+You can run the WeCom integration in three ways:
 
-```text
-/wecombot-start
+| Mode | Command | When to use |
+|------|---------|-------------|
+| TUI bridge | `/wecombot-start` / `/wecombot-status` / `/wecombot-stop` | Bridge WeCom into the currently open TUI session |
+| Background daemon | `/wecombot-daemon-start` / `/wecombot-daemon-status` / `/wecombot-daemon-stop` | Keep WeCom online after the TUI exits |
+| Foreground daemon | `invincat-cli wecombot` | Debugging or running under `systemd`/`supervisor` |
+
+The TUI bridge shares the active TUI conversation. Starting it from the TUI also
+enables auto-approve so remote WeCom turns do not block on local approval
+prompts. Background and foreground daemon modes are per-project and keep their
+own daemon state under the project's `.invincat/` directory.
+
+### Foreground Daemon
+
+Run the foreground daemon from the project directory:
+
+```bash
+cd /path/to/your/project
+export WECOM_BOT_ID="your_bot_id"
+export WECOM_BOT_SECRET="your_bot_secret"
+invincat-cli wecombot
 ```
 
-Manage lifecycle:
+`invincat-cli wecombot` starts the per-project WeCom daemon in the foreground.
+It is useful for debugging, running under `systemd`/`supervisor`, or keeping
+WeCom callbacks and scheduled-task delivery alive without an interactive
+terminal UI.
 
-| Command | Description |
-|---------|-------------|
-| `/wecombot-start` | Open the WeCom long-connection client and subscribe to bot callbacks |
-| `/wecombot-status` | Show whether the bridge task is running |
-| `/wecombot-stop` | Stop the bridge task and close the active connection |
+For a simple long-running background process, start it with `nohup`:
+
+```bash
+cd /path/to/your/project
+export WECOM_BOT_ID="your_bot_id"
+export WECOM_BOT_SECRET="your_bot_secret"
+mkdir -p .invincat
+nohup invincat-cli wecombot > .invincat/wecombot.nohup.log 2>&1 &
+```
+
+This is the recommended lightweight setup when you do not want to keep a TUI
+open and do not need a full process manager. Stop it with `pkill -f
+"invincat-cli wecombot"` or by killing the recorded process from your shell/job
+manager.
+
+Behavior and files:
+
+- The daemon uses the current working directory as the project root for turns,
+  file access, downloads, and scheduled-task filtering.
+- It reads `WECOM_BOT_ID`, `WECOM_BOT_SECRET`, and optional `WECOM_WS_URL` from
+  the environment.
+- It writes runtime files under the current project's `.invincat/` directory:
+  `wecom_daemon.json`, `wecom_daemon.log`, `wecom_daemon.lock`, and
+  `wecom_daemon.sock`.
+- It exits with an error if another WeCom daemon already holds the per-project
+  lock.
+- Press `Ctrl+C` or stop the supervising process to shut it down.
+- Headless daemon turns do not enable unrestricted shell by default. Set
+  `DEEPAGENTS_CLI_SHELL_ALLOW_LIST` to a comma-separated allowlist,
+  `recommended`, or `all` if shell execution is needed.
 
 ### Reply Behavior
 
@@ -698,7 +755,7 @@ Manage lifecycle:
 - True token-level streaming depends on the model provider and LangChain driver.
   If the upstream model returns one large chunk, WeCom will also receive one
   large content update rather than token-by-token output.
-- File sending is only exposed to the model during `/wecombot` turns. The file
+- File sending is only exposed to the model during WeCom turns. The file
   must already exist inside the current project directory, must be a regular
   non-empty file, and must be no larger than 20 MB.
 - Enable debug logging and look for `wecom text delta received chars=...` to

@@ -4,12 +4,30 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from invincat_cli.scheduler.models import ScheduledTask
 
 logger = logging.getLogger(__name__)
+
+
+def scheduled_task_wecom_chatid(task: Any) -> str:  # noqa: ANN401
+    """Return the non-empty WeCom chatid configured for a scheduled task."""
+    delivery = getattr(task, "delivery", None)
+    channels = getattr(delivery, "channels", []) or []
+    for channel in channels:
+        if not isinstance(channel, dict) or channel.get("type") != "wecom":
+            continue
+        chatid = str(channel.get("chatid") or "").strip()
+        if chatid:
+            return chatid
+    return ""
+
+
+def is_wecom_deliverable_task(task: Any) -> bool:  # noqa: ANN401
+    """Return True if a scheduled task has a concrete WeCom delivery target."""
+    return bool(scheduled_task_wecom_chatid(task))
 
 
 def check_report_exists(task: "ScheduledTask", date_str: str) -> str | None:

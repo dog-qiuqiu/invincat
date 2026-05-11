@@ -108,6 +108,24 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="wecom wechat bot long connection stop",
     ),
     SlashCommand(
+        name="/wecombot-daemon-start",
+        description_key="wecombot_daemon_start",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="wecom wechat bot daemon background persistent",
+    ),
+    SlashCommand(
+        name="/wecombot-daemon-stop",
+        description_key="wecombot_daemon_stop",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="wecom wechat bot daemon background stop",
+    ),
+    SlashCommand(
+        name="/wecombot-daemon-status",
+        description_key="wecombot_daemon_status",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="wecom wechat bot daemon background status",
+    ),
+    SlashCommand(
         name="/model",
         description_key="model",
         bypass_tier=BypassTier.IMMEDIATE_UI,

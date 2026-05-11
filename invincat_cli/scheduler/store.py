@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import errno
+import os
 import sqlite3
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -12,6 +15,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _DB_PATH: Path | None = None
+_RUNNING_STALE_GRACE_SECONDS = 60
 
 
 def get_scheduler_db_path() -> Path:
@@ -63,6 +67,9 @@ CREATE TABLE IF NOT EXISTS scheduled_task_runs (
     delivery_error TEXT,
     delivered_at TEXT,
     delivery_attempts INTEGER NOT NULL DEFAULT 0,
+    runner_id TEXT,
+    runner_kind TEXT,
+    runner_pid INTEGER,
     FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id)
 );
 """
@@ -72,12 +79,16 @@ _RUN_COLUMN_MIGRATIONS = {
     "delivery_error": "ALTER TABLE scheduled_task_runs ADD COLUMN delivery_error TEXT",
     "delivered_at": "ALTER TABLE scheduled_task_runs ADD COLUMN delivered_at TEXT",
     "delivery_attempts": "ALTER TABLE scheduled_task_runs ADD COLUMN delivery_attempts INTEGER NOT NULL DEFAULT 0",
+    "runner_id": "ALTER TABLE scheduled_task_runs ADD COLUMN runner_id TEXT",
+    "runner_kind": "ALTER TABLE scheduled_task_runs ADD COLUMN runner_kind TEXT",
+    "runner_pid": "ALTER TABLE scheduled_task_runs ADD COLUMN runner_pid INTEGER",
 }
 
 _TASK_COLUMN_MIGRATIONS = {
     "schedule_type": "ALTER TABLE scheduled_tasks ADD COLUMN schedule_type TEXT NOT NULL DEFAULT 'recurring'",
     "run_at": "ALTER TABLE scheduled_tasks ADD COLUMN run_at TEXT",
     "delete_after_run": "ALTER TABLE scheduled_tasks ADD COLUMN delete_after_run INTEGER NOT NULL DEFAULT 0",
+    "timeout_seconds": "ALTER TABLE scheduled_tasks ADD COLUMN timeout_seconds INTEGER NOT NULL DEFAULT 600",
 }
 
 
@@ -107,6 +118,67 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for column, sql in _RUN_COLUMN_MIGRATIONS.items():
         if column not in run_columns:
             conn.execute(sql)
+
+
+def _pid_is_alive(pid: int | None) -> bool:
+    """Return True if *pid* currently exists and can be signalled."""
+    if pid is None or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError as exc:
+        if exc.errno == errno.ESRCH:
+            return False
+        if exc.errno == errno.EPERM:
+            return True
+        raise
+    return True
+
+
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _running_row_is_stale(
+    row: sqlite3.Row,
+    *,
+    task_timeout_seconds: int,
+    now: datetime,
+) -> bool:
+    """Return True when a persisted running row is safe to recover.
+
+    Current-version runners persist their owning process PID.  A missing or
+    dead owner means the row is stale.  A live owner is preserved unless the
+    run has exceeded its configured timeout plus a short grace period; in that
+    case the runner should already have marked it timed out.
+    """
+    try:
+        pid = row["runner_pid"]
+    except (IndexError, KeyError):
+        pid = None
+    if not _pid_is_alive(pid):
+        return True
+
+    if task_timeout_seconds <= 0:
+        return False
+
+    started_at = _parse_iso_datetime(row["started_at"])
+    if started_at is None:
+        return False
+    stale_after = task_timeout_seconds + _RUNNING_STALE_GRACE_SECONDS
+    return (now - started_at).total_seconds() > stale_after
 
 
 class SchedulerStore:
@@ -174,17 +246,158 @@ class SchedulerStore:
             ).fetchone()
         return _row_to_task(row) if row else None
 
-    def list_tasks(self, *, enabled_only: bool = False) -> list["ScheduledTask"]:  # noqa: F821
+    def list_tasks(
+        self,
+        *,
+        enabled_only: bool = False,
+        cwd: str | None = None,
+    ) -> list["ScheduledTask"]:  # noqa: F821
         with _connect(self._db_path) as conn:
+            clauses: list[str] = []
+            params: list[Any] = []
             if enabled_only:
-                rows = conn.execute(
-                    "SELECT * FROM scheduled_tasks WHERE enabled=1 ORDER BY created_at"
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT * FROM scheduled_tasks ORDER BY created_at"
-                ).fetchall()
+                clauses.append("enabled=1")
+            if cwd is not None:
+                clauses.append("cwd=?")
+                params.append(cwd)
+            sql = "SELECT * FROM scheduled_tasks"
+            if clauses:
+                sql += " WHERE " + " AND ".join(clauses)
+            sql += " ORDER BY created_at"
+            rows = conn.execute(sql, tuple(params)).fetchall()
         return [_row_to_task(r) for r in rows]
+
+    def try_start_run(
+        self,
+        task_id: str,
+        run: "TaskRun",  # noqa: F821
+        *,
+        expected_next_run_at: str | None = None,
+        next_run_at: str | None = None,
+        clear_next_run_at: bool = False,
+        require_enabled: bool = True,
+    ) -> bool:
+        """Atomically claim a task run if no other runner already claimed it.
+
+        This method is the cross-process guard for scheduler execution.  It
+        creates the run row and moves the task to ``running`` inside a single
+        SQLite write transaction.  Competing TUI/daemon runners serialize on
+        ``BEGIN IMMEDIATE``; only the first caller whose task state still
+        matches succeeds.
+        """
+        from invincat_cli.scheduler.models import TaskRun
+
+        assert isinstance(run, TaskRun)
+        now = datetime.now(timezone.utc).isoformat()
+        with _connect(self._db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM scheduled_tasks WHERE id=?", (task_id,)
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                return False
+            if require_enabled and not bool(row["enabled"]):
+                conn.rollback()
+                return False
+            if (
+                expected_next_run_at is not None
+                and row["next_run_at"] != expected_next_run_at
+            ):
+                conn.rollback()
+                return False
+            active_rows = conn.execute(
+                """
+                SELECT * FROM scheduled_task_runs
+                WHERE task_id=? AND status='running' AND finished_at IS NULL
+                """,
+                (task_id,),
+            ).fetchall()
+            live_rows = [
+                active
+                for active in active_rows
+                if not _running_row_is_stale(
+                    active,
+                    task_timeout_seconds=int(row["timeout_seconds"] or 600),
+                    now=datetime.now(timezone.utc),
+                )
+            ]
+            if live_rows:
+                conn.rollback()
+                return False
+            stale_ids = [active["id"] for active in active_rows]
+            if stale_ids:
+                placeholders = ",".join("?" for _ in stale_ids)
+                conn.execute(
+                    f"""
+                    UPDATE scheduled_task_runs SET
+                        status='failed',
+                        finished_at=?,
+                        error=COALESCE(error, ?)
+                    WHERE id IN ({placeholders})
+                        AND status='running'
+                        AND finished_at IS NULL
+                    """,
+                    (
+                        now,
+                        "recovered stale scheduled run before starting new run",
+                        *stale_ids,
+                    ),
+                )
+
+            conn.execute(
+                """
+                INSERT INTO scheduled_task_runs
+                    (id, task_id, scheduled_for, started_at, finished_at,
+                     status, report_path, error, thread_id, cwd,
+                     delivery_status, delivery_error, delivered_at, delivery_attempts,
+                     runner_id, runner_kind, runner_pid)
+                VALUES
+                    (:id,:task_id,:scheduled_for,:started_at,:finished_at,
+                     :status,:report_path,:error,:thread_id,:cwd,
+                     :delivery_status,:delivery_error,:delivered_at,:delivery_attempts,
+                     :runner_id,:runner_kind,:runner_pid)
+                """,
+                {
+                    "id": run.id,
+                    "task_id": run.task_id,
+                    "scheduled_for": run.scheduled_for,
+                    "started_at": run.started_at,
+                    "finished_at": run.finished_at,
+                    "status": run.status,
+                    "report_path": run.report_path,
+                    "error": run.error,
+                    "thread_id": run.thread_id,
+                    "cwd": run.cwd,
+                    "delivery_status": run.delivery_status,
+                    "delivery_error": run.delivery_error,
+                    "delivered_at": run.delivered_at,
+                    "delivery_attempts": run.delivery_attempts,
+                    "runner_id": run.runner_id,
+                    "runner_kind": run.runner_kind,
+                    "runner_pid": run.runner_pid,
+                },
+            )
+            conn.execute(
+                """
+                UPDATE scheduled_tasks SET
+                    last_status='running',
+                    last_run_at=?,
+                    next_run_at=CASE WHEN ? THEN NULL ELSE ? END,
+                    last_error=NULL,
+                    updated_at=?
+                WHERE id=?
+                """,
+                (
+                    run.started_at,
+                    int(clear_next_run_at),
+                    next_run_at,
+                    now,
+                    task_id,
+                ),
+            )
+            conn.commit()
+            return True
 
     def update_task_status(
         self,
@@ -266,11 +479,13 @@ class SchedulerStore:
                 INSERT INTO scheduled_task_runs
                     (id, task_id, scheduled_for, started_at, finished_at,
                      status, report_path, error, thread_id, cwd,
-                     delivery_status, delivery_error, delivered_at, delivery_attempts)
+                     delivery_status, delivery_error, delivered_at, delivery_attempts,
+                     runner_id, runner_kind, runner_pid)
                 VALUES
                     (:id,:task_id,:scheduled_for,:started_at,:finished_at,
                      :status,:report_path,:error,:thread_id,:cwd,
-                     :delivery_status,:delivery_error,:delivered_at,:delivery_attempts)
+                     :delivery_status,:delivery_error,:delivered_at,:delivery_attempts,
+                     :runner_id,:runner_kind,:runner_pid)
                 ON CONFLICT(id) DO UPDATE SET
                     started_at=excluded.started_at,
                     finished_at=excluded.finished_at,
@@ -281,7 +496,10 @@ class SchedulerStore:
                     delivery_status=excluded.delivery_status,
                     delivery_error=excluded.delivery_error,
                     delivered_at=excluded.delivered_at,
-                    delivery_attempts=excluded.delivery_attempts
+                    delivery_attempts=excluded.delivery_attempts,
+                    runner_id=excluded.runner_id,
+                    runner_kind=excluded.runner_kind,
+                    runner_pid=excluded.runner_pid
                 """,
                 {
                     "id": run.id,
@@ -298,6 +516,9 @@ class SchedulerStore:
                     "delivery_error": run.delivery_error,
                     "delivered_at": run.delivered_at,
                     "delivery_attempts": run.delivery_attempts,
+                    "runner_id": run.runner_id,
+                    "runner_kind": run.runner_kind,
+                    "runner_pid": run.runner_pid,
                 },
             )
             conn.commit()
@@ -344,6 +565,145 @@ class SchedulerStore:
                 (status, error, delivered_at, attempts_delta, run_id),
             )
             conn.commit()
+
+    def reconcile_orphan_runs(
+        self,
+        cwd: str | None = None,
+        *,
+        finished_at: str,
+        status: str = "failed",
+        error: str = "daemon restart",
+    ) -> int:
+        """Mark stale still-running TaskRuns as finished.
+
+        Used on runner startup to clear records left over from a previous
+        process kill that never got to call ``finish_run``.  Live runs owned by
+        another active runner are left untouched.
+
+        If ``cwd`` is given, only runs from that working directory are
+        reconciled; otherwise all are.  Returns the number of rows updated.
+        """
+        select_params: list[Any] = []
+        select_sql = (
+            """
+            SELECT r.*, t.timeout_seconds
+            FROM scheduled_task_runs r
+            LEFT JOIN scheduled_tasks t ON t.id = r.task_id
+            WHERE r.status='running' AND r.finished_at IS NULL
+            """
+        )
+        if cwd is not None:
+            select_sql += " AND r.cwd=?"
+            select_params.append(cwd)
+        with _connect(self._db_path) as conn:
+            rows = conn.execute(select_sql, tuple(select_params)).fetchall()
+            finished_dt = _parse_iso_datetime(finished_at) or datetime.now(timezone.utc)
+            stale_rows = [
+                row
+                for row in rows
+                if _running_row_is_stale(
+                    row,
+                    task_timeout_seconds=int(row["timeout_seconds"] or 600),
+                    now=finished_dt,
+                )
+            ]
+            if not stale_rows:
+                conn.commit()
+                return 0
+
+            stale_ids = [row["id"] for row in stale_rows]
+            task_ids = sorted({row["task_id"] for row in stale_rows})
+            run_placeholders = ",".join("?" for _ in stale_ids)
+            cur = conn.execute(
+                f"""
+                UPDATE scheduled_task_runs SET
+                    status=?,
+                    finished_at=?,
+                    error=COALESCE(error, ?)
+                WHERE id IN ({run_placeholders})
+                    AND status='running'
+                    AND finished_at IS NULL
+                """,
+                (status, finished_at, error, *stale_ids),
+            )
+            task_placeholders = ",".join("?" for _ in task_ids)
+            conn.execute(
+                f"""
+                UPDATE scheduled_tasks SET last_status=?
+                WHERE id IN ({task_placeholders})
+                    AND last_status='running'
+                    AND NOT EXISTS (
+                        SELECT 1 FROM scheduled_task_runs r
+                        WHERE r.task_id=scheduled_tasks.id
+                            AND r.status='running'
+                            AND r.finished_at IS NULL
+                    )
+                """,
+                (status, *task_ids),
+            )
+            conn.commit()
+            return cur.rowcount
+
+
+class CwdScopedSchedulerStore(SchedulerStore):
+    """SchedulerStore view that hides tasks outside one working directory."""
+
+    def __init__(self, cwd: str | Path, db_path: Path | None = None) -> None:
+        self._scope_cwd = str(cwd)
+        super().__init__(db_path=db_path)
+
+    def list_tasks(
+        self,
+        *,
+        enabled_only: bool = False,
+        cwd: str | None = None,
+    ) -> list["ScheduledTask"]:  # noqa: F821
+        if cwd is not None and cwd != self._scope_cwd:
+            return []
+        return super().list_tasks(enabled_only=enabled_only, cwd=self._scope_cwd)
+
+    def load_task(self, task_id: str) -> "ScheduledTask | None":  # noqa: F821
+        task = super().load_task(task_id)
+        if task is None or task.cwd != self._scope_cwd:
+            return None
+        return task
+
+
+class FilteredSchedulerStore(SchedulerStore):
+    """SchedulerStore view that excludes matching tasks from runner claims."""
+
+    def __init__(
+        self,
+        *,
+        exclude_task: Callable[[Any], bool],
+        db_path: Path | None = None,
+    ) -> None:
+        self._exclude_task = exclude_task
+        super().__init__(db_path=db_path)
+
+    def _is_excluded(self, task: Any) -> bool:
+        try:
+            return bool(self._exclude_task(task))
+        except Exception:
+            logger.warning("Scheduler task filter failed", exc_info=True)
+            return False
+
+    def list_tasks(
+        self,
+        *,
+        enabled_only: bool = False,
+        cwd: str | None = None,
+    ) -> list["ScheduledTask"]:  # noqa: F821
+        return [
+            task for task in super().list_tasks(enabled_only=enabled_only, cwd=cwd)
+            if not self._is_excluded(task)
+        ]
+
+    def try_start_run(self, task_id: str, run: Any, **kwargs: Any) -> bool:
+        task = super().load_task(task_id)
+        if task is not None and self._is_excluded(task):
+            return False
+        return super().try_start_run(task_id, run, **kwargs)
 
 
 # ------------------------------------------------------------------
@@ -437,4 +797,7 @@ def _row_to_run(row: sqlite3.Row) -> "TaskRun":  # noqa: F821
         delivery_error=row["delivery_error"],
         delivered_at=row["delivered_at"],
         delivery_attempts=row["delivery_attempts"],
+        runner_id=row["runner_id"],
+        runner_kind=row["runner_kind"],
+        runner_pid=row["runner_pid"],
     )

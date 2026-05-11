@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import sqlite3
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -16,6 +20,7 @@ from invincat_cli.scheduler.models import (
     ScheduledTask,
     TaskRun,
 )
+from invincat_cli.scheduler.delivery import is_wecom_deliverable_task
 from invincat_cli.scheduler.parser import describe_schedule, parse_schedule
 from invincat_cli.scheduler.runner import (
     SchedulerRunner,
@@ -24,7 +29,11 @@ from invincat_cli.scheduler.runner import (
     compute_next_run,
     task_next_run,
 )
-from invincat_cli.scheduler.store import SchedulerStore
+from invincat_cli.scheduler.store import (
+    CwdScopedSchedulerStore,
+    FilteredSchedulerStore,
+    SchedulerStore,
+)
 from invincat_cli.scheduler.tool import (
     SCHEDULE_CANCEL_TYPE,
     SCHEDULE_CREATE_TYPE,
@@ -48,6 +57,7 @@ def _make_task(
     enabled: bool = True,
     next_run_at: str | None = None,
     misfire_policy: str = "run_once",
+    cwd: str = "/tmp",
 ) -> ScheduledTask:
     now = datetime.now(timezone.utc).isoformat()
     return ScheduledTask(
@@ -57,7 +67,7 @@ def _make_task(
         prompt="Do something",
         cron=cron,
         timezone=tz,
-        cwd="/tmp",
+        cwd=cwd,
         delivery=DeliverySpec(),
         report=ReportSpec(),
         created_at=now,
@@ -116,6 +126,15 @@ def test_bare_cron() -> None:
 def test_invalid_schedule_raises() -> None:
     with pytest.raises(ValueError):
         parse_schedule("every monday at noon")
+
+
+def test_schedule_rejects_extra_arguments() -> None:
+    with pytest.raises(ValueError):
+        parse_schedule("daily 08:00 extra")
+    with pytest.raises(ValueError):
+        parse_schedule("weekly mon 08:00 extra")
+    with pytest.raises(ValueError):
+        parse_schedule("monthly 1 08:00 extra")
 
 
 def test_monthly_dom_over_31_raises() -> None:
@@ -191,6 +210,58 @@ def test_store_save_and_load(tmp_path: Path) -> None:
     assert loaded is not None
     assert loaded.title == "Test Task"
     assert loaded.cron == "0 8 * * *"
+
+
+def test_store_migrates_timeout_seconds_column(tmp_path: Path) -> None:
+    db = tmp_path / "scheduler.db"
+    with sqlite3.connect(str(db)) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE scheduled_tasks (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                prompt TEXT NOT NULL,
+                cron TEXT NOT NULL,
+                timezone TEXT NOT NULL DEFAULT 'UTC',
+                cwd TEXT NOT NULL,
+                delivery TEXT NOT NULL DEFAULT '{}',
+                report TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                next_run_at TEXT,
+                last_run_at TEXT,
+                last_status TEXT NOT NULL DEFAULT 'never',
+                last_error TEXT,
+                run_count INTEGER NOT NULL DEFAULT 0,
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                misfire_policy TEXT NOT NULL DEFAULT 'run_once',
+                schedule_type TEXT NOT NULL DEFAULT 'recurring',
+                run_at TEXT,
+                delete_after_run INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE scheduled_task_runs (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                scheduled_for TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT,
+                status TEXT NOT NULL DEFAULT 'running',
+                report_path TEXT,
+                error TEXT,
+                thread_id TEXT,
+                cwd TEXT NOT NULL
+            );
+            """
+        )
+
+    store = SchedulerStore(db_path=db)
+    task = _make_task()
+    store.save_task(task)
+    loaded = store.load_task(task.id)
+
+    assert loaded is not None
+    assert loaded.timeout_seconds == 600
 
 
 def test_store_list_tasks(tmp_path: Path) -> None:
@@ -303,6 +374,145 @@ def test_store_persists_after_reload(tmp_path: Path) -> None:
     loaded = store2.load_task("task-1")
     assert loaded is not None
     assert loaded.title == "Persistent"
+
+
+def test_reconcile_orphan_runs_marks_running_runs_failed(tmp_path: Path) -> None:
+    """Daemon kill leaves runs stuck at status='running'; reconcile cleans them up."""
+    store = _make_store(tmp_path)
+    store.save_task(_make_task())
+    now = datetime.now(timezone.utc).isoformat()
+    store.save_run(TaskRun(
+        id="run-orphan",
+        task_id="task-1",
+        scheduled_for=now,
+        started_at=now,
+        finished_at=None,
+        status="running",
+        report_path=None,
+        error=None,
+        thread_id=None,
+        cwd="/tmp",
+        runner_pid=999999999,
+    ))
+
+    finished_at = datetime.now(timezone.utc).isoformat()
+    count = store.reconcile_orphan_runs("/tmp", finished_at=finished_at)
+    assert count == 1
+
+    loaded = store.load_run("run-orphan")
+    assert loaded is not None
+    assert loaded.status == "failed"
+    assert loaded.finished_at == finished_at
+    assert loaded.error == "daemon restart"
+
+
+def test_reconcile_orphan_runs_filters_by_cwd(tmp_path: Path) -> None:
+    """Only runs from the current daemon's cwd are reconciled."""
+    store = _make_store(tmp_path)
+    store.save_task(_make_task())
+    now = datetime.now(timezone.utc).isoformat()
+    store.save_run(TaskRun(
+        id="run-mine", task_id="task-1", scheduled_for=now, started_at=now,
+        finished_at=None, status="running", report_path=None, error=None,
+        thread_id=None, cwd="/tmp/project-a", runner_pid=999999999,
+    ))
+    store.save_run(TaskRun(
+        id="run-other", task_id="task-1", scheduled_for=now, started_at=now,
+        finished_at=None, status="running", report_path=None, error=None,
+        thread_id=None, cwd="/tmp/project-b", runner_pid=999999999,
+    ))
+
+    count = store.reconcile_orphan_runs(
+        "/tmp/project-a",
+        finished_at=datetime.now(timezone.utc).isoformat(),
+    )
+    assert count == 1
+    assert store.load_run("run-mine").status == "failed"
+    assert store.load_run("run-other").status == "running"
+
+
+def test_reconcile_orphan_runs_skips_already_finished(tmp_path: Path) -> None:
+    """Runs that finished cleanly are not touched."""
+    store = _make_store(tmp_path)
+    store.save_task(_make_task())
+    now = datetime.now(timezone.utc).isoformat()
+    store.save_run(TaskRun(
+        id="run-done", task_id="task-1", scheduled_for=now, started_at=now,
+        finished_at=now, status="success", report_path=None, error=None,
+        thread_id=None, cwd="/tmp",
+    ))
+
+    count = store.reconcile_orphan_runs(
+        "/tmp", finished_at=datetime.now(timezone.utc).isoformat(),
+    )
+    assert count == 0
+    assert store.load_run("run-done").status == "success"
+
+
+def test_reconcile_orphan_runs_skips_live_runner(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    store.save_task(_make_task())
+    now = datetime.now(timezone.utc).isoformat()
+    store.save_run(TaskRun(
+        id="run-live",
+        task_id="task-1",
+        scheduled_for=now,
+        started_at=now,
+        finished_at=None,
+        status="running",
+        report_path=None,
+        error=None,
+        thread_id=None,
+        cwd="/tmp",
+        runner_id="tui-live",
+        runner_kind="tui",
+        runner_pid=os.getpid(),
+    ))
+
+    count = store.reconcile_orphan_runs(
+        "/tmp",
+        finished_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    loaded = store.load_run("run-live")
+    assert count == 0
+    assert loaded is not None
+    assert loaded.status == "running"
+    assert loaded.finished_at is None
+
+
+def test_runner_startup_recovers_stale_running_row(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    now = datetime.now(timezone.utc).isoformat()
+    store.save_task(_make_task())
+    store.save_run(TaskRun(
+        id="run-stale",
+        task_id="task-1",
+        scheduled_for=now,
+        started_at=now,
+        finished_at=None,
+        status="running",
+        report_path=None,
+        error=None,
+        thread_id=None,
+        cwd="/tmp",
+        runner_id="dead-runner",
+        runner_kind="tui",
+        runner_pid=999999999,
+    ))
+
+    SchedulerRunner(
+        store,
+        inject_message=MagicMock(),
+        notify=MagicMock(),
+        is_busy=lambda: False,
+        cwd="/tmp",
+    )
+
+    loaded = store.load_run("run-stale")
+    assert loaded is not None
+    assert loaded.status == "failed"
+    assert loaded.finished_at is not None
 
 
 def test_store_preserves_one_shot_fields(tmp_path: Path) -> None:
@@ -674,6 +884,51 @@ def test_schedule_middleware_create_tool_returns_valid_json(tmp_path: Path) -> N
     assert data["cron"] == "0 8 * * *"
     assert data["title"] == "Daily analysis"
     assert data["output_mode"] == "message"
+    assert data["timeout_seconds"] == 600
+
+
+def test_schedule_middleware_create_tool_accepts_timeout(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    mw = ScheduleMiddleware(store=store)
+    create_tool = next(t for t in mw.tools if t.name == "create_scheduled_task")
+    result = _invoke_tool(create_tool, {
+        "title": "Daily analysis",
+        "schedule": "daily 08:00",
+        "prompt": "Analyse the project",
+        "timeout_seconds": 30,
+    })
+    data = json.loads(result)
+    assert data["timeout_seconds"] == 30
+
+
+def test_schedule_middleware_create_tool_rejects_invalid_options(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    mw = ScheduleMiddleware(store=store)
+    create_tool = next(t for t in mw.tools if t.name == "create_scheduled_task")
+
+    result = _invoke_tool(create_tool, {
+        "title": "Bad",
+        "schedule": "daily 08:00",
+        "prompt": "test",
+        "misfire_policy": "later",
+    })
+    assert "misfire_policy" in json.loads(result)["error"]
+
+    result = _invoke_tool(create_tool, {
+        "title": "Bad",
+        "schedule": "daily 08:00",
+        "prompt": "test",
+        "report_format": "pdf",
+    })
+    assert "report_format" in json.loads(result)["error"]
+
+    result = _invoke_tool(create_tool, {
+        "title": "Bad",
+        "schedule": "daily 08:00",
+        "prompt": "test",
+        "timeout_seconds": -1,
+    })
+    assert "timeout_seconds" in json.loads(result)["error"]
 
 
 def test_schedule_middleware_create_tool_accepts_report_mode(tmp_path: Path) -> None:
@@ -746,10 +1001,43 @@ def test_schedule_time_display_uses_explicit_offset() -> None:
         _format_schedule_time_for_display(value, "Asia/Shanghai")
         == "2026-05-17T22:09+08:00"
     )
+    assert (
+        _format_schedule_time_for_display(
+            "2026-05-17T14:09:00+00:00",
+            "Asia/Shanghai",
+        )
+        == "2026-05-17T22:09+08:00"
+    )
+
+
+def test_tui_delegates_wecom_delivery_tasks_to_running_daemon(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from invincat_cli.app import _wecom_daemon_claims_scheduled_task
+
+    monkeypatch.setattr(
+        "invincat_cli.wecom.daemon.is_daemon_running",
+        lambda cwd: str(cwd) == str(tmp_path),
+    )
+    tui_task = _make_task(cwd=str(tmp_path))
+    wecom_task = _make_task(cwd=str(tmp_path))
+    wecom_task.delivery = DeliverySpec(
+        channels=[{"type": "wecom", "chatid": "chat-1"}]
+    )
+    other_cwd_task = _make_task(cwd=str(tmp_path / "other"))
+    other_cwd_task.delivery = DeliverySpec(
+        channels=[{"type": "wecom", "chatid": "chat-1"}]
+    )
+
+    assert _wecom_daemon_claims_scheduled_task(tui_task, tmp_path) is False
+    assert _wecom_daemon_claims_scheduled_task(wecom_task, tmp_path) is True
+    assert _wecom_daemon_claims_scheduled_task(other_cwd_task, tmp_path) is False
 
 
 def test_schedule_middleware_delete_tool_alias_returns_cancel_payload(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
+    store.save_task(_make_task(task_id="task-1"))
     mw = ScheduleMiddleware(store=store)
     delete_tool = next(t for t in mw.tools if t.name == "delete_scheduled_task")
 
@@ -760,11 +1048,40 @@ def test_schedule_middleware_delete_tool_alias_returns_cancel_payload(tmp_path: 
     assert data["task_id"] == "task-1"
 
 
+def test_schedule_middleware_scoped_store_hides_cross_cwd_tasks(tmp_path: Path) -> None:
+    db_path = tmp_path / "scheduler.db"
+    base_store = SchedulerStore(db_path=db_path)
+    base_store.save_task(_make_task(task_id="a", title="Project A", cwd="/tmp/a"))
+    task_b = _make_task(task_id="b", title="Project B", cwd="/tmp/b")
+    task_b.delivery = DeliverySpec(channels=[{"type": "wecom", "chatid": "secret-b"}])
+    base_store.save_task(task_b)
+
+    scoped_store = CwdScopedSchedulerStore("/tmp/a", db_path=db_path)
+    mw = ScheduleMiddleware(store=scoped_store)
+    list_tool = next(t for t in mw.tools if t.name == "list_scheduled_tasks")
+    update_tool = next(t for t in mw.tools if t.name == "update_scheduled_task")
+    delete_tool = next(t for t in mw.tools if t.name == "delete_scheduled_task")
+    run_now_tool = next(t for t in mw.tools if t.name == "run_scheduled_task_now")
+
+    list_data = json.loads(_invoke_tool(list_tool, {}))
+    assert [task["id"] for task in list_data["tasks"]] == ["a"]
+    assert "secret-b" not in json.dumps(list_data, ensure_ascii=False)
+
+    update_data = json.loads(_invoke_tool(update_tool, {"task_id": "b", "title": "x"}))
+    delete_data = json.loads(_invoke_tool(delete_tool, {"task_id": "b"}))
+    run_now_data = json.loads(_invoke_tool(run_now_tool, {"task_id": "b"}))
+
+    assert "not found" in update_data["error"]
+    assert "not found" in delete_data["error"]
+    assert "not found" in run_now_data["error"]
+
+
 def test_schedule_middleware_list_includes_delivery_and_output_mode(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     task = _make_task()
     task.delivery = DeliverySpec(channels=[{"type": "wecom", "chatid": "chat-1"}])
     task.report = ReportSpec(mode="report")
+    task.next_run_at = "2026-05-17T14:09:00+00:00"
     store.save_task(task)
 
     mw = ScheduleMiddleware(store=store)
@@ -776,6 +1093,8 @@ def test_schedule_middleware_list_includes_delivery_and_output_mode(tmp_path: Pa
     assert data["tasks"][0]["delivery"] == [{"type": "wecom", "chatid": "chat-1"}]
     assert data["tasks"][0]["output_mode"] == "report"
     assert data["tasks"][0]["schedule_type"] == "recurring"
+    assert data["tasks"][0]["next_run_at"] == "2026-05-17T14:09:00+00:00"
+    assert data["tasks"][0]["next_run_display"] == "2026-05-17T22:09+08:00"
 
 
 def test_schedule_middleware_create_tool_invalid_schedule(tmp_path: Path) -> None:
@@ -791,9 +1110,25 @@ def test_schedule_middleware_create_tool_invalid_schedule(tmp_path: Path) -> Non
     assert "error" in data
 
 
-def test_schedule_middleware_hides_tools_during_scheduled_run(tmp_path: Path) -> None:
-    from types import SimpleNamespace
+def test_schedule_middleware_rejects_schedule_update_for_one_shot(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    task = _make_task()
+    task.schedule_type = "once"
+    task.run_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    store.save_task(task)
+    mw = ScheduleMiddleware(store=store)
+    update_tool = next(t for t in mw.tools if t.name == "update_scheduled_task")
 
+    result = _invoke_tool(update_tool, {
+        "task_id": task.id,
+        "schedule": "daily 08:00",
+    })
+    data = json.loads(result)
+
+    assert "one-shot" in data["error"]
+
+
+def test_schedule_middleware_hides_tools_during_scheduled_run(tmp_path: Path) -> None:
     from invincat_cli.scheduler.tool import SCHEDULE_CONTEXT_FLAG
 
     store = _make_store(tmp_path)
@@ -809,8 +1144,6 @@ def test_schedule_middleware_hides_tools_during_scheduled_run(tmp_path: Path) ->
 
 
 def test_schedule_middleware_shows_tools_during_normal_run(tmp_path: Path) -> None:
-    from types import SimpleNamespace
-
     store = _make_store(tmp_path)
     mw = ScheduleMiddleware(store=store)
 
@@ -821,6 +1154,27 @@ def test_schedule_middleware_shows_tools_during_normal_run(tmp_path: Path) -> No
 
     filtered = mw._filter_tools([FakeTool()], runtime)
     assert len(filtered) == 1
+
+
+def test_schedule_middleware_rejects_management_tool_call_during_scheduled_run(
+    tmp_path: Path,
+) -> None:
+    from invincat_cli.scheduler.tool import SCHEDULE_CONTEXT_FLAG
+
+    store = _make_store(tmp_path)
+    mw = ScheduleMiddleware(store=store)
+    request = SimpleNamespace(
+        tool_call={"name": "create_scheduled_task", "id": "call-1"},
+        runtime=SimpleNamespace(context={SCHEDULE_CONTEXT_FLAG: True}),
+    )
+
+    def handler(_request):  # noqa: ANN001
+        raise AssertionError("handler should not be called")
+
+    result = mw.wrap_tool_call(request, handler)
+
+    assert result.status == "error"
+    assert "not available during scheduled runs" in result.content
 
 
 # ---------------------------------------------------------------------------
@@ -916,6 +1270,208 @@ def test_runner_running_task_ids_released_after_finish(tmp_path: Path) -> None:
     assert "task-1" not in runner._running_task_ids
 
 
+def test_runner_claim_prevents_second_runner_duplicate_fire(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    store.save_task(_make_task(next_run_at=past))
+    first_fired: list[tuple[str, str]] = []
+    second_fired: list[tuple[str, str]] = []
+
+    async def inject_first(task_id: str, run_id: str, _prompt: str) -> None:
+        first_fired.append((task_id, run_id))
+
+    async def inject_second(task_id: str, run_id: str, _prompt: str) -> None:
+        second_fired.append((task_id, run_id))
+
+    runner1 = SchedulerRunner(
+        store,
+        inject_message=inject_first,
+        notify=MagicMock(),
+        is_busy=lambda: False,
+    )
+    runner2 = SchedulerRunner(
+        store,
+        inject_message=inject_second,
+        notify=MagicMock(),
+        is_busy=lambda: False,
+    )
+
+    asyncio.run(runner1.tick())
+    asyncio.run(runner2.tick())
+
+    assert len(first_fired) == 1
+    assert second_fired == []
+
+
+def test_try_start_run_recovers_stale_running_row(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    now = datetime.now(timezone.utc).isoformat()
+    store.save_task(_make_task(next_run_at=now))
+    store.save_run(TaskRun(
+        id="stale-run",
+        task_id="task-1",
+        scheduled_for=now,
+        started_at=now,
+        finished_at=None,
+        status="running",
+        report_path=None,
+        error=None,
+        thread_id=None,
+        cwd="/tmp",
+        runner_id="dead-runner",
+        runner_kind="tui",
+        runner_pid=999999999,
+    ))
+    new_run = TaskRun(
+        id="new-run",
+        task_id="task-1",
+        scheduled_for=now,
+        started_at=now,
+        finished_at=None,
+        status="running",
+        report_path=None,
+        error=None,
+        thread_id=None,
+        cwd="/tmp",
+        runner_id="new-runner",
+        runner_kind="tui",
+        runner_pid=os.getpid(),
+    )
+
+    claimed = store.try_start_run("task-1", new_run)
+
+    stale = store.load_run("stale-run")
+    loaded_new = store.load_run("new-run")
+    assert claimed is True
+    assert stale is not None
+    assert stale.status == "failed"
+    assert stale.finished_at is not None
+    assert loaded_new is not None
+    assert loaded_new.status == "running"
+
+
+def test_try_start_run_preserves_live_running_row(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    now = datetime.now(timezone.utc).isoformat()
+    store.save_task(_make_task(next_run_at=now))
+    store.save_run(TaskRun(
+        id="live-run",
+        task_id="task-1",
+        scheduled_for=now,
+        started_at=now,
+        finished_at=None,
+        status="running",
+        report_path=None,
+        error=None,
+        thread_id=None,
+        cwd="/tmp",
+        runner_id="live-runner",
+        runner_kind="tui",
+        runner_pid=os.getpid(),
+    ))
+    new_run = TaskRun(
+        id="new-run",
+        task_id="task-1",
+        scheduled_for=now,
+        started_at=now,
+        finished_at=None,
+        status="running",
+        report_path=None,
+        error=None,
+        thread_id=None,
+        cwd="/tmp",
+        runner_id="new-runner",
+        runner_kind="wecom-daemon",
+        runner_pid=os.getpid(),
+    )
+
+    claimed = store.try_start_run("task-1", new_run)
+
+    live = store.load_run("live-run")
+    assert claimed is False
+    assert store.load_run("new-run") is None
+    assert live is not None
+    assert live.status == "running"
+    assert live.finished_at is None
+
+
+def test_runner_filters_tasks_by_cwd(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    cwd_a = str(tmp_path / "a")
+    cwd_b = str(tmp_path / "b")
+    store.save_task(_make_task(task_id="a", next_run_at=past, cwd=cwd_a))
+    store.save_task(_make_task(task_id="b", next_run_at=past, cwd=cwd_b))
+    fired: list[str] = []
+
+    async def inject(task_id: str, _run_id: str, _prompt: str) -> None:
+        fired.append(task_id)
+
+    runner = SchedulerRunner(
+        store,
+        inject_message=inject,
+        notify=MagicMock(),
+        is_busy=lambda: False,
+        cwd=cwd_a,
+    )
+
+    asyncio.run(runner.tick())
+
+    assert fired == ["a"]
+    loaded_b = store.load_task("b")
+    assert loaded_b is not None
+    assert loaded_b.last_status == "never"
+
+
+def test_filtered_store_excludes_wecom_tasks_from_tui_runner(tmp_path: Path) -> None:
+    db_path = tmp_path / "scheduler.db"
+    base_store = SchedulerStore(db_path=db_path)
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    base_store.save_task(_make_task(task_id="tui", next_run_at=past, cwd="/tmp"))
+    wecom_task = _make_task(task_id="wecom", next_run_at=past, cwd="/tmp")
+    wecom_task.delivery = DeliverySpec(channels=[{"type": "wecom", "chatid": "chat-1"}])
+    base_store.save_task(wecom_task)
+
+    store = FilteredSchedulerStore(
+        db_path=db_path,
+        exclude_task=is_wecom_deliverable_task,
+    )
+    fired: list[str] = []
+
+    async def inject(task_id: str, _run_id: str, _prompt: str) -> None:
+        fired.append(task_id)
+
+    runner = SchedulerRunner(
+        store,
+        inject_message=inject,
+        notify=MagicMock(),
+        is_busy=lambda: False,
+        cwd="/tmp",
+    )
+
+    asyncio.run(runner.tick())
+
+    assert fired == ["tui"]
+    loaded_wecom = base_store.load_task("wecom")
+    assert loaded_wecom is not None
+    assert loaded_wecom.last_status == "never"
+
+    run = TaskRun(
+        id="manual-wecom-run",
+        task_id="wecom",
+        scheduled_for=datetime.now(timezone.utc).isoformat(),
+        started_at=datetime.now(timezone.utc).isoformat(),
+        finished_at=None,
+        status="running",
+        report_path=None,
+        error=None,
+        thread_id=None,
+        cwd="/tmp",
+    )
+    assert store.try_start_run("wecom", run) is False
+    assert base_store.load_run("manual-wecom-run") is None
+
+
 def test_runner_timeout_invokes_callback(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     now = datetime.now(timezone.utc).isoformat()
@@ -931,6 +1487,9 @@ def test_runner_timeout_invokes_callback(tmp_path: Path) -> None:
         error=None,
         thread_id=None,
         cwd="/tmp",
+        runner_id="current-runner",
+        runner_kind="tui",
+        runner_pid=os.getpid(),
     ))
     timed_out: list[tuple[str, str]] = []
 
@@ -955,6 +1514,26 @@ def test_runner_timeout_invokes_callback(tmp_path: Path) -> None:
     assert loaded is not None
     assert loaded.status == "timeout"
     assert timed_out == [("run-1", "task-1")]
+
+
+def test_app_scheduled_timeout_removes_pending_message() -> None:
+    from invincat_cli.app import DeepAgentsApp, QueuedMessage
+
+    app = DeepAgentsApp.__new__(DeepAgentsApp)
+    app._pending_messages = deque([
+        QueuedMessage(
+            text="timed out",
+            mode="normal",
+            scheduled_run_id="run-1",
+            scheduled_task_id="task-1",
+        ),
+        QueuedMessage(text="keep", mode="normal"),
+    ])
+    app._active_scheduled_run = None
+
+    app._cancel_timed_out_scheduled_turn("run-1", "task-1")
+
+    assert [msg.text for msg in app._pending_messages] == ["keep"]
 
 
 def test_app_resolves_active_scheduled_wecom_chat_id(tmp_path: Path) -> None:

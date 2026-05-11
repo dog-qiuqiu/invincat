@@ -432,6 +432,12 @@ def parse_args() -> argparse.Namespace:
     )
     add_json_output_arg(update_parser)
 
+    subparsers.add_parser(
+        "wecombot",
+        help="Run the WeCom daemon in the foreground (for debugging)",
+        add_help=True,
+    )
+
     # Default interactive mode — argument order here determines the
     # usage line printed by argparse; keep in sync with ui.show_help().
     parser.add_argument(
@@ -1003,6 +1009,11 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
         console.print(f"[bold red]Error:[/bold red] {msg}")
         sys.exit(1)
     except (OSError, ValueError) as exc:
+        # When --stdin was not explicit, treat an unreadable stdin (e.g. a
+        # half-dead fd left behind by nohup/systemd on Linux) as "no piped
+        # input" rather than failing. Daemon-like launches commonly land here.
+        if not explicit_stdin:
+            return
         from rich.markup import escape
 
         console.print(
@@ -1331,7 +1342,8 @@ def cli_main() -> None:
 
             settings.shell_allow_list = parse_shell_allow_list(args.shell_allow_list)
 
-        apply_stdin_pipe(args)
+        if args.command != "wecombot":
+            apply_stdin_pipe(args)
 
         if getattr(args, "no_mcp", False) and getattr(args, "mcp_config", None):
             from rich.console import Console as _Console
@@ -1483,6 +1495,8 @@ def cli_main() -> None:
                 )
             else:
                 show_agents_help()
+        elif args.command == "wecombot":
+            _run_wecombot_foreground(console)
         elif args.command == "skills":
             from invincat_cli.skills import execute_skills_command
 
@@ -1702,6 +1716,23 @@ def cli_main() -> None:
         except NameError:
             sys.stderr.write("\n\nInterrupted\n")
         sys.exit(0)
+
+
+def _run_wecombot_foreground(console: Any) -> None:
+    """Run the WeCom daemon in the foreground (for debugging)."""
+    from pathlib import Path
+
+    from invincat_cli.wecom.daemon import WeComDaemonConfig, run_daemon_foreground
+
+    cwd = Path.cwd()
+    try:
+        config = WeComDaemonConfig.from_env(cwd)
+    except ValueError as exc:
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        sys.exit(1)
+    console.print(f"Running WeCom daemon in foreground (cwd={cwd})...")
+    run_daemon_foreground(config)
+    sys.exit(0)
 
 
 if __name__ == "__main__":

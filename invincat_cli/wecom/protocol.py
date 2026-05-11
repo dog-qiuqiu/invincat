@@ -214,11 +214,20 @@ def build_wecom_file_frame_for_chat(chatid: str, media_id: str) -> dict[str, Any
 
 
 def resolve_wecom_active_chat_id(inbound_frame: dict[str, Any]) -> str:
-    """Resolve the active-send target from a WeCom message callback."""
+    """Resolve the active-send target from a WeCom message callback.
+
+    Synthetic frames produced by the scheduler use a ``__scheduled_<task_id>``
+    chatid for thread isolation; they may also carry the real WeCom chatid
+    under ``body._wecom_target_chatid`` so file/active-send tools triggered
+    inside a scheduled run can still reach the user.
+    """
     inbound_body = inbound_frame.get("body") or {}
     chatid = inbound_body.get("chatid")
-    if isinstance(chatid, str) and chatid:
+    if isinstance(chatid, str) and chatid and not chatid.startswith("__scheduled_"):
         return chatid
+    target = inbound_body.get("_wecom_target_chatid")
+    if isinstance(target, str) and target:
+        return target
     chattype = inbound_body.get("chattype")
     from_obj = inbound_body.get("from") or {}
     from_userid = from_obj.get("userid") if isinstance(from_obj, dict) else None

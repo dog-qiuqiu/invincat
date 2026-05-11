@@ -931,6 +931,7 @@ def create_cli_agent(
     mcp_server_info: list[MCPServerInfo] | None = None,
     cwd: str | Path | None = None,
     project_context: ProjectContext | None = None,
+    scheduler_cwd_scope: str | Path | None = None,
     async_subagents: list[AsyncSubAgent] | None = None,
     extra_middleware: Sequence[AgentMiddleware] | None = None,
     approve_plan_system_prompt: str | None = None,
@@ -995,6 +996,9 @@ def create_cli_agent(
         project_context: Explicit project path context for project-sensitive
             behavior such as project `AGENTS.md` files, skills, subagents, and
             MCP trust.
+        scheduler_cwd_scope: Optional cwd used to scope scheduler management
+            tools. When set, schedule tools cannot list or load tasks from other
+            working directories.
         async_subagents: Remote LangGraph deployments to expose as async subagent tools.
 
             Loaded from `[async_subagents]` in `config.toml` or passed directly.
@@ -1144,10 +1148,15 @@ def create_cli_agent(
         WeComFileMiddleware(allowed_root=effective_cwd or Path.cwd())
     )
 
-    from invincat_cli.scheduler.store import SchedulerStore
+    from invincat_cli.scheduler.store import CwdScopedSchedulerStore, SchedulerStore
     from invincat_cli.scheduler.tool import ScheduleMiddleware
 
-    agent_middleware.append(ScheduleMiddleware(store=SchedulerStore()))
+    scheduler_store = (
+        CwdScopedSchedulerStore(scheduler_cwd_scope)
+        if scheduler_cwd_scope is not None
+        else SchedulerStore()
+    )
+    agent_middleware.append(ScheduleMiddleware(store=scheduler_store))
 
     # Add memory middleware
     if enable_memory:

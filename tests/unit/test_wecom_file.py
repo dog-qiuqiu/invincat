@@ -215,6 +215,78 @@ def test_wecom_bridge_dispatches_supported_message_once() -> None:
     assert seen == [frame]
 
 
+def test_wecom_bridge_rejects_sender_outside_allowlist(monkeypatch) -> None:
+    monkeypatch.setenv("WECOM_ALLOWED_USERIDS", "allowed-user")
+    monkeypatch.setenv("WECOM_ALLOWED_CHATIDS", "allowed-chat")
+    seen: list[dict] = []
+
+    async def _noop(_message: str) -> None:
+        return None
+
+    async def _on_message(frame: dict) -> None:
+        seen.append(frame)
+
+    bridge = WeComBridge(
+        on_status=_noop,
+        on_error=_noop,
+        on_message=_on_message,
+        should_exit=lambda: False,
+    )
+    frame = {
+        "cmd": "aibot_msg_callback",
+        "headers": {"req_id": "req-denied"},
+        "body": {
+            "msgtype": "text",
+            "chatid": "other-chat",
+            "from": {"userid": "other-user"},
+            "text": {"content": "hello"},
+        },
+    }
+
+    async def _run() -> None:
+        await bridge._handle_callback_frame(frame)
+        await asyncio.sleep(0)
+
+    asyncio.run(_run())
+
+    assert seen == []
+
+
+def test_wecom_bridge_allows_configured_sender(monkeypatch) -> None:
+    monkeypatch.setenv("WECOM_ALLOWED_USERIDS", "allowed-user")
+    seen: list[dict] = []
+
+    async def _noop(_message: str) -> None:
+        return None
+
+    async def _on_message(frame: dict) -> None:
+        seen.append(frame)
+
+    bridge = WeComBridge(
+        on_status=_noop,
+        on_error=_noop,
+        on_message=_on_message,
+        should_exit=lambda: False,
+    )
+    frame = {
+        "cmd": "aibot_msg_callback",
+        "headers": {"req_id": "req-allowed"},
+        "body": {
+            "msgtype": "text",
+            "from": {"userid": "allowed-user"},
+            "text": {"content": "hello"},
+        },
+    }
+
+    async def _run() -> None:
+        await bridge._handle_callback_frame(frame)
+        await asyncio.sleep(0)
+
+    asyncio.run(_run())
+
+    assert seen == [frame]
+
+
 def test_wecom_recv_closes_stale_connection(monkeypatch) -> None:
     import invincat_cli.wecom.bridge as bridge_module
 
@@ -627,6 +699,24 @@ def test_wecom_file_frame_requires_active_send_target() -> None:
         raise AssertionError("expected missing target to fail")
 
 
+def test_wecom_file_frame_uses_target_for_scheduled_synthetic_frame() -> None:
+    """Scheduled-task synthetic frames carry the real chatid under
+    ``body._wecom_target_chatid`` and use ``__scheduled_<id>`` for thread
+    isolation; file sends must reach the real chatid, not the synthetic one."""
+    frame = {
+        "headers": {"req_id": "inbound-sched-1"},
+        "body": {
+            "chatid": "__scheduled_task-42",
+            "_wecom_target_chatid": "wr_real_chat",
+        },
+    }
+
+    payload = build_wecom_file_frame(frame, "media-1")
+
+    assert payload["cmd"] == "aibot_send_msg"
+    assert payload["body"]["chatid"] == "wr_real_chat"
+
+
 def test_wecom_text_frame_sends_active_markdown_to_chat() -> None:
     payload = build_wecom_text_frame("chat-1", "hello")
 
@@ -843,6 +933,274 @@ def test_wecom_message_responder_streams_ack_content_and_final() -> None:
     assert queued[0]["headers"]["req_id"] == "inbound-1"
     assert queued[1]["body"]["stream"]["content"] == "streaming hello"
     assert queued[2]["body"]["stream"]["content"] == "final answer"
+
+
+def test_headless_wecom_handler_passes_scheduled_runtime_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from invincat_cli.scheduler.tool import SCHEDULE_CONTEXT_FLAG
+    from invincat_cli.wecom.headless import HeadlessWeComHandler
+
+    contexts: list[dict] = []
+
+    class FakeAgent:
+        async def astream(self, *_args, **kwargs):  # noqa: ANN002, ANN003
+            contexts.append(kwargs["context"])
+            if False:
+                yield None
+
+    async def send_request(_payload: dict) -> dict:
+        return {"errcode": 0}
+
+    monkeypatch.setattr(
+        "invincat_cli.config.build_stream_config",
+        lambda _thread_id, _agent_name: {},
+    )
+    handler = HeadlessWeComHandler(
+        agent=FakeAgent(),
+        cwd=tmp_path,
+        send_request=send_request,
+    )
+
+    asyncio.run(
+        handler._run_agent_turn(
+            "hello",
+            thread_id="thread-1",
+            inbound_frame={"body": {"chatid": "chat-1"}},
+            on_content=lambda _content: asyncio.sleep(0),
+            runtime_context={SCHEDULE_CONTEXT_FLAG: True, "wecom_enabled": False},
+        )
+    )
+
+    assert contexts == [{SCHEDULE_CONTEXT_FLAG: True, "wecom_enabled": True}]
+
+
+def test_wecom_daemon_scheduled_timeout_result_is_delivered() -> None:
+    from invincat_cli.wecom.daemon import _deliver_scheduled_timeout_result
+
+    sent_payloads: list[dict] = []
+
+    class FakeBridge:
+        def __init__(self) -> None:
+            self.ready = asyncio.Event()
+            self.ready.set()
+
+        async def send_request(self, payload: dict, *, timeout: float) -> dict:  # noqa: ARG002
+            sent_payloads.append(payload)
+            return {"errcode": 0}
+
+    task = SimpleNamespace(
+        title="Daily report",
+        delivery=SimpleNamespace(
+            channels=[{"type": "wecom", "chatid": "chat-1"}]
+        ),
+    )
+    store = SimpleNamespace(load_task=lambda _task_id: task)
+
+    delivered = asyncio.run(
+        _deliver_scheduled_timeout_result(
+            store,
+            [FakeBridge()],
+            task_id="task-1",
+        )
+    )
+
+    assert delivered is True
+    assert sent_payloads[0]["body"]["chatid"] == "chat-1"
+    assert "定时任务执行超时" in sent_payloads[0]["body"]["markdown"]["content"]
+    assert "Daily report" in sent_payloads[0]["body"]["markdown"]["content"]
+
+
+def test_headless_schedule_payload_rejects_cross_cwd_update(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from invincat_cli.scheduler.tool import SCHEDULE_UPDATE_TYPE
+    from invincat_cli.wecom.headless import HeadlessWeComHandler
+
+    saved: list[object] = []
+    other_task = SimpleNamespace(
+        id="task-other",
+        title="Other",
+        cwd=str(tmp_path / "other"),
+        cron="0 8 * * *",
+        prompt="old",
+        enabled=True,
+        timezone="Asia/Shanghai",
+        schedule_type="recurring",
+        run_at=None,
+        next_run_at=None,
+        updated_at="old",
+    )
+
+    class FakeStore:
+        def load_task(self, _task_id: str):
+            return other_task
+
+        def save_task(self, task) -> None:  # noqa: ANN001
+            saved.append(task)
+
+    async def send_request(_payload: dict) -> dict:
+        return {"errcode": 0}
+
+    monkeypatch.setattr("invincat_cli.scheduler.store.SchedulerStore", FakeStore)
+    handler = HeadlessWeComHandler(
+        agent=object(),
+        cwd=tmp_path / "current",
+        send_request=send_request,
+    )
+
+    with pytest.raises(ValueError, match="belongs to another project"):
+        asyncio.run(
+            handler._process_schedule_payload(
+                {
+                    "type": SCHEDULE_UPDATE_TYPE,
+                    "task_id": "task-other",
+                    "updates": {"title": "mutated"},
+                },
+                {"body": {"chatid": "chat-1"}},
+            )
+        )
+
+    assert saved == []
+    assert other_task.title == "Other"
+
+
+def test_headless_schedule_payload_rejects_cross_cwd_delete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from invincat_cli.scheduler.tool import SCHEDULE_CANCEL_TYPE
+    from invincat_cli.wecom.headless import HeadlessWeComHandler
+
+    deleted: list[str] = []
+    other_task = SimpleNamespace(id="task-other", cwd=str(tmp_path / "other"))
+
+    class FakeStore:
+        def load_task(self, _task_id: str):
+            return other_task
+
+        def delete_task(self, task_id: str) -> bool:
+            deleted.append(task_id)
+            return True
+
+    async def send_request(_payload: dict) -> dict:
+        return {"errcode": 0}
+
+    monkeypatch.setattr("invincat_cli.scheduler.store.SchedulerStore", FakeStore)
+    handler = HeadlessWeComHandler(
+        agent=object(),
+        cwd=tmp_path / "current",
+        send_request=send_request,
+    )
+
+    with pytest.raises(ValueError, match="belongs to another project"):
+        asyncio.run(
+            handler._process_schedule_payload(
+                {"type": SCHEDULE_CANCEL_TYPE, "task_id": "task-other"},
+                {"body": {"chatid": "chat-1"}},
+            )
+        )
+
+    assert deleted == []
+
+
+def test_headless_schedule_payload_rejects_cross_cwd_run_now(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from invincat_cli.scheduler.tool import SCHEDULE_RUN_NOW_TYPE
+    from invincat_cli.wecom.headless import HeadlessWeComHandler
+
+    fired: list[object] = []
+    other_task = SimpleNamespace(id="task-other", cwd=str(tmp_path / "other"))
+
+    class FakeStore:
+        def load_task(self, _task_id: str):
+            return other_task
+
+    async def send_request(_payload: dict) -> dict:
+        return {"errcode": 0}
+
+    async def on_schedule_run_now(task) -> None:  # noqa: ANN001
+        fired.append(task)
+
+    monkeypatch.setattr("invincat_cli.scheduler.store.SchedulerStore", FakeStore)
+    handler = HeadlessWeComHandler(
+        agent=object(),
+        cwd=tmp_path / "current",
+        send_request=send_request,
+        on_schedule_run_now=on_schedule_run_now,
+    )
+
+    with pytest.raises(ValueError, match="belongs to another project"):
+        asyncio.run(
+            handler._process_schedule_payload(
+                {"type": SCHEDULE_RUN_NOW_TYPE, "task_id": "task-other"},
+                {"body": {"chatid": "chat-1"}},
+            )
+        )
+
+    assert fired == []
+
+
+def test_headless_schedule_payload_error_propagates_from_agent_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from invincat_cli.scheduler.tool import SCHEDULE_CANCEL_TYPE
+    from invincat_cli.wecom.headless import HeadlessWeComHandler
+
+    other_task = SimpleNamespace(id="task-other", cwd=str(tmp_path / "other"))
+
+    class FakeStore:
+        def load_task(self, _task_id: str):
+            return other_task
+
+    class FakeAgent:
+        async def astream(self, *_args, **_kwargs):  # noqa: ANN002
+            yield (
+                (),
+                "messages",
+                (
+                    ToolMessage(
+                        content=json.dumps(
+                            {
+                                "type": SCHEDULE_CANCEL_TYPE,
+                                "task_id": "task-other",
+                            }
+                        ),
+                        name="cancel_scheduled_task",
+                        tool_call_id="call-1",
+                    ),
+                    {},
+                ),
+            )
+
+    async def send_request(_payload: dict) -> dict:
+        return {"errcode": 0}
+
+    monkeypatch.setattr("invincat_cli.scheduler.store.SchedulerStore", FakeStore)
+    monkeypatch.setattr(
+        "invincat_cli.config.build_stream_config",
+        lambda _thread_id, _agent_name: {},
+    )
+    handler = HeadlessWeComHandler(
+        agent=FakeAgent(),
+        cwd=tmp_path / "current",
+        send_request=send_request,
+    )
+
+    with pytest.raises(ValueError, match="belongs to another project"):
+        asyncio.run(
+            handler._run_agent_turn(
+                "delete it",
+                thread_id="thread-1",
+                inbound_frame={"body": {"chatid": "chat-1"}},
+                on_content=lambda _content: asyncio.sleep(0),
+            )
+        )
 
 
 class _ModelRequest:

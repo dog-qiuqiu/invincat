@@ -129,6 +129,7 @@ class ServerConfig:
     sandbox_setup: str | None = None
     cwd: str | None = None
     project_root: str | None = None
+    scheduler_cwd_scope: str | None = None
     mcp_config_path: str | None = None
     no_mcp: bool = False
     trust_project_mcp: bool | None = None
@@ -184,6 +185,7 @@ class ServerConfig:
             "SANDBOX_SETUP": self.sandbox_setup,
             "CWD": self.cwd,
             "PROJECT_ROOT": self.project_root,
+            "SCHEDULER_CWD_SCOPE": self.scheduler_cwd_scope,
             "MCP_CONFIG_PATH": self.mcp_config_path,
             "NO_MCP": str(self.no_mcp).lower(),
             "TRUST_PROJECT_MCP": (
@@ -226,6 +228,7 @@ class ServerConfig:
             sandbox_setup=_read_env_str("SANDBOX_SETUP"),
             cwd=_read_env_str("CWD"),
             project_root=_read_env_str("PROJECT_ROOT"),
+            scheduler_cwd_scope=_read_env_str("SCHEDULER_CWD_SCOPE"),
             mcp_config_path=_read_env_str("MCP_CONFIG_PATH"),
             no_mcp=_read_env_bool("NO_MCP"),
             trust_project_mcp=_read_env_optional_bool("TRUST_PROJECT_MCP"),
@@ -255,6 +258,7 @@ class ServerConfig:
         no_mcp: bool,
         trust_project_mcp: bool | None,
         interactive: bool,
+        scheduler_cwd_scope: str | None = None,
     ) -> ServerConfig:
         """Build a `ServerConfig` from parsed CLI arguments.
 
@@ -286,6 +290,11 @@ class ServerConfig:
             A fully resolved `ServerConfig`.
         """
         normalized_mcp = _normalize_path(mcp_config_path, project_context, "MCP config")
+        normalized_scheduler_scope = _normalize_path(
+            scheduler_cwd_scope,
+            project_context,
+            "scheduler cwd scope",
+        )
 
         return cls(
             model=model_name,
@@ -311,6 +320,7 @@ class ServerConfig:
                 and project_context.project_root is not None
                 else None
             ),
+            scheduler_cwd_scope=normalized_scheduler_scope,
             mcp_config_path=normalized_mcp,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
