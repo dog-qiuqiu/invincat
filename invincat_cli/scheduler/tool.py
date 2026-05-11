@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Annotated, Any
 
 from langchain.agents.middleware.types import AgentMiddleware
+from langchain_core.messages import ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
 
 if TYPE_CHECKING:
@@ -141,6 +142,7 @@ class ScheduleMiddleware(AgentMiddleware):
             misfire_policy: str = "run_once",
             once_at: str | None = None,
             delete_after_run: bool = False,
+            timeout_seconds: int = 600,
         ) -> str:
             """Create a scheduled or one-shot delayed task.
 
@@ -168,6 +170,7 @@ class ScheduleMiddleware(AgentMiddleware):
                 misfire_policy: "run_once" (default) or "skip" if TUI was closed.
                 once_at: Optional ISO datetime for a one-shot task, e.g. 2026-05-10T20:00:00+08:00.
                 delete_after_run: Delete a one-shot task after it finishes instead of disabling it.
+                timeout_seconds: Maximum runtime before the run is marked timed out. Use 0 to disable timeout.
             """
             from invincat_cli.scheduler.parser import parse_schedule
 
@@ -201,6 +204,21 @@ class ScheduleMiddleware(AgentMiddleware):
                     {"error": "output_mode must be 'message' or 'report'"},
                     ensure_ascii=False,
                 )
+            if report_format not in {"markdown", "text"}:
+                return json.dumps(
+                    {"error": "report_format must be 'markdown' or 'text'"},
+                    ensure_ascii=False,
+                )
+            if misfire_policy not in {"run_once", "skip"}:
+                return json.dumps(
+                    {"error": "misfire_policy must be 'run_once' or 'skip'"},
+                    ensure_ascii=False,
+                )
+            if timeout_seconds < 0:
+                return json.dumps(
+                    {"error": "timeout_seconds must be >= 0"},
+                    ensure_ascii=False,
+                )
 
             payload = {
                 "type": SCHEDULE_CREATE_TYPE,
@@ -217,6 +235,7 @@ class ScheduleMiddleware(AgentMiddleware):
                 "output_mode": output_mode,
                 "report_format": report_format,
                 "misfire_policy": misfire_policy,
+                "timeout_seconds": timeout_seconds,
                 "tool_call_id": tool_call_id,
             }
             return json.dumps(payload, ensure_ascii=False)
@@ -287,6 +306,16 @@ class ScheduleMiddleware(AgentMiddleware):
             task = store.load_task(task_id)
             if task is None:
                 return json.dumps({"error": f"Task {task_id!r} not found"}, ensure_ascii=False)
+            if schedule is not None and task.schedule_type == "once":
+                return json.dumps(
+                    {
+                        "error": (
+                            "Updating the schedule of a one-shot task is not supported; "
+                            "create a new one-shot task instead."
+                        )
+                    },
+                    ensure_ascii=False,
+                )
 
             cron = task.cron
             if schedule is not None:
@@ -394,6 +423,22 @@ class ScheduleMiddleware(AgentMiddleware):
             return [t for t in tools if _tool_name(t) not in _MANAGEMENT_TOOLS]
         return tools
 
+    def _reject_management_tool_during_scheduled_run(
+        self,
+        request: "ToolCallRequest",
+    ) -> ToolMessage | None:
+        name = str(request.tool_call.get("name", ""))
+        if name not in _MANAGEMENT_TOOLS:
+            return None
+        if not _is_scheduled_run(getattr(request, "runtime", None)):
+            return None
+        return ToolMessage(
+            content="Scheduled-task management tools are not available during scheduled runs.",
+            name=name,
+            tool_call_id=request.tool_call["id"],
+            status="error",
+        )
+
     def wrap_model_call(
         self,
         request: "ModelRequest",
@@ -409,3 +454,21 @@ class ScheduleMiddleware(AgentMiddleware):
     ) -> "ModelResponse":
         tools = self._filter_tools(list(getattr(request, "tools", [])), request.runtime)
         return await handler(request.override(tools=tools))
+
+    def wrap_tool_call(
+        self,
+        request: "ToolCallRequest",
+        handler: "Callable[[ToolCallRequest], ToolMessage]",
+    ) -> ToolMessage:
+        if (rejection := self._reject_management_tool_during_scheduled_run(request)) is not None:
+            return rejection
+        return handler(request)
+
+    async def awrap_tool_call(
+        self,
+        request: "ToolCallRequest",
+        handler: "Callable[[ToolCallRequest], Awaitable[ToolMessage]]",
+    ) -> ToolMessage:
+        if (rejection := self._reject_management_tool_during_scheduled_run(request)) is not None:
+            return rejection
+        return await handler(request)

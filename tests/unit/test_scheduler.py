@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -48,6 +51,7 @@ def _make_task(
     enabled: bool = True,
     next_run_at: str | None = None,
     misfire_policy: str = "run_once",
+    cwd: str = "/tmp",
 ) -> ScheduledTask:
     now = datetime.now(timezone.utc).isoformat()
     return ScheduledTask(
@@ -57,7 +61,7 @@ def _make_task(
         prompt="Do something",
         cron=cron,
         timezone=tz,
-        cwd="/tmp",
+        cwd=cwd,
         delivery=DeliverySpec(),
         report=ReportSpec(),
         created_at=now,
@@ -116,6 +120,15 @@ def test_bare_cron() -> None:
 def test_invalid_schedule_raises() -> None:
     with pytest.raises(ValueError):
         parse_schedule("every monday at noon")
+
+
+def test_schedule_rejects_extra_arguments() -> None:
+    with pytest.raises(ValueError):
+        parse_schedule("daily 08:00 extra")
+    with pytest.raises(ValueError):
+        parse_schedule("weekly mon 08:00 extra")
+    with pytest.raises(ValueError):
+        parse_schedule("monthly 1 08:00 extra")
 
 
 def test_monthly_dom_over_31_raises() -> None:
@@ -191,6 +204,58 @@ def test_store_save_and_load(tmp_path: Path) -> None:
     assert loaded is not None
     assert loaded.title == "Test Task"
     assert loaded.cron == "0 8 * * *"
+
+
+def test_store_migrates_timeout_seconds_column(tmp_path: Path) -> None:
+    db = tmp_path / "scheduler.db"
+    with sqlite3.connect(str(db)) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE scheduled_tasks (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                prompt TEXT NOT NULL,
+                cron TEXT NOT NULL,
+                timezone TEXT NOT NULL DEFAULT 'UTC',
+                cwd TEXT NOT NULL,
+                delivery TEXT NOT NULL DEFAULT '{}',
+                report TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                next_run_at TEXT,
+                last_run_at TEXT,
+                last_status TEXT NOT NULL DEFAULT 'never',
+                last_error TEXT,
+                run_count INTEGER NOT NULL DEFAULT 0,
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                misfire_policy TEXT NOT NULL DEFAULT 'run_once',
+                schedule_type TEXT NOT NULL DEFAULT 'recurring',
+                run_at TEXT,
+                delete_after_run INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE scheduled_task_runs (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                scheduled_for TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT,
+                status TEXT NOT NULL DEFAULT 'running',
+                report_path TEXT,
+                error TEXT,
+                thread_id TEXT,
+                cwd TEXT NOT NULL
+            );
+            """
+        )
+
+    store = SchedulerStore(db_path=db)
+    task = _make_task()
+    store.save_task(task)
+    loaded = store.load_task(task.id)
+
+    assert loaded is not None
+    assert loaded.timeout_seconds == 600
 
 
 def test_store_list_tasks(tmp_path: Path) -> None:
@@ -746,6 +811,51 @@ def test_schedule_middleware_create_tool_returns_valid_json(tmp_path: Path) -> N
     assert data["cron"] == "0 8 * * *"
     assert data["title"] == "Daily analysis"
     assert data["output_mode"] == "message"
+    assert data["timeout_seconds"] == 600
+
+
+def test_schedule_middleware_create_tool_accepts_timeout(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    mw = ScheduleMiddleware(store=store)
+    create_tool = next(t for t in mw.tools if t.name == "create_scheduled_task")
+    result = _invoke_tool(create_tool, {
+        "title": "Daily analysis",
+        "schedule": "daily 08:00",
+        "prompt": "Analyse the project",
+        "timeout_seconds": 30,
+    })
+    data = json.loads(result)
+    assert data["timeout_seconds"] == 30
+
+
+def test_schedule_middleware_create_tool_rejects_invalid_options(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    mw = ScheduleMiddleware(store=store)
+    create_tool = next(t for t in mw.tools if t.name == "create_scheduled_task")
+
+    result = _invoke_tool(create_tool, {
+        "title": "Bad",
+        "schedule": "daily 08:00",
+        "prompt": "test",
+        "misfire_policy": "later",
+    })
+    assert "misfire_policy" in json.loads(result)["error"]
+
+    result = _invoke_tool(create_tool, {
+        "title": "Bad",
+        "schedule": "daily 08:00",
+        "prompt": "test",
+        "report_format": "pdf",
+    })
+    assert "report_format" in json.loads(result)["error"]
+
+    result = _invoke_tool(create_tool, {
+        "title": "Bad",
+        "schedule": "daily 08:00",
+        "prompt": "test",
+        "timeout_seconds": -1,
+    })
+    assert "timeout_seconds" in json.loads(result)["error"]
 
 
 def test_schedule_middleware_create_tool_accepts_report_mode(tmp_path: Path) -> None:
@@ -863,9 +973,25 @@ def test_schedule_middleware_create_tool_invalid_schedule(tmp_path: Path) -> Non
     assert "error" in data
 
 
-def test_schedule_middleware_hides_tools_during_scheduled_run(tmp_path: Path) -> None:
-    from types import SimpleNamespace
+def test_schedule_middleware_rejects_schedule_update_for_one_shot(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    task = _make_task()
+    task.schedule_type = "once"
+    task.run_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    store.save_task(task)
+    mw = ScheduleMiddleware(store=store)
+    update_tool = next(t for t in mw.tools if t.name == "update_scheduled_task")
 
+    result = _invoke_tool(update_tool, {
+        "task_id": task.id,
+        "schedule": "daily 08:00",
+    })
+    data = json.loads(result)
+
+    assert "one-shot" in data["error"]
+
+
+def test_schedule_middleware_hides_tools_during_scheduled_run(tmp_path: Path) -> None:
     from invincat_cli.scheduler.tool import SCHEDULE_CONTEXT_FLAG
 
     store = _make_store(tmp_path)
@@ -881,8 +1007,6 @@ def test_schedule_middleware_hides_tools_during_scheduled_run(tmp_path: Path) ->
 
 
 def test_schedule_middleware_shows_tools_during_normal_run(tmp_path: Path) -> None:
-    from types import SimpleNamespace
-
     store = _make_store(tmp_path)
     mw = ScheduleMiddleware(store=store)
 
@@ -893,6 +1017,27 @@ def test_schedule_middleware_shows_tools_during_normal_run(tmp_path: Path) -> No
 
     filtered = mw._filter_tools([FakeTool()], runtime)
     assert len(filtered) == 1
+
+
+def test_schedule_middleware_rejects_management_tool_call_during_scheduled_run(
+    tmp_path: Path,
+) -> None:
+    from invincat_cli.scheduler.tool import SCHEDULE_CONTEXT_FLAG
+
+    store = _make_store(tmp_path)
+    mw = ScheduleMiddleware(store=store)
+    request = SimpleNamespace(
+        tool_call={"name": "create_scheduled_task", "id": "call-1"},
+        runtime=SimpleNamespace(context={SCHEDULE_CONTEXT_FLAG: True}),
+    )
+
+    def handler(_request):  # noqa: ANN001
+        raise AssertionError("handler should not be called")
+
+    result = mw.wrap_tool_call(request, handler)
+
+    assert result.status == "error"
+    assert "not available during scheduled runs" in result.content
 
 
 # ---------------------------------------------------------------------------
@@ -988,6 +1133,67 @@ def test_runner_running_task_ids_released_after_finish(tmp_path: Path) -> None:
     assert "task-1" not in runner._running_task_ids
 
 
+def test_runner_claim_prevents_second_runner_duplicate_fire(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    store.save_task(_make_task(next_run_at=past))
+    first_fired: list[tuple[str, str]] = []
+    second_fired: list[tuple[str, str]] = []
+
+    async def inject_first(task_id: str, run_id: str, _prompt: str) -> None:
+        first_fired.append((task_id, run_id))
+
+    async def inject_second(task_id: str, run_id: str, _prompt: str) -> None:
+        second_fired.append((task_id, run_id))
+
+    runner1 = SchedulerRunner(
+        store,
+        inject_message=inject_first,
+        notify=MagicMock(),
+        is_busy=lambda: False,
+    )
+    runner2 = SchedulerRunner(
+        store,
+        inject_message=inject_second,
+        notify=MagicMock(),
+        is_busy=lambda: False,
+    )
+
+    asyncio.run(runner1.tick())
+    asyncio.run(runner2.tick())
+
+    assert len(first_fired) == 1
+    assert second_fired == []
+
+
+def test_runner_filters_tasks_by_cwd(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    cwd_a = str(tmp_path / "a")
+    cwd_b = str(tmp_path / "b")
+    store.save_task(_make_task(task_id="a", next_run_at=past, cwd=cwd_a))
+    store.save_task(_make_task(task_id="b", next_run_at=past, cwd=cwd_b))
+    fired: list[str] = []
+
+    async def inject(task_id: str, _run_id: str, _prompt: str) -> None:
+        fired.append(task_id)
+
+    runner = SchedulerRunner(
+        store,
+        inject_message=inject,
+        notify=MagicMock(),
+        is_busy=lambda: False,
+        cwd=cwd_a,
+    )
+
+    asyncio.run(runner.tick())
+
+    assert fired == ["a"]
+    loaded_b = store.load_task("b")
+    assert loaded_b is not None
+    assert loaded_b.last_status == "never"
+
+
 def test_runner_timeout_invokes_callback(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     now = datetime.now(timezone.utc).isoformat()
@@ -1027,6 +1233,26 @@ def test_runner_timeout_invokes_callback(tmp_path: Path) -> None:
     assert loaded is not None
     assert loaded.status == "timeout"
     assert timed_out == [("run-1", "task-1")]
+
+
+def test_app_scheduled_timeout_removes_pending_message() -> None:
+    from invincat_cli.app import DeepAgentsApp, QueuedMessage
+
+    app = DeepAgentsApp.__new__(DeepAgentsApp)
+    app._pending_messages = deque([
+        QueuedMessage(
+            text="timed out",
+            mode="normal",
+            scheduled_run_id="run-1",
+            scheduled_task_id="task-1",
+        ),
+        QueuedMessage(text="keep", mode="normal"),
+    ])
+    app._active_scheduled_run = None
+
+    app._cancel_timed_out_scheduled_turn("run-1", "task-1")
+
+    assert [msg.text for msg in app._pending_messages] == ["keep"]
 
 
 def test_app_resolves_active_scheduled_wecom_chat_id(tmp_path: Path) -> None:

@@ -4152,6 +4152,7 @@ class DeepAgentsApp(App):
             notify=lambda msg: self.notify(msg, timeout=6),
             is_busy=lambda: self._agent_running or self._shell_running,
             on_timeout=self._handle_scheduled_timeout,
+            cwd=self._cwd,
         )
         self._scheduler_interval_handle = self.set_interval(
             60, self._scheduler_tick, pause=False
@@ -4164,11 +4165,48 @@ class DeepAgentsApp(App):
             await self._scheduler_runner.tick()
 
     async def _handle_scheduled_timeout(self, run_id: str, task_id: str) -> None:
+        self._cancel_timed_out_scheduled_turn(run_id, task_id)
         await self._deliver_scheduled_result_to_wecom(
             task_id=task_id,
             run_id=run_id,
             status="timeout",
             error="Scheduled task timed out",
+        )
+
+    def _cancel_timed_out_scheduled_turn(self, run_id: str, task_id: str) -> None:
+        """Cancel or dequeue a scheduled turn after SchedulerRunner timeout."""
+        self._pending_messages = deque(
+            msg for msg in self._pending_messages
+            if not (
+                msg.scheduled_run_id == run_id
+                and msg.scheduled_task_id == task_id
+            )
+        )
+        if self._active_scheduled_run != (run_id, task_id):
+            return
+
+        if self._pending_approval_widget is not None:
+            with suppress(Exception):
+                self._pending_approval_widget.action_select_reject()
+        if self._pending_ask_user_widget is not None:
+            with suppress(Exception):
+                self._pending_ask_user_widget.action_cancel()
+        if self._shell_worker is not None:
+            self._shell_worker.cancel()
+        if self._agent_worker is not None:
+            self._agent_worker.cancel()
+        self._shell_running = False
+        self._shell_worker = None
+        self._agent_running = False
+        self._agent_worker = None
+        self._active_turn_is_planner = False
+        self._active_scheduled_run = None
+        self._scheduled_turn_status = "timeout"
+        self._scheduled_turn_error = "Scheduled task timed out"
+        logger.warning(
+            "scheduled run timed out; cancelled active worker run_id=%s task_id=%s",
+            run_id,
+            task_id,
         )
 
     async def _deliver_scheduled_result_to_wecom(
@@ -4401,6 +4439,7 @@ class DeepAgentsApp(App):
                 output_mode = "message"
             report_format = payload.get("report_format", "markdown")
             misfire_policy = payload.get("misfire_policy", "run_once")
+            timeout_seconds = int(payload.get("timeout_seconds", 600))
             slug = re.sub(r"[^\w\-]", "-", title.lower())[:40].strip("-")
             delivery_channel = payload.get("delivery", "tui")
             delivery = DeliverySpec()
@@ -4447,6 +4486,7 @@ class DeepAgentsApp(App):
                 schedule_type=schedule_type,
                 run_at=run_at if schedule_type == "once" else None,
                 delete_after_run=delete_after_run,
+                timeout_seconds=timeout_seconds,
             )
             self._scheduler_store.save_task(task)
 
@@ -4482,15 +4522,20 @@ class DeepAgentsApp(App):
                 task.title = updates["title"]
             if "cron" in updates:
                 task.cron = updates["cron"]
-                now = datetime.now(timezone.utc)
-                next_run = compute_next_run(task.cron, now, task.timezone)
-                task.next_run_at = next_run.isoformat() if next_run else None
             if "prompt" in updates:
                 task.prompt = updates["prompt"]
             if "enabled" in updates:
                 task.enabled = bool(updates["enabled"])
             if "timezone" in updates:
                 task.timezone = updates["timezone"]
+            if "cron" in updates or "timezone" in updates:
+                now = datetime.now(timezone.utc)
+                next_run = (
+                    _parse_dt(task.run_at)
+                    if task.schedule_type == "once"
+                    else compute_next_run(task.cron, now, task.timezone)
+                )
+                task.next_run_at = next_run.isoformat() if next_run else None
             task.updated_at = datetime.now(timezone.utc).isoformat()
             self._scheduler_store.save_task(task)
             await self._mount_message(

@@ -86,6 +86,9 @@ def parse_schedule(expr: str) -> str:
 
     # daily [HH:MM]
     if keyword == "daily":
+        if len(parts) > 2:
+            msg = "daily accepts at most one time argument: e.g. 'daily 08:00'"
+            raise ValueError(msg)
         time_str = parts[1] if len(parts) > 1 else "08:00"
         minute, hour = _parse_time(time_str)
         return f"{minute} {hour} * * *"
@@ -94,6 +97,9 @@ def parse_schedule(expr: str) -> str:
     if keyword == "weekly":
         if len(parts) < 2:
             msg = "weekly requires a weekday: e.g. 'weekly mon 08:00'"
+            raise ValueError(msg)
+        if len(parts) > 3:
+            msg = "weekly accepts only weekday and optional time: e.g. 'weekly mon 08:00'"
             raise ValueError(msg)
         day_str = parts[1].lower()
         dow = _WEEKDAY_MAP.get(day_str)
@@ -108,6 +114,9 @@ def parse_schedule(expr: str) -> str:
     if keyword == "monthly":
         if len(parts) < 2:
             msg = "monthly requires a day-of-month: e.g. 'monthly 1 08:00'"
+            raise ValueError(msg)
+        if len(parts) > 3:
+            msg = "monthly accepts only day and optional time: e.g. 'monthly 1 08:00'"
             raise ValueError(msg)
         try:
             dom = int(parts[1])

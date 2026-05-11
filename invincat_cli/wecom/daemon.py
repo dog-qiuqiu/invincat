@@ -678,9 +678,9 @@ async def _run_scheduler(
     class _CwdFilteredStore(SchedulerStore):
         """Only surface tasks whose cwd matches this daemon's project directory."""
 
-        def list_tasks(self, *, enabled_only: bool = False):
+        def list_tasks(self, *, enabled_only: bool = False, cwd: str | None = None):
             return [
-                t for t in super().list_tasks(enabled_only=enabled_only)
+                t for t in super().list_tasks(enabled_only=enabled_only, cwd=cwd)
                 if t.cwd == str(config.cwd)
             ]
 
@@ -873,6 +873,7 @@ async def _run_scheduler(
         notify=lambda msg: logger.info("Scheduler: %s", msg),
         is_busy=lambda: False,
         on_timeout=_cancel_timed_out_run,
+        cwd=str(config.cwd),
     )
     runner_holder.append(runner)
     logger.info("WeCom daemon scheduler started (cwd=%s)", config.cwd)

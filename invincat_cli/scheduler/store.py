@@ -78,6 +78,7 @@ _TASK_COLUMN_MIGRATIONS = {
     "schedule_type": "ALTER TABLE scheduled_tasks ADD COLUMN schedule_type TEXT NOT NULL DEFAULT 'recurring'",
     "run_at": "ALTER TABLE scheduled_tasks ADD COLUMN run_at TEXT",
     "delete_after_run": "ALTER TABLE scheduled_tasks ADD COLUMN delete_after_run INTEGER NOT NULL DEFAULT 0",
+    "timeout_seconds": "ALTER TABLE scheduled_tasks ADD COLUMN timeout_seconds INTEGER NOT NULL DEFAULT 600",
 }
 
 
@@ -174,17 +175,126 @@ class SchedulerStore:
             ).fetchone()
         return _row_to_task(row) if row else None
 
-    def list_tasks(self, *, enabled_only: bool = False) -> list["ScheduledTask"]:  # noqa: F821
+    def list_tasks(
+        self,
+        *,
+        enabled_only: bool = False,
+        cwd: str | None = None,
+    ) -> list["ScheduledTask"]:  # noqa: F821
         with _connect(self._db_path) as conn:
+            clauses: list[str] = []
+            params: list[Any] = []
             if enabled_only:
-                rows = conn.execute(
-                    "SELECT * FROM scheduled_tasks WHERE enabled=1 ORDER BY created_at"
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT * FROM scheduled_tasks ORDER BY created_at"
-                ).fetchall()
+                clauses.append("enabled=1")
+            if cwd is not None:
+                clauses.append("cwd=?")
+                params.append(cwd)
+            sql = "SELECT * FROM scheduled_tasks"
+            if clauses:
+                sql += " WHERE " + " AND ".join(clauses)
+            sql += " ORDER BY created_at"
+            rows = conn.execute(sql, tuple(params)).fetchall()
         return [_row_to_task(r) for r in rows]
+
+    def try_start_run(
+        self,
+        task_id: str,
+        run: "TaskRun",  # noqa: F821
+        *,
+        expected_next_run_at: str | None = None,
+        next_run_at: str | None = None,
+        clear_next_run_at: bool = False,
+        require_enabled: bool = True,
+    ) -> bool:
+        """Atomically claim a task run if no other runner already claimed it.
+
+        This method is the cross-process guard for scheduler execution.  It
+        creates the run row and moves the task to ``running`` inside a single
+        SQLite write transaction.  Competing TUI/daemon runners serialize on
+        ``BEGIN IMMEDIATE``; only the first caller whose task state still
+        matches succeeds.
+        """
+        from invincat_cli.scheduler.models import TaskRun
+
+        assert isinstance(run, TaskRun)
+        now = datetime.now(timezone.utc).isoformat()
+        with _connect(self._db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM scheduled_tasks WHERE id=?", (task_id,)
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                return False
+            if require_enabled and not bool(row["enabled"]):
+                conn.rollback()
+                return False
+            if (
+                expected_next_run_at is not None
+                and row["next_run_at"] != expected_next_run_at
+            ):
+                conn.rollback()
+                return False
+            active = conn.execute(
+                """
+                SELECT 1 FROM scheduled_task_runs
+                WHERE task_id=? AND status='running' AND finished_at IS NULL
+                LIMIT 1
+                """,
+                (task_id,),
+            ).fetchone()
+            if active is not None:
+                conn.rollback()
+                return False
+
+            conn.execute(
+                """
+                INSERT INTO scheduled_task_runs
+                    (id, task_id, scheduled_for, started_at, finished_at,
+                     status, report_path, error, thread_id, cwd,
+                     delivery_status, delivery_error, delivered_at, delivery_attempts)
+                VALUES
+                    (:id,:task_id,:scheduled_for,:started_at,:finished_at,
+                     :status,:report_path,:error,:thread_id,:cwd,
+                     :delivery_status,:delivery_error,:delivered_at,:delivery_attempts)
+                """,
+                {
+                    "id": run.id,
+                    "task_id": run.task_id,
+                    "scheduled_for": run.scheduled_for,
+                    "started_at": run.started_at,
+                    "finished_at": run.finished_at,
+                    "status": run.status,
+                    "report_path": run.report_path,
+                    "error": run.error,
+                    "thread_id": run.thread_id,
+                    "cwd": run.cwd,
+                    "delivery_status": run.delivery_status,
+                    "delivery_error": run.delivery_error,
+                    "delivered_at": run.delivered_at,
+                    "delivery_attempts": run.delivery_attempts,
+                },
+            )
+            conn.execute(
+                """
+                UPDATE scheduled_tasks SET
+                    last_status='running',
+                    last_run_at=?,
+                    next_run_at=CASE WHEN ? THEN NULL ELSE ? END,
+                    last_error=NULL,
+                    updated_at=?
+                WHERE id=?
+                """,
+                (
+                    run.started_at,
+                    int(clear_next_run_at),
+                    next_run_at,
+                    now,
+                    task_id,
+                ),
+            )
+            conn.commit()
+            return True
 
     def update_task_status(
         self,

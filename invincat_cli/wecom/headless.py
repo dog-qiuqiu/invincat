@@ -348,6 +348,7 @@ class HeadlessWeComHandler:
                 output_mode = "message"
             report_format = payload.get("report_format", "markdown")
             misfire_policy = payload.get("misfire_policy", "run_once")
+            timeout_seconds = int(payload.get("timeout_seconds", 600))
             slug = re.sub(r"[^\w\-]", "-", title.lower())[:40].strip("-")
 
             # Resolve the WeCom delivery target from the inbound frame.
@@ -413,6 +414,7 @@ class HeadlessWeComHandler:
                 schedule_type=schedule_type,
                 run_at=run_at if schedule_type == "once" else None,
                 delete_after_run=delete_after_run,
+                timeout_seconds=timeout_seconds,
             )
             store.save_task(task)
             logger.info(
@@ -432,14 +434,19 @@ class HeadlessWeComHandler:
                 task.title = updates["title"]
             if "cron" in updates:
                 task.cron = updates["cron"]
-                next_run = compute_next_run(task.cron, datetime.now(timezone.utc), task.timezone)
-                task.next_run_at = next_run.isoformat() if next_run else None
             if "prompt" in updates:
                 task.prompt = updates["prompt"]
             if "enabled" in updates:
                 task.enabled = bool(updates["enabled"])
             if "timezone" in updates:
                 task.timezone = updates["timezone"]
+            if "cron" in updates or "timezone" in updates:
+                next_run = (
+                    _parse_dt(task.run_at)
+                    if task.schedule_type == "once"
+                    else compute_next_run(task.cron, datetime.now(timezone.utc), task.timezone)
+                )
+                task.next_run_at = next_run.isoformat() if next_run else None
             task.updated_at = datetime.now(timezone.utc).isoformat()
             store.save_task(task)
             logger.info("Scheduled task updated: %r id=%s", task.title, task_id)

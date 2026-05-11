@@ -112,14 +112,16 @@ class SchedulerRunner:
         notify: Callable[[str], None],
         is_busy: Callable[[], bool],
         on_timeout: Callable[[str, str], Awaitable[None]] | None = None,
+        cwd: str | None = None,
     ) -> None:
         self._store = store
         self._inject_message = inject_message
         self._notify = notify
         self._is_busy = is_busy
         self._on_timeout = on_timeout
+        self._cwd = cwd
         self._running_task_ids: set[str] = set()
-        self._pending_runs: list[tuple["ScheduledTask", datetime]] = []
+        self._pending_runs: list[tuple["ScheduledTask", datetime, str | None]] = []
         self._pending_task_ids: set[str] = set()
         self._timeout_tasks: dict[str, asyncio.Task] = {}
 
@@ -131,7 +133,7 @@ class SchedulerRunner:
         """Check for due or missed tasks and enqueue them."""
         now = datetime.now(timezone.utc)
         try:
-            tasks = self._store.list_tasks(enabled_only=True)
+            tasks = self._store.list_tasks(enabled_only=True, cwd=self._cwd)
         except Exception:
             logger.exception("Failed to load tasks during scheduler tick")
             return
@@ -197,18 +199,26 @@ class SchedulerRunner:
         if was_missed:
             self._notify(f"Missed scheduled task: {task.title!r} — running now")
 
-        self._pending_runs.append((task, next_run))
+        self._pending_runs.append((task, next_run, task.next_run_at))
         self._pending_task_ids.add(task.id)
         await self._drain_pending(now)
 
     async def _drain_pending(self, now: datetime) -> None:
         while self._pending_runs and not self._is_busy():
-            task, scheduled_for = self._pending_runs.pop(0)
+            task, scheduled_for, expected_next_run_at = self._pending_runs.pop(0)
             self._pending_task_ids.discard(task.id)
             current_task = self._store.load_task(task.id)
             if current_task is None or not current_task.enabled:
                 continue
-            await self._fire(current_task, scheduled_for, now)
+            if self._cwd is not None and current_task.cwd != self._cwd:
+                continue
+            await self._fire(
+                current_task,
+                scheduled_for,
+                now,
+                expected_next_run_at=expected_next_run_at,
+                require_enabled=True,
+            )
 
     async def drain_pending_now(self) -> None:
         """Attempt to fire queued runs immediately if the TUI is idle."""
@@ -221,12 +231,20 @@ class SchedulerRunner:
             return
         if self._is_busy():
             if task.id not in self._pending_task_ids:
-                self._pending_runs.append((task, now))
+                self._pending_runs.append((task, now, None))
                 self._pending_task_ids.add(task.id)
         else:
-            await self._fire(task, now, now)
+            await self._fire(task, now, now, require_enabled=False)
 
-    async def _fire(self, task: "ScheduledTask", scheduled_for: datetime, now: datetime) -> None:
+    async def _fire(
+        self,
+        task: "ScheduledTask",
+        scheduled_for: datetime,
+        now: datetime,
+        *,
+        expected_next_run_at: str | None = None,
+        require_enabled: bool = True,
+    ) -> None:
         from invincat_cli.scheduler.models import TaskRun
 
         run_id = str(uuid.uuid4())
@@ -242,16 +260,19 @@ class SchedulerRunner:
             thread_id=None,
             cwd=task.cwd,
         )
-        self._store.save_run(run)
         is_once = task.schedule_type == "once"
         next_run = None if is_once else compute_next_run(task.cron, now, task.timezone)
-        self._store.update_task_status(
+        claimed = self._store.try_start_run(
             task.id,
-            last_status="running",
-            last_run_at=now.isoformat(),
+            run,
+            expected_next_run_at=expected_next_run_at,
             next_run_at=next_run.isoformat() if next_run else None,
             clear_next_run_at=is_once,
+            require_enabled=require_enabled,
         )
+        if not claimed:
+            logger.info("Scheduled task %r was already claimed or is no longer runnable", task.id)
+            return
         self._running_task_ids.add(task.id)
 
         prompt = _build_scheduled_prompt(task, scheduled_for)
