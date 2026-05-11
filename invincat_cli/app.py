@@ -4650,7 +4650,7 @@ class DeepAgentsApp(App):
             WeComDaemonConfig,
             get_daemon_status,
             is_daemon_running,
-            start_daemon,
+            start_daemon_async,
             stop_daemon,
         )
 
@@ -4667,7 +4667,11 @@ class DeepAgentsApp(App):
             except ValueError as exc:
                 await self._mount_message(ErrorMessage(str(exc)))
                 return
-            start_daemon(config)
+            try:
+                await start_daemon_async(config)
+            except RuntimeError as exc:
+                await self._mount_message(ErrorMessage(str(exc)))
+                return
             await self._mount_message(
                 AppMessage(
                     f"WeCom daemon started in the background.\n"

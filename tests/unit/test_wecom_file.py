@@ -215,6 +215,78 @@ def test_wecom_bridge_dispatches_supported_message_once() -> None:
     assert seen == [frame]
 
 
+def test_wecom_bridge_rejects_sender_outside_allowlist(monkeypatch) -> None:
+    monkeypatch.setenv("WECOM_ALLOWED_USERIDS", "allowed-user")
+    monkeypatch.setenv("WECOM_ALLOWED_CHATIDS", "allowed-chat")
+    seen: list[dict] = []
+
+    async def _noop(_message: str) -> None:
+        return None
+
+    async def _on_message(frame: dict) -> None:
+        seen.append(frame)
+
+    bridge = WeComBridge(
+        on_status=_noop,
+        on_error=_noop,
+        on_message=_on_message,
+        should_exit=lambda: False,
+    )
+    frame = {
+        "cmd": "aibot_msg_callback",
+        "headers": {"req_id": "req-denied"},
+        "body": {
+            "msgtype": "text",
+            "chatid": "other-chat",
+            "from": {"userid": "other-user"},
+            "text": {"content": "hello"},
+        },
+    }
+
+    async def _run() -> None:
+        await bridge._handle_callback_frame(frame)
+        await asyncio.sleep(0)
+
+    asyncio.run(_run())
+
+    assert seen == []
+
+
+def test_wecom_bridge_allows_configured_sender(monkeypatch) -> None:
+    monkeypatch.setenv("WECOM_ALLOWED_USERIDS", "allowed-user")
+    seen: list[dict] = []
+
+    async def _noop(_message: str) -> None:
+        return None
+
+    async def _on_message(frame: dict) -> None:
+        seen.append(frame)
+
+    bridge = WeComBridge(
+        on_status=_noop,
+        on_error=_noop,
+        on_message=_on_message,
+        should_exit=lambda: False,
+    )
+    frame = {
+        "cmd": "aibot_msg_callback",
+        "headers": {"req_id": "req-allowed"},
+        "body": {
+            "msgtype": "text",
+            "from": {"userid": "allowed-user"},
+            "text": {"content": "hello"},
+        },
+    }
+
+    async def _run() -> None:
+        await bridge._handle_callback_frame(frame)
+        await asyncio.sleep(0)
+
+    asyncio.run(_run())
+
+    assert seen == [frame]
+
+
 def test_wecom_recv_closes_stale_connection(monkeypatch) -> None:
     import invincat_cli.wecom.bridge as bridge_module
 

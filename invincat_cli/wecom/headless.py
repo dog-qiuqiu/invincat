@@ -36,11 +36,13 @@ class HeadlessWeComHandler:
         cwd: Path,
         send_request: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]],
         on_schedule_run_now: Callable[[Any], Awaitable[None]] | None = None,
+        max_concurrent_turns: int = 1,
     ) -> None:
         self._agent = agent
         self._cwd = cwd
         self._send_request = send_request
         self._on_schedule_run_now = on_schedule_run_now
+        self._turn_semaphore = asyncio.Semaphore(max(1, max_concurrent_turns))
         # chatid → (thread_id, lock).  OrderedDict so we can evict the
         # least-recently-used entry when the cache exceeds _MAX_SESSIONS,
         # bounding memory across a long-running daemon.
@@ -64,7 +66,7 @@ class HeadlessWeComHandler:
         """Run one agent turn and return the final answer."""
         chatid = self._resolve_chatid(inbound_frame)
         thread_id, lock = self._get_or_create_session(chatid)
-        async with lock:
+        async with lock, self._turn_semaphore:
             try:
                 answer = await self._run_agent_turn(
                     text,

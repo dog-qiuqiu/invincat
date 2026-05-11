@@ -640,6 +640,11 @@ Invincat 可以把企业微信机器人消息桥接到当前 CLI 会话。来自
 export WECOM_BOT_ID="your_bot_id"
 export WECOM_BOT_SECRET="your_bot_secret"
 export WECOM_WS_URL="wss://openws.work.weixin.qq.com" # 可选
+# 可选：只处理这些用户或会话的回调。
+export WECOM_ALLOWED_USERIDS="userid1,userid2"
+export WECOM_ALLOWED_CHATIDS="chatid1,chatid2"
+# 可选：为 headless daemon 回合启用受限 shell 命令。
+export DEEPAGENTS_CLI_SHELL_ALLOW_LIST="recommended"
 ```
 
 在 CLI 内启动桥接：

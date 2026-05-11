@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import resource
+import select
 import signal
 import sys
 from pathlib import Path
@@ -32,6 +33,7 @@ _LOG_FILENAME = ".invincat/wecom_daemon.log"
 _SOCKET_FILENAME = ".invincat/wecom_daemon.sock"
 _LOCK_FILENAME = ".invincat/wecom_daemon.lock"
 _SOCKET_TIMEOUT = 5.0
+_STARTUP_TIMEOUT = 75.0
 _DELIVERY_RETRIES = 8                 # 1 initial attempt + 7 retries
 _DELIVERY_RETRY_DELAY = 15            # seconds between retries
 _DELIVERY_READY_TIMEOUT = 30          # per-attempt wait for bridge subscribe ACK
@@ -105,6 +107,10 @@ def _write_daemon_state(config: WeComDaemonConfig) -> None:
         _FILE_PERMS,
     )
     try:
+        try:
+            os.fchmod(fd, _FILE_PERMS)
+        except OSError:
+            pass
         os.write(fd, json.dumps(state, indent=2, ensure_ascii=False).encode("utf-8"))
     finally:
         os.close(fd)
@@ -139,7 +145,12 @@ def _open_lock_fd(cwd: Path) -> int:
     """Open the lockfile, creating the parent dir + file as needed."""
     lock_path = cwd / _LOCK_FILENAME
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    return os.open(str(lock_path), os.O_RDWR | os.O_CREAT, _FILE_PERMS)
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, _FILE_PERMS)
+    try:
+        os.fchmod(fd, _FILE_PERMS)
+    except OSError:
+        pass
+    return fd
 
 
 def acquire_daemon_lock(cwd: Path) -> int:
@@ -268,8 +279,62 @@ async def stop_daemon(cwd: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def start_daemon(config: WeComDaemonConfig) -> None:
-    """Fork the daemon to the background.
+def _write_startup_status(fd: int | None, status: str) -> None:
+    if fd is None:
+        return
+    try:
+        os.write(fd, (status.replace("\n", " ") + "\n").encode("utf-8", errors="replace"))
+    except OSError:
+        pass
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def _read_startup_status(fd: int, *, timeout: float) -> str:
+    import time
+
+    deadline = time.monotonic() + timeout
+    chunks: list[bytes] = []
+    while time.monotonic() < deadline:
+        remaining = max(0.0, deadline - time.monotonic())
+        readable, _, _ = select.select([fd], [], [], min(remaining, 1.0))
+        if not readable:
+            continue
+        data = os.read(fd, 4096)
+        if not data:
+            break
+        chunks.append(data)
+        if b"\n" in data:
+            break
+    if not chunks:
+        return "TIMEOUT"
+    return b"".join(chunks).split(b"\n", 1)[0].decode("utf-8", errors="replace")
+
+
+def _wait_for_startup_result(startup_read_fd: int) -> None:
+    try:
+        status = _read_startup_status(startup_read_fd, timeout=_STARTUP_TIMEOUT)
+    finally:
+        try:
+            os.close(startup_read_fd)
+        except OSError:
+            pass
+    if status == "READY":
+        return
+    if status.startswith("ERROR "):
+        raise RuntimeError(
+            f"WeCom daemon failed to start: {status.removeprefix('ERROR ')}"
+        )
+    raise RuntimeError(
+        f"WeCom daemon failed to start within {_STARTUP_TIMEOUT:.0f}s — check the log file."
+    )
+
+
+def _fork_daemon(config: WeComDaemonConfig) -> int:
+    """Fork the daemon to the background and return the startup status read fd.
 
     Uses the standard Unix double-fork idiom so the daemon is fully detached
     from the controlling terminal and cannot reacquire one.
@@ -281,22 +346,20 @@ def start_daemon(config: WeComDaemonConfig) -> None:
             f"WeCom daemon already running for {config.cwd} (lockfile held)."
         )
 
+    startup_read_fd, startup_write_fd = os.pipe()
     pid = os.fork()
     if pid > 0:
-        # Parent: wait briefly so the grandchild has time to acquire the
-        # lock, bind the socket, and write its state file.  We then verify
-        # the daemon is actually alive — if not, raise so the caller sees
-        # the failure (instead of a silent "started" with no daemon).
-        import time
-        for _ in range(20):  # up to ~2 s
-            time.sleep(0.1)
-            if is_daemon_running(config.cwd):
-                return
-        raise RuntimeError(
-            "WeCom daemon failed to start within 2s — check the log file."
-        )
+        # Parent: reap the first child and wait for the grandchild to report
+        # that the server, IPC socket and state file are actually ready.
+        os.close(startup_write_fd)
+        try:
+            os.waitpid(pid, 0)
+        except ChildProcessError:
+            pass
+        return startup_read_fd
 
     # --- First child ---
+    os.close(startup_read_fd)
     os.setsid()  # New session — detach from terminal
 
     pid2 = os.fork()
@@ -305,17 +368,19 @@ def start_daemon(config: WeComDaemonConfig) -> None:
         os._exit(0)
 
     # --- Grandchild (the actual daemon) ---
-    _redirect_stdio(config.log_file)
+    _redirect_stdio(config.log_file, preserve_fds=(startup_write_fd,))
     # Acquire the lock NOW so racing peers immediately see we're alive.
     # If somebody else snuck in between the parent's check and here, exit.
     try:
         lock_fd = acquire_daemon_lock(config.cwd)
     except BlockingIOError:
         logger.error("WeCom daemon: another instance acquired the lock — exiting.")
+        _write_startup_status(startup_write_fd, "ERROR another instance acquired the lock")
         os._exit(0)
     try:
-        asyncio.run(_daemon_main(config))
-    except Exception:
+        asyncio.run(_daemon_main(config, startup_fd=startup_write_fd))
+    except Exception as exc:
+        _write_startup_status(startup_write_fd, f"ERROR {type(exc).__name__}: {exc}")
         logger.exception("WeCom daemon crashed")
     finally:
         # Releasing the fd releases the flock; the OS would do this anyway.
@@ -324,6 +389,17 @@ def start_daemon(config: WeComDaemonConfig) -> None:
         except OSError:
             pass
         os._exit(0)
+
+
+def start_daemon(config: WeComDaemonConfig) -> None:
+    """Fork the daemon and block until its startup handshake completes."""
+    _wait_for_startup_result(_fork_daemon(config))
+
+
+async def start_daemon_async(config: WeComDaemonConfig) -> None:
+    """Fork the daemon, then await its startup handshake without blocking the loop."""
+    startup_read_fd = _fork_daemon(config)
+    await asyncio.to_thread(_wait_for_startup_result, startup_read_fd)
 
 
 def run_daemon_foreground(config: WeComDaemonConfig) -> None:
@@ -344,7 +420,7 @@ def run_daemon_foreground(config: WeComDaemonConfig) -> None:
             pass
 
 
-def _redirect_stdio(log_file: Path) -> None:
+def _redirect_stdio(log_file: Path, *, preserve_fds: tuple[int, ...] = ()) -> None:
     log_file.parent.mkdir(parents=True, exist_ok=True)
     # Owner-only perms: the log contains chatids, message bodies and bot_id.
     log_fd = os.open(str(log_file), os.O_WRONLY | os.O_CREAT | os.O_APPEND, _FILE_PERMS)
@@ -362,14 +438,21 @@ def _redirect_stdio(log_file: Path) -> None:
 
     # Close every other inherited fd so the daemon doesn't keep the parent
     # CLI's terminal / pipes / sockets / langgraph fds alive.  Skipping 0..2
-    # which we've just rewired above.
+    # which we've just rewired above, plus explicit startup handoff fds.
     try:
         max_fd = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
         if max_fd in (resource.RLIM_INFINITY, -1) or max_fd > 65536:
             max_fd = 65536
     except Exception:
         max_fd = 1024
-    os.closerange(3, max_fd)
+    preserved = {fd for fd in preserve_fds if fd >= 3}
+    start = 3
+    for fd in sorted(preserved):
+        if start < fd:
+            os.closerange(start, fd)
+        start = fd + 1
+    if start < max_fd:
+        os.closerange(start, max_fd)
 
     logging.basicConfig(
         level=logging.INFO,
@@ -384,11 +467,20 @@ def _redirect_stdio(log_file: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _daemon_main(config: WeComDaemonConfig) -> None:
+async def _daemon_main(config: WeComDaemonConfig, *, startup_fd: int | None = None) -> None:
     """Async entry point that runs inside the daemon process."""
     logger.info("WeCom daemon starting cwd=%s bot_id=%s", config.cwd, config.bot_id)
 
     stop_event = asyncio.Event()
+    startup_reported = False
+
+    def _report_startup(status: str) -> None:
+        nonlocal startup_fd, startup_reported
+        if startup_reported:
+            return
+        _write_startup_status(startup_fd, status)
+        startup_fd = None
+        startup_reported = True
 
     def _handle_signal(*_: object) -> None:
         logger.info("WeCom daemon received stop signal")
@@ -406,13 +498,32 @@ async def _daemon_main(config: WeComDaemonConfig) -> None:
     try:
         # --- Start LangGraph server ---
         logger.info("Starting LangGraph agent server...")
+        from invincat_cli.config import SHELL_ALLOW_ALL, settings
         from invincat_cli.server.manager import start_server_and_get_agent
 
         os.chdir(config.cwd)
+        shell_allow_list = settings.shell_allow_list
+        shell_enabled = bool(shell_allow_list)
+        shell_is_unrestricted = shell_enabled and isinstance(
+            shell_allow_list, type(SHELL_ALLOW_ALL)
+        )
+        restrictive_shell_allow_list = (
+            list(shell_allow_list)
+            if shell_enabled and not shell_is_unrestricted
+            else None
+        )
+        if not shell_enabled:
+            logger.info("Daemon shell tool disabled; set a shell allow-list to enable it.")
+        elif restrictive_shell_allow_list is not None:
+            logger.info("Daemon shell tool enabled with restrictive allow-list.")
+        else:
+            logger.warning("Daemon shell tool enabled with unrestricted allow-list.")
         agent, server_proc, _ = await start_server_and_get_agent(
             assistant_id="agent",
-            auto_approve=True,
-            enable_shell=True,
+            auto_approve=not bool(restrictive_shell_allow_list),
+            interrupt_shell_only=bool(restrictive_shell_allow_list),
+            shell_allow_list=restrictive_shell_allow_list,
+            enable_shell=shell_enabled,
             enable_ask_user=False,
             interactive=False,
         )
@@ -491,6 +602,7 @@ async def _daemon_main(config: WeComDaemonConfig) -> None:
 
         _write_daemon_state(config)
         logger.info("Daemon state written to %s", config.state_file)
+        _report_startup("READY")
 
         # --- Scheduler ---
         scheduler_task = asyncio.create_task(
@@ -507,7 +619,8 @@ async def _daemon_main(config: WeComDaemonConfig) -> None:
         await stop_event.wait()
         logger.info("WeCom daemon stopping...")
 
-    except Exception:
+    except Exception as exc:
+        _report_startup(f"ERROR {type(exc).__name__}: {exc}")
         logger.exception("WeCom daemon fatal error")
     finally:
         if scheduler_task is not None:
@@ -530,6 +643,8 @@ async def _daemon_main(config: WeComDaemonConfig) -> None:
         if server_proc is not None:
             server_proc.stop()
         _remove_daemon_state(config)
+        if not startup_reported:
+            _report_startup("ERROR daemon stopped before startup completed")
         logger.info("WeCom daemon stopped")
 
 
@@ -592,7 +707,9 @@ async def _run_scheduler(
     except Exception:
         logger.exception("reconcile_orphan_runs failed at scheduler startup")
 
-    async def _inject_message(task_id: str, run_id: str, prompt: str) -> None:
+    injection_tasks: dict[str, asyncio.Task[None]] = {}
+
+    async def _run_injected_message(task_id: str, run_id: str, prompt: str) -> None:
         # The whole body runs under a try/finally so that *any* unexpected
         # error (DB failure, delivery exception, programming bug) still calls
         # finish_run().  Without this, SchedulerRunner._running_task_ids would
@@ -724,11 +841,38 @@ async def _run_scheduler(
                 except Exception:
                     logger.exception("finish_run failed for run_id=%s", run_id)
 
+    async def _inject_message(task_id: str, run_id: str, prompt: str) -> None:
+        task = asyncio.create_task(_run_injected_message(task_id, run_id, prompt))
+        injection_tasks[run_id] = task
+
+        def _done(done: asyncio.Task[None]) -> None:
+            injection_tasks.pop(run_id, None)
+            if done.cancelled():
+                return
+            try:
+                done.result()
+            except Exception:
+                logger.exception("Scheduled task injection task failed run_id=%s", run_id)
+
+        task.add_done_callback(_done)
+
+    async def _cancel_timed_out_run(run_id: str, task_id: str) -> None:
+        task = injection_tasks.get(run_id)
+        if task is None or task.done():
+            return
+        logger.warning(
+            "Cancelling scheduled task %r run_id=%s after timeout",
+            task_id,
+            run_id,
+        )
+        task.cancel()
+
     runner = SchedulerRunner(
         store,
         inject_message=_inject_message,
         notify=lambda msg: logger.info("Scheduler: %s", msg),
         is_busy=lambda: False,
+        on_timeout=_cancel_timed_out_run,
     )
     runner_holder.append(runner)
     logger.info("WeCom daemon scheduler started (cwd=%s)", config.cwd)
@@ -738,31 +882,38 @@ async def _run_scheduler(
     # be sent before WeCom acknowledges the subscription and could be silently dropped.
     _BRIDGE_READY_TIMEOUT = 120
     try:
-        if bridge_holder:
-            try:
-                await asyncio.wait_for(bridge_holder[0].ready.wait(), timeout=_BRIDGE_READY_TIMEOUT)
-                logger.info("Scheduler: WeCom bridge ready, starting first tick")
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "Scheduler: WeCom bridge not ready after %ds, proceeding anyway",
-                    _BRIDGE_READY_TIMEOUT,
-                )
-        else:
-            await asyncio.sleep(5)
-    except asyncio.CancelledError:
-        return
-
-    # Tick loop: initial tick for misfire recovery, then every 60 s.
-    while not stop_event.is_set():
         try:
-            await runner.tick()
-            await asyncio.wait_for(asyncio.shield(stop_event.wait()), timeout=60)
-        except asyncio.TimeoutError:
-            pass
+            if bridge_holder:
+                try:
+                    await asyncio.wait_for(bridge_holder[0].ready.wait(), timeout=_BRIDGE_READY_TIMEOUT)
+                    logger.info("Scheduler: WeCom bridge ready, starting first tick")
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Scheduler: WeCom bridge not ready after %ds, proceeding anyway",
+                        _BRIDGE_READY_TIMEOUT,
+                    )
+            else:
+                await asyncio.sleep(5)
         except asyncio.CancelledError:
             return
-        except Exception:
-            logger.exception("Scheduler tick error")
+
+        # Tick loop: initial tick for misfire recovery, then every 60 s.
+        while not stop_event.is_set():
+            try:
+                await runner.tick()
+                await asyncio.wait_for(asyncio.shield(stop_event.wait()), timeout=60)
+            except asyncio.TimeoutError:
+                pass
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("Scheduler tick error")
+    finally:
+        for task in list(injection_tasks.values()):
+            task.cancel()
+        if injection_tasks:
+            await asyncio.gather(*injection_tasks.values(), return_exceptions=True)
+        injection_tasks.clear()
 
     logger.info("WeCom daemon scheduler stopped")
 

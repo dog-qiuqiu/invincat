@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 
 from invincat_cli.wecom.daemon import (
+    WeComDaemonConfig,
+    _write_daemon_state,
     acquire_daemon_lock,
     is_daemon_running,
 )
@@ -86,3 +88,35 @@ def test_lockfile_owner_only_perms(tmp_path: Path) -> None:
         assert mode & 0o077 == 0, f"lockfile mode {oct(mode)} leaks to group/other"
     finally:
         os.close(fd)
+
+
+def test_lockfile_existing_mode_is_tightened(tmp_path: Path) -> None:
+    lock_path = tmp_path / ".invincat" / "wecom_daemon.lock"
+    lock_path.parent.mkdir()
+    lock_path.write_text("", encoding="utf-8")
+    os.chmod(lock_path, 0o666)
+
+    fd = acquire_daemon_lock(tmp_path)
+    try:
+        mode = os.stat(lock_path).st_mode & 0o777
+        assert mode & 0o077 == 0, f"lockfile mode {oct(mode)} leaks to group/other"
+    finally:
+        os.close(fd)
+
+
+def test_state_file_existing_mode_is_tightened(tmp_path: Path) -> None:
+    state_path = tmp_path / ".invincat" / "wecom_daemon.json"
+    state_path.parent.mkdir()
+    state_path.write_text("{}", encoding="utf-8")
+    os.chmod(state_path, 0o666)
+
+    config = WeComDaemonConfig(
+        bot_id="bot",
+        secret="secret",
+        ws_url="wss://example.test",
+        cwd=tmp_path,
+    )
+    _write_daemon_state(config)
+
+    mode = os.stat(state_path).st_mode & 0o777
+    assert mode & 0o077 == 0, f"state file mode {oct(mode)} leaks to group/other"

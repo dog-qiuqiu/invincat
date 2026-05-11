@@ -653,6 +653,11 @@ where the CLI is already running:
 export WECOM_BOT_ID="your_bot_id"
 export WECOM_BOT_SECRET="your_bot_secret"
 export WECOM_WS_URL="wss://openws.work.weixin.qq.com" # optional
+# Optional: only accept callbacks from these users or chats.
+export WECOM_ALLOWED_USERIDS="userid1,userid2"
+export WECOM_ALLOWED_CHATIDS="chatid1,chatid2"
+# Optional: enable shell commands for headless daemon turns.
+export DEEPAGENTS_CLI_SHELL_ALLOW_LIST="recommended"
 ```
 
 Start the bridge inside the CLI:

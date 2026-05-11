@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import uuid
 from collections import OrderedDict, deque
 from contextlib import suppress
@@ -25,6 +26,28 @@ logger = logging.getLogger(__name__)
 WECOM_HEARTBEAT_INTERVAL = 30.0
 WECOM_STALE_CONNECTION_SECONDS = 90.0
 WECOM_MAX_MESSAGE_TASKS = 20
+WECOM_ALLOWED_USERIDS_ENV = "WECOM_ALLOWED_USERIDS"
+WECOM_ALLOWED_CHATIDS_ENV = "WECOM_ALLOWED_CHATIDS"
+
+
+def _csv_env_set(name: str) -> set[str]:
+    raw = os.getenv(name, "")
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
+
+def _wecom_sender_allowed(body: dict[str, Any]) -> bool:
+    allowed_userids = _csv_env_set(WECOM_ALLOWED_USERIDS_ENV)
+    allowed_chatids = _csv_env_set(WECOM_ALLOWED_CHATIDS_ENV)
+    if not allowed_userids and not allowed_chatids:
+        return True
+
+    chatid = body.get("chatid")
+    if isinstance(chatid, str) and chatid and chatid in allowed_chatids:
+        return True
+
+    from_obj = body.get("from") or {}
+    userid = from_obj.get("userid") if isinstance(from_obj, dict) else None
+    return isinstance(userid, str) and userid in allowed_userids
 
 
 class WeComServerError(RuntimeError):
@@ -364,6 +387,14 @@ class WeComBridge:
         body = frame.get("body") or {}
         from_obj = body.get("from") or {}
         from_userid = from_obj.get("userid", "") if isinstance(from_obj, dict) else ""
+        if not _wecom_sender_allowed(body):
+            logger.warning(
+                "wecom inbound message rejected by allowlist req_id=%s chatid=%s from_userid=%s",
+                req_id,
+                body.get("chatid", ""),
+                from_userid,
+            )
+            return
         logger.info(
             "wecom inbound message req_id=%s chatid=%s chattype=%s from_userid=%s msgtype=%s msgid=%s body_keys=%s",
             req_id,
