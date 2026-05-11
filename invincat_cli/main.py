@@ -1337,7 +1337,8 @@ def cli_main() -> None:
 
             settings.shell_allow_list = parse_shell_allow_list(args.shell_allow_list)
 
-        apply_stdin_pipe(args)
+        if args.command != "wecombot":
+            apply_stdin_pipe(args)
 
         if getattr(args, "no_mcp", False) and getattr(args, "mcp_config", None):
             from rich.console import Console as _Console
