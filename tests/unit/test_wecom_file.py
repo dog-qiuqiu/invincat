@@ -1012,6 +1012,136 @@ def test_wecom_daemon_scheduled_timeout_result_is_delivered() -> None:
     assert "Daily report" in sent_payloads[0]["body"]["markdown"]["content"]
 
 
+def test_headless_schedule_payload_rejects_cross_cwd_update(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from invincat_cli.scheduler.tool import SCHEDULE_UPDATE_TYPE
+    from invincat_cli.wecom.headless import HeadlessWeComHandler
+
+    saved: list[object] = []
+    other_task = SimpleNamespace(
+        id="task-other",
+        title="Other",
+        cwd=str(tmp_path / "other"),
+        cron="0 8 * * *",
+        prompt="old",
+        enabled=True,
+        timezone="Asia/Shanghai",
+        schedule_type="recurring",
+        run_at=None,
+        next_run_at=None,
+        updated_at="old",
+    )
+
+    class FakeStore:
+        def load_task(self, _task_id: str):
+            return other_task
+
+        def save_task(self, task) -> None:  # noqa: ANN001
+            saved.append(task)
+
+    async def send_request(_payload: dict) -> dict:
+        return {"errcode": 0}
+
+    monkeypatch.setattr("invincat_cli.scheduler.store.SchedulerStore", FakeStore)
+    handler = HeadlessWeComHandler(
+        agent=object(),
+        cwd=tmp_path / "current",
+        send_request=send_request,
+    )
+
+    asyncio.run(
+        handler._process_schedule_payload(
+            {
+                "type": SCHEDULE_UPDATE_TYPE,
+                "task_id": "task-other",
+                "updates": {"title": "mutated"},
+            },
+            {"body": {"chatid": "chat-1"}},
+        )
+    )
+
+    assert saved == []
+    assert other_task.title == "Other"
+
+
+def test_headless_schedule_payload_rejects_cross_cwd_delete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from invincat_cli.scheduler.tool import SCHEDULE_CANCEL_TYPE
+    from invincat_cli.wecom.headless import HeadlessWeComHandler
+
+    deleted: list[str] = []
+    other_task = SimpleNamespace(id="task-other", cwd=str(tmp_path / "other"))
+
+    class FakeStore:
+        def load_task(self, _task_id: str):
+            return other_task
+
+        def delete_task(self, task_id: str) -> bool:
+            deleted.append(task_id)
+            return True
+
+    async def send_request(_payload: dict) -> dict:
+        return {"errcode": 0}
+
+    monkeypatch.setattr("invincat_cli.scheduler.store.SchedulerStore", FakeStore)
+    handler = HeadlessWeComHandler(
+        agent=object(),
+        cwd=tmp_path / "current",
+        send_request=send_request,
+    )
+
+    asyncio.run(
+        handler._process_schedule_payload(
+            {"type": SCHEDULE_CANCEL_TYPE, "task_id": "task-other"},
+            {"body": {"chatid": "chat-1"}},
+        )
+    )
+
+    assert deleted == []
+
+
+def test_headless_schedule_payload_rejects_cross_cwd_run_now(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from invincat_cli.scheduler.tool import SCHEDULE_RUN_NOW_TYPE
+    from invincat_cli.wecom.headless import HeadlessWeComHandler
+
+    fired: list[object] = []
+    other_task = SimpleNamespace(id="task-other", cwd=str(tmp_path / "other"))
+
+    class FakeStore:
+        def load_task(self, _task_id: str):
+            return other_task
+
+    async def send_request(_payload: dict) -> dict:
+        return {"errcode": 0}
+
+    async def on_schedule_run_now(task) -> None:  # noqa: ANN001
+        fired.append(task)
+
+    monkeypatch.setattr("invincat_cli.scheduler.store.SchedulerStore", FakeStore)
+    handler = HeadlessWeComHandler(
+        agent=object(),
+        cwd=tmp_path / "current",
+        send_request=send_request,
+        on_schedule_run_now=on_schedule_run_now,
+    )
+
+    asyncio.run(
+        handler._process_schedule_payload(
+            {"type": SCHEDULE_RUN_NOW_TYPE, "task_id": "task-other"},
+            {"body": {"chatid": "chat-1"}},
+        )
+    )
+
+    assert fired == []
+
+
 class _ModelRequest:
     def __init__(self, *, tools: list[object], context: dict | None = None) -> None:
         self.tools = tools

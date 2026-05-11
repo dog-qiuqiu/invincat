@@ -335,6 +335,23 @@ class HeadlessWeComHandler:
 
         ptype = payload.get("type")
         store = SchedulerStore()
+        current_cwd = str(self._cwd)
+
+        def _load_current_cwd_task(task_id: str, operation: str) -> Any | None:
+            task = store.load_task(task_id)
+            if task is None:
+                logger.warning("%s: task %r not found", operation, task_id)
+                return None
+            if task.cwd != current_cwd:
+                logger.warning(
+                    "%s: refusing to operate on task %r from cwd=%r while daemon cwd=%r",
+                    operation,
+                    task_id,
+                    task.cwd,
+                    current_cwd,
+                )
+                return None
+            return task
 
         if ptype == SCHEDULE_CREATE_TYPE:
             task_id = payload.get("task_id") or str(uuid.uuid4())
@@ -429,9 +446,8 @@ class HeadlessWeComHandler:
 
         elif ptype == SCHEDULE_UPDATE_TYPE:
             task_id = payload.get("task_id", "")
-            task = store.load_task(task_id)
+            task = _load_current_cwd_task(task_id, "schedule_update")
             if task is None:
-                logger.warning("schedule_update: task %r not found", task_id)
                 return
             updates = payload.get("updates", {})
             if "title" in updates:
@@ -457,13 +473,16 @@ class HeadlessWeComHandler:
 
         elif ptype == SCHEDULE_CANCEL_TYPE:
             task_id = payload.get("task_id", "")
+            task = _load_current_cwd_task(task_id, "schedule_cancel")
+            if task is None:
+                return
             store.delete_task(task_id)
             logger.info("Scheduled task deleted: id=%s", task_id)
 
         elif ptype == SCHEDULE_RUN_NOW_TYPE:
             if self._on_schedule_run_now is not None:
                 task_id = payload.get("task_id", "")
-                task = store.load_task(task_id)
+                task = _load_current_cwd_task(task_id, "schedule_run_now")
                 if task is not None:
                     await self._on_schedule_run_now(task)
                     logger.info("Scheduled task fired immediately: %r id=%s", task.title, task_id)
