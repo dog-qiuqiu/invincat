@@ -1001,6 +1001,13 @@ def test_schedule_time_display_uses_explicit_offset() -> None:
         _format_schedule_time_for_display(value, "Asia/Shanghai")
         == "2026-05-17T22:09+08:00"
     )
+    assert (
+        _format_schedule_time_for_display(
+            "2026-05-17T14:09:00+00:00",
+            "Asia/Shanghai",
+        )
+        == "2026-05-17T22:09+08:00"
+    )
 
 
 def test_tui_delegates_wecom_delivery_tasks_to_running_daemon(
@@ -1074,6 +1081,7 @@ def test_schedule_middleware_list_includes_delivery_and_output_mode(tmp_path: Pa
     task = _make_task()
     task.delivery = DeliverySpec(channels=[{"type": "wecom", "chatid": "chat-1"}])
     task.report = ReportSpec(mode="report")
+    task.next_run_at = "2026-05-17T14:09:00+00:00"
     store.save_task(task)
 
     mw = ScheduleMiddleware(store=store)
@@ -1085,6 +1093,8 @@ def test_schedule_middleware_list_includes_delivery_and_output_mode(tmp_path: Pa
     assert data["tasks"][0]["delivery"] == [{"type": "wecom", "chatid": "chat-1"}]
     assert data["tasks"][0]["output_mode"] == "report"
     assert data["tasks"][0]["schedule_type"] == "recurring"
+    assert data["tasks"][0]["next_run_at"] == "2026-05-17T14:09:00+00:00"
+    assert data["tasks"][0]["next_run_display"] == "2026-05-17T22:09+08:00"
 
 
 def test_schedule_middleware_create_tool_invalid_schedule(tmp_path: Path) -> None:

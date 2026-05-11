@@ -135,23 +135,21 @@ def _describe_schedule_for_display(
     schedule_type: str,
 ) -> str:
     """Return user-facing schedule text without exposing one-shot placeholder cron."""
-    if schedule_type == "once":
-        return "once"
-    from invincat_cli.scheduler.parser import describe_schedule
+    from invincat_cli.scheduler.display import describe_schedule_for_display
 
-    return describe_schedule(cron, timezone_name)
+    return describe_schedule_for_display(cron, timezone_name, schedule_type)
 
 
-def _format_schedule_time_for_display(value: Any, timezone_name: str) -> str:
+def _format_schedule_time_for_display(
+    value: Any,
+    timezone_name: str,
+    *,
+    missing: str = "unknown",
+) -> str:
     """Format a scheduled timestamp with an explicit UTC offset."""
-    from datetime import datetime, timezone
-    from zoneinfo import ZoneInfo
+    from invincat_cli.scheduler.display import format_schedule_time_for_display
 
-    if not isinstance(value, datetime):
-        return "unknown"
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(ZoneInfo(timezone_name)).isoformat(timespec="minutes")
+    return format_schedule_time_for_display(value, timezone_name, missing=missing)
 
 
 def _wecom_daemon_claims_scheduled_task(task: Any, cwd: str | Path) -> bool:
@@ -4599,13 +4597,23 @@ class DeepAgentsApp(App):
             if not tasks:
                 await self._mount_message(AppMessage(t("schedule.list_empty")))
             else:
-                from invincat_cli.scheduler.parser import describe_schedule
-
                 lines = [t("schedule.list_header").format(count=len(tasks))]
                 for task_info in tasks:
                     status_icon = "✓" if task_info.get("enabled") else "✗"
-                    desc = describe_schedule(task_info.get("cron", ""))
-                    next_run = task_info.get("next_run_at", "")[:16].replace("T", " ")
+                    tz = task_info.get("timezone", "UTC")
+                    desc = _describe_schedule_for_display(
+                        task_info.get("cron", ""),
+                        tz,
+                        task_info.get("schedule_type", "recurring"),
+                    )
+                    next_run = (
+                        task_info.get("next_run_display")
+                        or _format_schedule_time_for_display(
+                            task_info.get("next_run_at"),
+                            tz,
+                            missing="—",
+                        )
+                    ).replace("T", " ")
                     lines.append(
                         f"  {status_icon} {task_info['title']} — {desc} — next: {next_run}"
                         f"  [id: {task_info['id'][:8]}]"

@@ -250,6 +250,10 @@ class ScheduleMiddleware(AgentMiddleware):
             tool_call_id: Annotated[str, InjectedToolCallId],
         ) -> str:
             """List all scheduled tasks with their status and next run time."""
+            from invincat_cli.scheduler.display import (
+                format_schedule_time_for_display,
+            )
+
             tasks = store.list_tasks()
             result = []
             for t in tasks:
@@ -264,6 +268,11 @@ class ScheduleMiddleware(AgentMiddleware):
                     "delete_after_run": t.delete_after_run,
                     "timezone": t.timezone,
                     "next_run_at": t.next_run_at,
+                    "next_run_display": format_schedule_time_for_display(
+                        t.next_run_at,
+                        t.timezone,
+                        missing="—",
+                    ),
                     "last_status": t.last_status,
                     "run_count": t.run_count,
                     "delivery": channels,

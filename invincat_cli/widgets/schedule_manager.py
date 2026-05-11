@@ -306,12 +306,23 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
         lines: list[str] = []
         for i, task in enumerate(self._tasks):
             selected = i == self._selected_index
-            from invincat_cli.scheduler.parser import describe_schedule
+            from invincat_cli.scheduler.display import (
+                describe_schedule_for_display,
+                format_schedule_time_for_display,
+            )
 
             enabled_icon = "●" if task.enabled else "○"
             status_str = status_map.get(task.last_status, task.last_status)
-            schedule_desc = describe_schedule(task.cron, task.timezone)
-            next_run = (task.next_run_at or "—")[:16].replace("T", " ")
+            schedule_desc = describe_schedule_for_display(
+                task.cron,
+                task.timezone,
+                task.schedule_type,
+            )
+            next_run = format_schedule_time_for_display(
+                task.next_run_at,
+                task.timezone,
+                missing="—",
+            ).replace("T", " ")
             short_id = task.id[:8]
 
             if selected:
@@ -353,6 +364,17 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
             parts = [f" {task.title}", state_label, runs_label]
             if fail_label:
                 parts.append(f"[red]{fail_label}[/red]")
+            if task.last_run_at:
+                from invincat_cli.scheduler.display import format_schedule_time_for_display
+
+                local_last = format_schedule_time_for_display(
+                    task.last_run_at,
+                    task.timezone,
+                    missing=t("schedule.manager.status.never"),
+                )
+                last_label = t("schedule.manager.status.last_run").format(
+                    date=local_last[:10]
+                )
             parts.append(f"[dim]{last_label}[/dim]")
             bar.update(Content.from_markup("  ·  ".join(parts)))
 
