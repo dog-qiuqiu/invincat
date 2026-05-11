@@ -4734,7 +4734,10 @@ class DeepAgentsApp(App):
                 await self._mount_message(AppMessage("WeCom daemon stopped."))
             else:
                 await self._mount_message(
-                    AppMessage("Stop signal sent (daemon may take a moment to exit).")
+                    AppMessage(
+                        "WeCom daemon is running, but its control socket is not ready. "
+                        "No stop signal was sent; retry /wecombot-daemon-stop shortly."
+                    )
                 )
 
         elif action == "status":

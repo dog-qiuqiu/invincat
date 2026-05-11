@@ -263,14 +263,9 @@ async def stop_daemon(cwd: Path) -> bool:
         return bool(resp.get("ok"))
     except Exception as exc:
         logger.debug("stop_daemon socket rpc failed: %s", exc)
-        # Fallback: SIGTERM
-        pid = state.get("pid")
-        if isinstance(pid, int):
-            try:
-                os.kill(pid, signal.SIGTERM)
-                return True
-            except Exception:
-                pass
+        # Do not fall back to the PID recorded in the state file. A crashed
+        # daemon can leave stale state behind while a new daemon already owns
+        # the lock, and the stale PID may now belong to an unrelated process.
         return False
 
 
@@ -538,6 +533,12 @@ async def _daemon_main(config: WeComDaemonConfig, *, startup_fd: int | None = No
         scheduler_runner_holder: list[Any] = []  # populated by _run_scheduler
 
         async def _fire_task_now(task: Any) -> None:
+            if not _task_visible_to_wecom_daemon(task, config.cwd):
+                logger.warning(
+                    "Ignoring WeCom run-now request for non-WeCom-deliverable task %r",
+                    getattr(task, "id", None),
+                )
+                return
             if scheduler_runner_holder:
                 await scheduler_runner_holder[0].fire_now(task)
 
@@ -584,8 +585,8 @@ async def _daemon_main(config: WeComDaemonConfig, *, startup_fd: int | None = No
         # --- Unix socket IPC server ---
         # Bind socket FIRST, then write state file.  The previous order let
         # external callers see a "running" state file with a socket that
-        # hadn't started listening yet, leading them to fall back to SIGTERM
-        # against the half-started daemon.
+        # hadn't started listening yet, so stop/status calls could not reach
+        # the half-started daemon.
         config.socket_path.parent.mkdir(parents=True, exist_ok=True)
         # Remove stale socket file from a previous crash before binding.
         config.socket_path.unlink(missing_ok=True)
@@ -664,6 +665,24 @@ def _make_build_agent_input(cwd: Path):
     return _build
 
 
+def _scheduled_task_wecom_chatid(task: Any) -> str:
+    delivery = getattr(task, "delivery", None)
+    channels = getattr(delivery, "channels", []) or []
+    for channel in channels:
+        if not isinstance(channel, dict) or channel.get("type") != "wecom":
+            continue
+        chatid = str(channel.get("chatid") or "").strip()
+        if chatid:
+            return chatid
+    return ""
+
+
+def _task_visible_to_wecom_daemon(task: Any, cwd: Path) -> bool:
+    return getattr(task, "cwd", None) == str(cwd) and bool(
+        _scheduled_task_wecom_chatid(task)
+    )
+
+
 async def _run_scheduler(
     config: WeComDaemonConfig,
     handler: Any,
@@ -676,16 +695,22 @@ async def _run_scheduler(
     from invincat_cli.scheduler.store import SchedulerStore
     from invincat_cli.scheduler.tool import SCHEDULE_CONTEXT_FLAG
 
-    class _CwdFilteredStore(SchedulerStore):
-        """Only surface tasks whose cwd matches this daemon's project directory."""
+    class _WeComFilteredStore(SchedulerStore):
+        """Only surface WeCom-deliverable tasks for this daemon's project."""
 
         def list_tasks(self, *, enabled_only: bool = False, cwd: str | None = None):
             return [
                 t for t in super().list_tasks(enabled_only=enabled_only, cwd=cwd)
-                if t.cwd == str(config.cwd)
+                if _task_visible_to_wecom_daemon(t, config.cwd)
             ]
 
-    store = _CwdFilteredStore()
+        def try_start_run(self, task_id: str, run: Any, **kwargs: Any) -> bool:
+            task = super().load_task(task_id)
+            if task is None or not _task_visible_to_wecom_daemon(task, config.cwd):
+                return False
+            return super().try_start_run(task_id, run, **kwargs)
+
+    store = _WeComFilteredStore()
 
     # Reconcile stale 'running' runs left behind by dead scheduler processes.
     # Live rows owned by another TUI/daemon process are preserved so starting
@@ -726,26 +751,14 @@ async def _run_scheduler(
                 return
 
             # Resolve WeCom delivery chatid from task's delivery spec.
-            channels = getattr(task.delivery, "channels", []) or []
-            wecom_ch = next(
-                (ch for ch in channels if isinstance(ch, dict) and ch.get("type") == "wecom"),
-                None,
-            )
-            chatid = str(wecom_ch.get("chatid") or "").strip() if wecom_ch else ""
+            chatid = _scheduled_task_wecom_chatid(task)
 
             if not chatid:
-                if wecom_ch is not None:
-                    logger.warning(
-                        "Scheduled task %r has an empty WeCom chatid in delivery spec; "
-                        "messages will not be delivered to WeCom",
-                        task_id,
-                    )
-                else:
-                    logger.warning(
-                        "Scheduled task %r has no WeCom delivery channel configured; "
-                        "messages will not be delivered to WeCom",
-                        task_id,
-                    )
+                logger.warning(
+                    "Scheduled task %r is not WeCom-deliverable; "
+                    "messages will not be delivered to WeCom",
+                    task_id,
+                )
 
             # Send start notification if we have a WeCom target.  Use the same
             # robust-delivery helper as the final result so the start notice can
@@ -943,16 +956,7 @@ async def _deliver_scheduled_timeout_result(
     if scheduled_task is None or not bridge_holder:
         return False
 
-    channels = getattr(scheduled_task.delivery, "channels", []) or []
-    wecom_ch = next(
-        (
-            ch
-            for ch in channels
-            if isinstance(ch, dict) and ch.get("type") == "wecom"
-        ),
-        None,
-    )
-    chatid = str(wecom_ch.get("chatid") or "").strip() if wecom_ch else ""
+    chatid = _scheduled_task_wecom_chatid(scheduled_task)
     if not chatid:
         return False
 

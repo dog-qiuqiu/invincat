@@ -9,16 +9,20 @@ sole signal that another daemon is alive.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 from pathlib import Path
 
 import pytest
 
+import invincat_cli.wecom.daemon as daemon_module
 from invincat_cli.wecom.daemon import (
     WeComDaemonConfig,
     _write_daemon_state,
     acquire_daemon_lock,
     is_daemon_running,
+    stop_daemon,
 )
 
 
@@ -56,6 +60,40 @@ def test_acquire_lock_twice_blocks(tmp_path: Path) -> None:
             acquire_daemon_lock(tmp_path)
     finally:
         os.close(first)
+
+
+def test_stop_daemon_does_not_sigterm_stale_state_pid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Socket-less stop must not trust a stale state-file PID."""
+    state_dir = tmp_path / ".invincat"
+    state_dir.mkdir()
+    (state_dir / "wecom_daemon.json").write_text(
+        json.dumps(
+            {
+                "pid": 123456,
+                "socket_path": str(state_dir / "missing.sock"),
+                "started_at": "2026-01-01T00:00:00",
+                "cwd": str(tmp_path),
+                "bot_id": "bot",
+            }
+        ),
+        encoding="utf-8",
+    )
+    killed: list[tuple[int, int]] = []
+
+    def fake_kill(pid: int, sig: int) -> None:
+        killed.append((pid, sig))
+
+    monkeypatch.setattr(daemon_module.os, "kill", fake_kill)
+
+    lock_fd = acquire_daemon_lock(tmp_path)
+    try:
+        assert asyncio.run(stop_daemon(tmp_path)) is False
+    finally:
+        os.close(lock_fd)
+
+    assert killed == []
 
 
 def test_lock_per_cwd(tmp_path: Path) -> None:
