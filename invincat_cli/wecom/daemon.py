@@ -686,11 +686,9 @@ async def _run_scheduler(
 
     store = _CwdFilteredStore()
 
-    # Reconcile orphaned 'running' runs left behind by a previous daemon kill.
-    # Without this, scheduled_task_runs accumulates rows that never resolve,
-    # and scheduled_tasks.last_status stays stuck at 'running' so the run-now
-    # check in SchedulerRunner.tick wouldn't matter — but the UI / history
-    # would show ghost activity forever.
+    # Reconcile stale 'running' runs left behind by dead scheduler processes.
+    # Live rows owned by another TUI/daemon process are preserved so starting
+    # the daemon cannot falsely fail an in-flight TUI scheduled task.
     try:
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         reconciled = store.reconcile_orphan_runs(
@@ -874,6 +872,7 @@ async def _run_scheduler(
         is_busy=lambda: False,
         on_timeout=_cancel_timed_out_run,
         cwd=str(config.cwd),
+        runner_kind="wecom-daemon",
     )
     runner_holder.append(runner)
     logger.info("WeCom daemon scheduler started (cwd=%s)", config.cwd)

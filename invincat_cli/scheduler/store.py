@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import errno
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +14,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _DB_PATH: Path | None = None
+_RUNNING_STALE_GRACE_SECONDS = 60
 
 
 def get_scheduler_db_path() -> Path:
@@ -63,6 +66,9 @@ CREATE TABLE IF NOT EXISTS scheduled_task_runs (
     delivery_error TEXT,
     delivered_at TEXT,
     delivery_attempts INTEGER NOT NULL DEFAULT 0,
+    runner_id TEXT,
+    runner_kind TEXT,
+    runner_pid INTEGER,
     FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id)
 );
 """
@@ -72,6 +78,9 @@ _RUN_COLUMN_MIGRATIONS = {
     "delivery_error": "ALTER TABLE scheduled_task_runs ADD COLUMN delivery_error TEXT",
     "delivered_at": "ALTER TABLE scheduled_task_runs ADD COLUMN delivered_at TEXT",
     "delivery_attempts": "ALTER TABLE scheduled_task_runs ADD COLUMN delivery_attempts INTEGER NOT NULL DEFAULT 0",
+    "runner_id": "ALTER TABLE scheduled_task_runs ADD COLUMN runner_id TEXT",
+    "runner_kind": "ALTER TABLE scheduled_task_runs ADD COLUMN runner_kind TEXT",
+    "runner_pid": "ALTER TABLE scheduled_task_runs ADD COLUMN runner_pid INTEGER",
 }
 
 _TASK_COLUMN_MIGRATIONS = {
@@ -108,6 +117,67 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for column, sql in _RUN_COLUMN_MIGRATIONS.items():
         if column not in run_columns:
             conn.execute(sql)
+
+
+def _pid_is_alive(pid: int | None) -> bool:
+    """Return True if *pid* currently exists and can be signalled."""
+    if pid is None or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError as exc:
+        if exc.errno == errno.ESRCH:
+            return False
+        if exc.errno == errno.EPERM:
+            return True
+        raise
+    return True
+
+
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _running_row_is_stale(
+    row: sqlite3.Row,
+    *,
+    task_timeout_seconds: int,
+    now: datetime,
+) -> bool:
+    """Return True when a persisted running row is safe to recover.
+
+    Current-version runners persist their owning process PID.  A missing or
+    dead owner means the row is stale.  A live owner is preserved unless the
+    run has exceeded its configured timeout plus a short grace period; in that
+    case the runner should already have marked it timed out.
+    """
+    try:
+        pid = row["runner_pid"]
+    except (IndexError, KeyError):
+        pid = None
+    if not _pid_is_alive(pid):
+        return True
+
+    if task_timeout_seconds <= 0:
+        return False
+
+    started_at = _parse_iso_datetime(row["started_at"])
+    if started_at is None:
+        return False
+    stale_after = task_timeout_seconds + _RUNNING_STALE_GRACE_SECONDS
+    return (now - started_at).total_seconds() > stale_after
 
 
 class SchedulerStore:
@@ -235,28 +305,57 @@ class SchedulerStore:
             ):
                 conn.rollback()
                 return False
-            active = conn.execute(
+            active_rows = conn.execute(
                 """
-                SELECT 1 FROM scheduled_task_runs
+                SELECT * FROM scheduled_task_runs
                 WHERE task_id=? AND status='running' AND finished_at IS NULL
-                LIMIT 1
                 """,
                 (task_id,),
-            ).fetchone()
-            if active is not None:
+            ).fetchall()
+            live_rows = [
+                active
+                for active in active_rows
+                if not _running_row_is_stale(
+                    active,
+                    task_timeout_seconds=int(row["timeout_seconds"] or 600),
+                    now=datetime.now(timezone.utc),
+                )
+            ]
+            if live_rows:
                 conn.rollback()
                 return False
+            stale_ids = [active["id"] for active in active_rows]
+            if stale_ids:
+                placeholders = ",".join("?" for _ in stale_ids)
+                conn.execute(
+                    f"""
+                    UPDATE scheduled_task_runs SET
+                        status='failed',
+                        finished_at=?,
+                        error=COALESCE(error, ?)
+                    WHERE id IN ({placeholders})
+                        AND status='running'
+                        AND finished_at IS NULL
+                    """,
+                    (
+                        now,
+                        "recovered stale scheduled run before starting new run",
+                        *stale_ids,
+                    ),
+                )
 
             conn.execute(
                 """
                 INSERT INTO scheduled_task_runs
                     (id, task_id, scheduled_for, started_at, finished_at,
                      status, report_path, error, thread_id, cwd,
-                     delivery_status, delivery_error, delivered_at, delivery_attempts)
+                     delivery_status, delivery_error, delivered_at, delivery_attempts,
+                     runner_id, runner_kind, runner_pid)
                 VALUES
                     (:id,:task_id,:scheduled_for,:started_at,:finished_at,
                      :status,:report_path,:error,:thread_id,:cwd,
-                     :delivery_status,:delivery_error,:delivered_at,:delivery_attempts)
+                     :delivery_status,:delivery_error,:delivered_at,:delivery_attempts,
+                     :runner_id,:runner_kind,:runner_pid)
                 """,
                 {
                     "id": run.id,
@@ -273,6 +372,9 @@ class SchedulerStore:
                     "delivery_error": run.delivery_error,
                     "delivered_at": run.delivered_at,
                     "delivery_attempts": run.delivery_attempts,
+                    "runner_id": run.runner_id,
+                    "runner_kind": run.runner_kind,
+                    "runner_pid": run.runner_pid,
                 },
             )
             conn.execute(
@@ -376,11 +478,13 @@ class SchedulerStore:
                 INSERT INTO scheduled_task_runs
                     (id, task_id, scheduled_for, started_at, finished_at,
                      status, report_path, error, thread_id, cwd,
-                     delivery_status, delivery_error, delivered_at, delivery_attempts)
+                     delivery_status, delivery_error, delivered_at, delivery_attempts,
+                     runner_id, runner_kind, runner_pid)
                 VALUES
                     (:id,:task_id,:scheduled_for,:started_at,:finished_at,
                      :status,:report_path,:error,:thread_id,:cwd,
-                     :delivery_status,:delivery_error,:delivered_at,:delivery_attempts)
+                     :delivery_status,:delivery_error,:delivered_at,:delivery_attempts,
+                     :runner_id,:runner_kind,:runner_pid)
                 ON CONFLICT(id) DO UPDATE SET
                     started_at=excluded.started_at,
                     finished_at=excluded.finished_at,
@@ -391,7 +495,10 @@ class SchedulerStore:
                     delivery_status=excluded.delivery_status,
                     delivery_error=excluded.delivery_error,
                     delivered_at=excluded.delivered_at,
-                    delivery_attempts=excluded.delivery_attempts
+                    delivery_attempts=excluded.delivery_attempts,
+                    runner_id=excluded.runner_id,
+                    runner_kind=excluded.runner_kind,
+                    runner_pid=excluded.runner_pid
                 """,
                 {
                     "id": run.id,
@@ -408,6 +515,9 @@ class SchedulerStore:
                     "delivery_error": run.delivery_error,
                     "delivered_at": run.delivered_at,
                     "delivery_attempts": run.delivery_attempts,
+                    "runner_id": run.runner_id,
+                    "runner_kind": run.runner_kind,
+                    "runner_pid": run.runner_pid,
                 },
             )
             conn.commit()
@@ -463,39 +573,73 @@ class SchedulerStore:
         status: str = "failed",
         error: str = "daemon restart",
     ) -> int:
-        """Mark every still-running TaskRun as finished.
+        """Mark stale still-running TaskRuns as finished.
 
-        Used on daemon startup to clear records left over from a previous
-        daemon kill that never got to call ``finish_run``.  Without this the
-        runs table accumulates "running" rows that never resolve.
+        Used on runner startup to clear records left over from a previous
+        process kill that never got to call ``finish_run``.  Live runs owned by
+        another active runner are left untouched.
 
         If ``cwd`` is given, only runs from that working directory are
         reconciled; otherwise all are.  Returns the number of rows updated.
         """
-        params: list[Any] = [status, finished_at, error]
-        sql = (
-            "UPDATE scheduled_task_runs SET "
-            "  status=?, finished_at=?, "
-            "  error=COALESCE(error, ?) "
-            "WHERE status='running' AND finished_at IS NULL"
+        select_params: list[Any] = []
+        select_sql = (
+            """
+            SELECT r.*, t.timeout_seconds
+            FROM scheduled_task_runs r
+            LEFT JOIN scheduled_tasks t ON t.id = r.task_id
+            WHERE r.status='running' AND r.finished_at IS NULL
+            """
         )
         if cwd is not None:
-            sql += " AND cwd=?"
-            params.append(cwd)
+            select_sql += " AND r.cwd=?"
+            select_params.append(cwd)
         with _connect(self._db_path) as conn:
-            cur = conn.execute(sql, tuple(params))
-            # Also bring scheduled_tasks.last_status out of 'running' so the
-            # list view doesn't show stuck entries.  We don't bump
-            # failure_count — restart isn't a real agent failure.
-            task_sql = (
-                "UPDATE scheduled_tasks SET last_status=? "
-                "WHERE last_status='running'"
+            rows = conn.execute(select_sql, tuple(select_params)).fetchall()
+            finished_dt = _parse_iso_datetime(finished_at) or datetime.now(timezone.utc)
+            stale_rows = [
+                row
+                for row in rows
+                if _running_row_is_stale(
+                    row,
+                    task_timeout_seconds=int(row["timeout_seconds"] or 600),
+                    now=finished_dt,
+                )
+            ]
+            if not stale_rows:
+                conn.commit()
+                return 0
+
+            stale_ids = [row["id"] for row in stale_rows]
+            task_ids = sorted({row["task_id"] for row in stale_rows})
+            run_placeholders = ",".join("?" for _ in stale_ids)
+            cur = conn.execute(
+                f"""
+                UPDATE scheduled_task_runs SET
+                    status=?,
+                    finished_at=?,
+                    error=COALESCE(error, ?)
+                WHERE id IN ({run_placeholders})
+                    AND status='running'
+                    AND finished_at IS NULL
+                """,
+                (status, finished_at, error, *stale_ids),
             )
-            task_params: list[Any] = [status]
-            if cwd is not None:
-                task_sql += " AND cwd=?"
-                task_params.append(cwd)
-            conn.execute(task_sql, tuple(task_params))
+            task_placeholders = ",".join("?" for _ in task_ids)
+            conn.execute(
+                f"""
+                UPDATE scheduled_tasks SET last_status=?
+                WHERE id IN ({task_placeholders})
+                    AND last_status='running'
+                    AND NOT EXISTS (
+                        SELECT 1 FROM scheduled_task_runs r
+                        WHERE r.task_id=scheduled_tasks.id
+                            AND r.status='running'
+                            AND r.finished_at IS NULL
+                    )
+                """,
+                (status, *task_ids),
+            )
             conn.commit()
             return cur.rowcount
 
@@ -591,4 +735,7 @@ def _row_to_run(row: sqlite3.Row) -> "TaskRun":  # noqa: F821
         delivery_error=row["delivery_error"],
         delivered_at=row["delivered_at"],
         delivery_attempts=row["delivery_attempts"],
+        runner_id=row["runner_id"],
+        runner_kind=row["runner_kind"],
+        runner_pid=row["runner_pid"],
     )

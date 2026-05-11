@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import uuid
 from collections.abc import Awaitable, Callable
@@ -113,6 +114,7 @@ class SchedulerRunner:
         is_busy: Callable[[], bool],
         on_timeout: Callable[[str, str], Awaitable[None]] | None = None,
         cwd: str | None = None,
+        runner_kind: str = "tui",
     ) -> None:
         self._store = store
         self._inject_message = inject_message
@@ -120,10 +122,31 @@ class SchedulerRunner:
         self._is_busy = is_busy
         self._on_timeout = on_timeout
         self._cwd = cwd
+        self._runner_kind = runner_kind
+        self._runner_pid = os.getpid()
+        self._runner_id = f"{runner_kind}:{self._runner_pid}:{uuid.uuid4().hex}"
         self._running_task_ids: set[str] = set()
         self._pending_runs: list[tuple["ScheduledTask", datetime, str | None]] = []
         self._pending_task_ids: set[str] = set()
         self._timeout_tasks: dict[str, asyncio.Task] = {}
+        self._reconcile_stale_runs()
+
+    def _reconcile_stale_runs(self) -> None:
+        """Recover stale persisted runs left by dead scheduler processes."""
+        try:
+            reconciled = self._store.reconcile_orphan_runs(
+                self._cwd,
+                finished_at=datetime.now(timezone.utc).isoformat(),
+                status="failed",
+                error=f"{self._runner_kind} startup recovered stale scheduled run",
+            )
+            if reconciled:
+                logger.warning(
+                    "Scheduler runner recovered %d stale running run(s)",
+                    reconciled,
+                )
+        except Exception:
+            logger.exception("Failed to reconcile stale scheduled runs")
 
     # ------------------------------------------------------------------
     # Called by Textual set_interval every 60 s
@@ -259,6 +282,9 @@ class SchedulerRunner:
             error=None,
             thread_id=None,
             cwd=task.cwd,
+            runner_id=self._runner_id,
+            runner_kind=self._runner_kind,
+            runner_pid=self._runner_pid,
         )
         is_once = task.schedule_type == "once"
         next_run = None if is_once else compute_next_run(task.cron, now, task.timezone)

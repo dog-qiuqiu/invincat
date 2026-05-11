@@ -69,3 +69,11 @@ class TaskRun:
     delivery_error: str | None = None
     delivered_at: str | None = None
     delivery_attempts: int = 0
+    runner_id: str | None = None
+    """Unique ID of the scheduler runner process that claimed this run."""
+
+    runner_kind: str | None = None
+    """Human-readable runner type, e.g. ``tui`` or ``wecom-daemon``."""
+
+    runner_pid: int | None = None
+    """Local process ID of the runner that claimed this run."""

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
 from collections import deque
 from datetime import datetime, timedelta, timezone
@@ -386,6 +387,7 @@ def test_reconcile_orphan_runs_marks_running_runs_failed(tmp_path: Path) -> None
         error=None,
         thread_id=None,
         cwd="/tmp",
+        runner_pid=999999999,
     ))
 
     finished_at = datetime.now(timezone.utc).isoformat()
@@ -407,12 +409,12 @@ def test_reconcile_orphan_runs_filters_by_cwd(tmp_path: Path) -> None:
     store.save_run(TaskRun(
         id="run-mine", task_id="task-1", scheduled_for=now, started_at=now,
         finished_at=None, status="running", report_path=None, error=None,
-        thread_id=None, cwd="/tmp/project-a",
+        thread_id=None, cwd="/tmp/project-a", runner_pid=999999999,
     ))
     store.save_run(TaskRun(
         id="run-other", task_id="task-1", scheduled_for=now, started_at=now,
         finished_at=None, status="running", report_path=None, error=None,
-        thread_id=None, cwd="/tmp/project-b",
+        thread_id=None, cwd="/tmp/project-b", runner_pid=999999999,
     ))
 
     count = store.reconcile_orphan_runs(
@@ -440,6 +442,72 @@ def test_reconcile_orphan_runs_skips_already_finished(tmp_path: Path) -> None:
     )
     assert count == 0
     assert store.load_run("run-done").status == "success"
+
+
+def test_reconcile_orphan_runs_skips_live_runner(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    store.save_task(_make_task())
+    now = datetime.now(timezone.utc).isoformat()
+    store.save_run(TaskRun(
+        id="run-live",
+        task_id="task-1",
+        scheduled_for=now,
+        started_at=now,
+        finished_at=None,
+        status="running",
+        report_path=None,
+        error=None,
+        thread_id=None,
+        cwd="/tmp",
+        runner_id="tui-live",
+        runner_kind="tui",
+        runner_pid=os.getpid(),
+    ))
+
+    count = store.reconcile_orphan_runs(
+        "/tmp",
+        finished_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    loaded = store.load_run("run-live")
+    assert count == 0
+    assert loaded is not None
+    assert loaded.status == "running"
+    assert loaded.finished_at is None
+
+
+def test_runner_startup_recovers_stale_running_row(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    now = datetime.now(timezone.utc).isoformat()
+    store.save_task(_make_task())
+    store.save_run(TaskRun(
+        id="run-stale",
+        task_id="task-1",
+        scheduled_for=now,
+        started_at=now,
+        finished_at=None,
+        status="running",
+        report_path=None,
+        error=None,
+        thread_id=None,
+        cwd="/tmp",
+        runner_id="dead-runner",
+        runner_kind="tui",
+        runner_pid=999999999,
+    ))
+
+    SchedulerRunner(
+        store,
+        inject_message=MagicMock(),
+        notify=MagicMock(),
+        is_busy=lambda: False,
+        cwd="/tmp",
+    )
+
+    loaded = store.load_run("run-stale")
+    assert loaded is not None
+    assert loaded.status == "failed"
+    assert loaded.finished_at is not None
 
 
 def test_store_preserves_one_shot_fields(tmp_path: Path) -> None:
@@ -1166,6 +1234,98 @@ def test_runner_claim_prevents_second_runner_duplicate_fire(tmp_path: Path) -> N
     assert second_fired == []
 
 
+def test_try_start_run_recovers_stale_running_row(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    now = datetime.now(timezone.utc).isoformat()
+    store.save_task(_make_task(next_run_at=now))
+    store.save_run(TaskRun(
+        id="stale-run",
+        task_id="task-1",
+        scheduled_for=now,
+        started_at=now,
+        finished_at=None,
+        status="running",
+        report_path=None,
+        error=None,
+        thread_id=None,
+        cwd="/tmp",
+        runner_id="dead-runner",
+        runner_kind="tui",
+        runner_pid=999999999,
+    ))
+    new_run = TaskRun(
+        id="new-run",
+        task_id="task-1",
+        scheduled_for=now,
+        started_at=now,
+        finished_at=None,
+        status="running",
+        report_path=None,
+        error=None,
+        thread_id=None,
+        cwd="/tmp",
+        runner_id="new-runner",
+        runner_kind="tui",
+        runner_pid=os.getpid(),
+    )
+
+    claimed = store.try_start_run("task-1", new_run)
+
+    stale = store.load_run("stale-run")
+    loaded_new = store.load_run("new-run")
+    assert claimed is True
+    assert stale is not None
+    assert stale.status == "failed"
+    assert stale.finished_at is not None
+    assert loaded_new is not None
+    assert loaded_new.status == "running"
+
+
+def test_try_start_run_preserves_live_running_row(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    now = datetime.now(timezone.utc).isoformat()
+    store.save_task(_make_task(next_run_at=now))
+    store.save_run(TaskRun(
+        id="live-run",
+        task_id="task-1",
+        scheduled_for=now,
+        started_at=now,
+        finished_at=None,
+        status="running",
+        report_path=None,
+        error=None,
+        thread_id=None,
+        cwd="/tmp",
+        runner_id="live-runner",
+        runner_kind="tui",
+        runner_pid=os.getpid(),
+    ))
+    new_run = TaskRun(
+        id="new-run",
+        task_id="task-1",
+        scheduled_for=now,
+        started_at=now,
+        finished_at=None,
+        status="running",
+        report_path=None,
+        error=None,
+        thread_id=None,
+        cwd="/tmp",
+        runner_id="new-runner",
+        runner_kind="wecom-daemon",
+        runner_pid=os.getpid(),
+    )
+
+    claimed = store.try_start_run("task-1", new_run)
+
+    live = store.load_run("live-run")
+    assert claimed is False
+    assert store.load_run("new-run") is None
+    assert live is not None
+    assert live.status == "running"
+    assert live.finished_at is None
+
+
 def test_runner_filters_tasks_by_cwd(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
@@ -1209,6 +1369,9 @@ def test_runner_timeout_invokes_callback(tmp_path: Path) -> None:
         error=None,
         thread_id=None,
         cwd="/tmp",
+        runner_id="current-runner",
+        runner_kind="tui",
+        runner_pid=os.getpid(),
     ))
     timed_out: list[tuple[str, str]] = []
 
