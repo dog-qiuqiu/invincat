@@ -1051,16 +1051,17 @@ def test_headless_schedule_payload_rejects_cross_cwd_update(
         send_request=send_request,
     )
 
-    asyncio.run(
-        handler._process_schedule_payload(
-            {
-                "type": SCHEDULE_UPDATE_TYPE,
-                "task_id": "task-other",
-                "updates": {"title": "mutated"},
-            },
-            {"body": {"chatid": "chat-1"}},
+    with pytest.raises(ValueError, match="belongs to another project"):
+        asyncio.run(
+            handler._process_schedule_payload(
+                {
+                    "type": SCHEDULE_UPDATE_TYPE,
+                    "task_id": "task-other",
+                    "updates": {"title": "mutated"},
+                },
+                {"body": {"chatid": "chat-1"}},
+            )
         )
-    )
 
     assert saved == []
     assert other_task.title == "Other"
@@ -1094,12 +1095,13 @@ def test_headless_schedule_payload_rejects_cross_cwd_delete(
         send_request=send_request,
     )
 
-    asyncio.run(
-        handler._process_schedule_payload(
-            {"type": SCHEDULE_CANCEL_TYPE, "task_id": "task-other"},
-            {"body": {"chatid": "chat-1"}},
+    with pytest.raises(ValueError, match="belongs to another project"):
+        asyncio.run(
+            handler._process_schedule_payload(
+                {"type": SCHEDULE_CANCEL_TYPE, "task_id": "task-other"},
+                {"body": {"chatid": "chat-1"}},
+            )
         )
-    )
 
     assert deleted == []
 
@@ -1132,14 +1134,73 @@ def test_headless_schedule_payload_rejects_cross_cwd_run_now(
         on_schedule_run_now=on_schedule_run_now,
     )
 
-    asyncio.run(
-        handler._process_schedule_payload(
-            {"type": SCHEDULE_RUN_NOW_TYPE, "task_id": "task-other"},
-            {"body": {"chatid": "chat-1"}},
+    with pytest.raises(ValueError, match="belongs to another project"):
+        asyncio.run(
+            handler._process_schedule_payload(
+                {"type": SCHEDULE_RUN_NOW_TYPE, "task_id": "task-other"},
+                {"body": {"chatid": "chat-1"}},
+            )
         )
-    )
 
     assert fired == []
+
+
+def test_headless_schedule_payload_error_propagates_from_agent_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from invincat_cli.scheduler.tool import SCHEDULE_CANCEL_TYPE
+    from invincat_cli.wecom.headless import HeadlessWeComHandler
+
+    other_task = SimpleNamespace(id="task-other", cwd=str(tmp_path / "other"))
+
+    class FakeStore:
+        def load_task(self, _task_id: str):
+            return other_task
+
+    class FakeAgent:
+        async def astream(self, *_args, **_kwargs):  # noqa: ANN002
+            yield (
+                (),
+                "messages",
+                (
+                    ToolMessage(
+                        content=json.dumps(
+                            {
+                                "type": SCHEDULE_CANCEL_TYPE,
+                                "task_id": "task-other",
+                            }
+                        ),
+                        name="cancel_scheduled_task",
+                        tool_call_id="call-1",
+                    ),
+                    {},
+                ),
+            )
+
+    async def send_request(_payload: dict) -> dict:
+        return {"errcode": 0}
+
+    monkeypatch.setattr("invincat_cli.scheduler.store.SchedulerStore", FakeStore)
+    monkeypatch.setattr(
+        "invincat_cli.config.build_stream_config",
+        lambda _thread_id, _agent_name: {},
+    )
+    handler = HeadlessWeComHandler(
+        agent=FakeAgent(),
+        cwd=tmp_path / "current",
+        send_request=send_request,
+    )
+
+    with pytest.raises(ValueError, match="belongs to another project"):
+        asyncio.run(
+            handler._run_agent_turn(
+                "delete it",
+                thread_id="thread-1",
+                inbound_frame={"body": {"chatid": "chat-1"}},
+                on_content=lambda _content: asyncio.sleep(0),
+            )
+        )
 
 
 class _ModelRequest:

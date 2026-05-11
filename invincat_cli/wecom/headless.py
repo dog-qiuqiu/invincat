@@ -256,6 +256,7 @@ class HeadlessWeComHandler:
                                 await self._process_schedule_payload(sched_payload, inbound_frame)
                             except Exception:
                                 logger.warning("Schedule payload processing failed", exc_info=True)
+                                raise
 
                         if tool_name == WECOM_FILE_TOOL_NAME:
                             payload = parse_wecom_file_request(message_obj.content)
@@ -337,11 +338,11 @@ class HeadlessWeComHandler:
         store = SchedulerStore()
         current_cwd = str(self._cwd)
 
-        def _load_current_cwd_task(task_id: str, operation: str) -> Any | None:
+        def _load_current_cwd_task(task_id: str, operation: str) -> Any:
             task = store.load_task(task_id)
             if task is None:
                 logger.warning("%s: task %r not found", operation, task_id)
-                return None
+                raise ValueError(f"{operation}: scheduled task {task_id!r} not found")
             if task.cwd != current_cwd:
                 logger.warning(
                     "%s: refusing to operate on task %r from cwd=%r while daemon cwd=%r",
@@ -350,7 +351,10 @@ class HeadlessWeComHandler:
                     task.cwd,
                     current_cwd,
                 )
-                return None
+                raise ValueError(
+                    f"{operation}: scheduled task {task_id!r} belongs to another "
+                    f"project (task cwd={task.cwd!r}, daemon cwd={current_cwd!r})"
+                )
             return task
 
         if ptype == SCHEDULE_CREATE_TYPE:
@@ -447,8 +451,6 @@ class HeadlessWeComHandler:
         elif ptype == SCHEDULE_UPDATE_TYPE:
             task_id = payload.get("task_id", "")
             task = _load_current_cwd_task(task_id, "schedule_update")
-            if task is None:
-                return
             updates = payload.get("updates", {})
             if "title" in updates:
                 task.title = updates["title"]
@@ -474,8 +476,6 @@ class HeadlessWeComHandler:
         elif ptype == SCHEDULE_CANCEL_TYPE:
             task_id = payload.get("task_id", "")
             task = _load_current_cwd_task(task_id, "schedule_cancel")
-            if task is None:
-                return
             store.delete_task(task_id)
             logger.info("Scheduled task deleted: id=%s", task_id)
 
@@ -483,9 +483,8 @@ class HeadlessWeComHandler:
             if self._on_schedule_run_now is not None:
                 task_id = payload.get("task_id", "")
                 task = _load_current_cwd_task(task_id, "schedule_run_now")
-                if task is not None:
-                    await self._on_schedule_run_now(task)
-                    logger.info("Scheduled task fired immediately: %r id=%s", task.title, task_id)
+                await self._on_schedule_run_now(task)
+                logger.info("Scheduled task fired immediately: %r id=%s", task.title, task_id)
 
     @staticmethod
     def _extract_ai_text(message: Any) -> str:
