@@ -356,6 +356,12 @@ class ScheduleMiddleware(AgentMiddleware):
             Args:
                 task_id: The ID of the task to delete.
             """
+            task = store.load_task(task_id)
+            if task is None:
+                return json.dumps(
+                    {"error": f"Task {task_id!r} not found"},
+                    ensure_ascii=False,
+                )
             payload = {
                 "type": SCHEDULE_CANCEL_TYPE,
                 "task_id": task_id,
@@ -366,6 +372,8 @@ class ScheduleMiddleware(AgentMiddleware):
         return cancel_scheduled_task
 
     def _make_delete_tool(self):  # noqa: ANN202
+        store = self._store
+
         @tool
         def delete_scheduled_task(
             task_id: str,
@@ -379,6 +387,12 @@ class ScheduleMiddleware(AgentMiddleware):
             Args:
                 task_id: The ID of the task to delete.
             """
+            task = store.load_task(task_id)
+            if task is None:
+                return json.dumps(
+                    {"error": f"Task {task_id!r} not found"},
+                    ensure_ascii=False,
+                )
             payload = {
                 "type": SCHEDULE_CANCEL_TYPE,
                 "task_id": task_id,

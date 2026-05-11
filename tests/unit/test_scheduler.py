@@ -28,7 +28,7 @@ from invincat_cli.scheduler.runner import (
     compute_next_run,
     task_next_run,
 )
-from invincat_cli.scheduler.store import SchedulerStore
+from invincat_cli.scheduler.store import CwdScopedSchedulerStore, SchedulerStore
 from invincat_cli.scheduler.tool import (
     SCHEDULE_CANCEL_TYPE,
     SCHEDULE_CREATE_TYPE,
@@ -1000,6 +1000,7 @@ def test_schedule_time_display_uses_explicit_offset() -> None:
 
 def test_schedule_middleware_delete_tool_alias_returns_cancel_payload(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
+    store.save_task(_make_task(task_id="task-1"))
     mw = ScheduleMiddleware(store=store)
     delete_tool = next(t for t in mw.tools if t.name == "delete_scheduled_task")
 
@@ -1008,6 +1009,34 @@ def test_schedule_middleware_delete_tool_alias_returns_cancel_payload(tmp_path: 
 
     assert data["type"] == SCHEDULE_CANCEL_TYPE
     assert data["task_id"] == "task-1"
+
+
+def test_schedule_middleware_scoped_store_hides_cross_cwd_tasks(tmp_path: Path) -> None:
+    db_path = tmp_path / "scheduler.db"
+    base_store = SchedulerStore(db_path=db_path)
+    base_store.save_task(_make_task(task_id="a", title="Project A", cwd="/tmp/a"))
+    task_b = _make_task(task_id="b", title="Project B", cwd="/tmp/b")
+    task_b.delivery = DeliverySpec(channels=[{"type": "wecom", "chatid": "secret-b"}])
+    base_store.save_task(task_b)
+
+    scoped_store = CwdScopedSchedulerStore("/tmp/a", db_path=db_path)
+    mw = ScheduleMiddleware(store=scoped_store)
+    list_tool = next(t for t in mw.tools if t.name == "list_scheduled_tasks")
+    update_tool = next(t for t in mw.tools if t.name == "update_scheduled_task")
+    delete_tool = next(t for t in mw.tools if t.name == "delete_scheduled_task")
+    run_now_tool = next(t for t in mw.tools if t.name == "run_scheduled_task_now")
+
+    list_data = json.loads(_invoke_tool(list_tool, {}))
+    assert [task["id"] for task in list_data["tasks"]] == ["a"]
+    assert "secret-b" not in json.dumps(list_data, ensure_ascii=False)
+
+    update_data = json.loads(_invoke_tool(update_tool, {"task_id": "b", "title": "x"}))
+    delete_data = json.loads(_invoke_tool(delete_tool, {"task_id": "b"}))
+    run_now_data = json.loads(_invoke_tool(run_now_tool, {"task_id": "b"}))
+
+    assert "not found" in update_data["error"]
+    assert "not found" in delete_data["error"]
+    assert "not found" in run_now_data["error"]
 
 
 def test_schedule_middleware_list_includes_delivery_and_output_mode(tmp_path: Path) -> None:

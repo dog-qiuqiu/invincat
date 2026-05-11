@@ -521,6 +521,7 @@ async def _daemon_main(config: WeComDaemonConfig, *, startup_fd: int | None = No
             enable_shell=shell_enabled,
             enable_ask_user=False,
             interactive=False,
+            scheduler_cwd_scope=str(config.cwd),
         )
         logger.info("LangGraph agent server ready")
 

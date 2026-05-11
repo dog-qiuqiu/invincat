@@ -644,6 +644,30 @@ class SchedulerStore:
             return cur.rowcount
 
 
+class CwdScopedSchedulerStore(SchedulerStore):
+    """SchedulerStore view that hides tasks outside one working directory."""
+
+    def __init__(self, cwd: str | Path, db_path: Path | None = None) -> None:
+        self._scope_cwd = str(cwd)
+        super().__init__(db_path=db_path)
+
+    def list_tasks(
+        self,
+        *,
+        enabled_only: bool = False,
+        cwd: str | None = None,
+    ) -> list["ScheduledTask"]:  # noqa: F821
+        if cwd is not None and cwd != self._scope_cwd:
+            return []
+        return super().list_tasks(enabled_only=enabled_only, cwd=self._scope_cwd)
+
+    def load_task(self, task_id: str) -> "ScheduledTask | None":  # noqa: F821
+        task = super().load_task(task_id)
+        if task is None or task.cwd != self._scope_cwd:
+            return None
+        return task
+
+
 # ------------------------------------------------------------------
 # Serialisation helpers
 # ------------------------------------------------------------------
