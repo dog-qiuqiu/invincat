@@ -935,6 +935,83 @@ def test_wecom_message_responder_streams_ack_content_and_final() -> None:
     assert queued[2]["body"]["stream"]["content"] == "final answer"
 
 
+def test_headless_wecom_handler_passes_scheduled_runtime_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from invincat_cli.scheduler.tool import SCHEDULE_CONTEXT_FLAG
+    from invincat_cli.wecom.headless import HeadlessWeComHandler
+
+    contexts: list[dict] = []
+
+    class FakeAgent:
+        async def astream(self, *_args, **kwargs):  # noqa: ANN002, ANN003
+            contexts.append(kwargs["context"])
+            if False:
+                yield None
+
+    async def send_request(_payload: dict) -> dict:
+        return {"errcode": 0}
+
+    monkeypatch.setattr(
+        "invincat_cli.config.build_stream_config",
+        lambda _thread_id, _agent_name: {},
+    )
+    handler = HeadlessWeComHandler(
+        agent=FakeAgent(),
+        cwd=tmp_path,
+        send_request=send_request,
+    )
+
+    asyncio.run(
+        handler._run_agent_turn(
+            "hello",
+            thread_id="thread-1",
+            inbound_frame={"body": {"chatid": "chat-1"}},
+            on_content=lambda _content: asyncio.sleep(0),
+            runtime_context={SCHEDULE_CONTEXT_FLAG: True, "wecom_enabled": False},
+        )
+    )
+
+    assert contexts == [{SCHEDULE_CONTEXT_FLAG: True, "wecom_enabled": True}]
+
+
+def test_wecom_daemon_scheduled_timeout_result_is_delivered() -> None:
+    from invincat_cli.wecom.daemon import _deliver_scheduled_timeout_result
+
+    sent_payloads: list[dict] = []
+
+    class FakeBridge:
+        def __init__(self) -> None:
+            self.ready = asyncio.Event()
+            self.ready.set()
+
+        async def send_request(self, payload: dict, *, timeout: float) -> dict:  # noqa: ARG002
+            sent_payloads.append(payload)
+            return {"errcode": 0}
+
+    task = SimpleNamespace(
+        title="Daily report",
+        delivery=SimpleNamespace(
+            channels=[{"type": "wecom", "chatid": "chat-1"}]
+        ),
+    )
+    store = SimpleNamespace(load_task=lambda _task_id: task)
+
+    delivered = asyncio.run(
+        _deliver_scheduled_timeout_result(
+            store,
+            [FakeBridge()],
+            task_id="task-1",
+        )
+    )
+
+    assert delivered is True
+    assert sent_payloads[0]["body"]["chatid"] == "chat-1"
+    assert "定时任务执行超时" in sent_payloads[0]["body"]["markdown"]["content"]
+    assert "Daily report" in sent_payloads[0]["body"]["markdown"]["content"]
+
+
 class _ModelRequest:
     def __init__(self, *, tools: list[object], context: dict | None = None) -> None:
         self.tools = tools

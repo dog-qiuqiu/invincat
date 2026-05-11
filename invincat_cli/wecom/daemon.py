@@ -674,6 +674,7 @@ async def _run_scheduler(
     """Background task: tick the scheduler every 60 s and deliver results via WeCom."""
     from invincat_cli.scheduler.runner import SchedulerRunner
     from invincat_cli.scheduler.store import SchedulerStore
+    from invincat_cli.scheduler.tool import SCHEDULE_CONTEXT_FLAG
 
     class _CwdFilteredStore(SchedulerStore):
         """Only surface tasks whose cwd matches this daemon's project directory."""
@@ -777,7 +778,12 @@ async def _run_scheduler(
 
             result = ""
             try:
-                result = await handler.run_turn(prompt, synthetic_frame, _noop_on_content)
+                result = await handler.run_turn(
+                    prompt,
+                    synthetic_frame,
+                    _noop_on_content,
+                    runtime_context={SCHEDULE_CONTEXT_FLAG: True},
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -864,6 +870,14 @@ async def _run_scheduler(
             run_id,
         )
         task.cancel()
+        try:
+            await _deliver_scheduled_timeout_result(
+                store,
+                bridge_holder,
+                task_id=task_id,
+            )
+        except Exception:
+            logger.warning("Timeout-result delivery failed", exc_info=True)
 
     runner = SchedulerRunner(
         store,
@@ -916,6 +930,39 @@ async def _run_scheduler(
         injection_tasks.clear()
 
     logger.info("WeCom daemon scheduler stopped")
+
+
+async def _deliver_scheduled_timeout_result(
+    store: Any,
+    bridge_holder: list[Any],
+    *,
+    task_id: str,
+) -> bool:
+    """Best-effort WeCom timeout notification for a scheduled daemon run."""
+    scheduled_task = store.load_task(task_id)
+    if scheduled_task is None or not bridge_holder:
+        return False
+
+    channels = getattr(scheduled_task.delivery, "channels", []) or []
+    wecom_ch = next(
+        (
+            ch
+            for ch in channels
+            if isinstance(ch, dict) and ch.get("type") == "wecom"
+        ),
+        None,
+    )
+    chatid = str(wecom_ch.get("chatid") or "").strip() if wecom_ch else ""
+    if not chatid:
+        return False
+
+    return await _deliver_scheduled_text(
+        bridge_holder[0],
+        chatid,
+        f"⏱️ 定时任务执行超时：{scheduled_task.title}",
+        label="timeout-result",
+        task_title=scheduled_task.title,
+    )
 
 
 async def _deliver_scheduled_text(

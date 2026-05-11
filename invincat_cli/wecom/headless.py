@@ -62,6 +62,8 @@ class HeadlessWeComHandler:
         text: str,
         inbound_frame: dict[str, Any],
         on_content: Callable[[str], Awaitable[None]],
+        *,
+        runtime_context: dict[str, Any] | None = None,
     ) -> str:
         """Run one agent turn and return the final answer."""
         chatid = self._resolve_chatid(inbound_frame)
@@ -73,6 +75,7 @@ class HeadlessWeComHandler:
                     thread_id=thread_id,
                     inbound_frame=inbound_frame,
                     on_content=on_content,
+                    runtime_context=runtime_context,
                 )
             except Exception as exc:
                 logger.warning("Headless agent turn failed: %s", exc, exc_info=True)
@@ -130,6 +133,7 @@ class HeadlessWeComHandler:
         thread_id: str,
         inbound_frame: dict[str, Any],
         on_content: Callable[[str], Awaitable[None]],
+        runtime_context: dict[str, Any] | None = None,
     ) -> str:
         from invincat_cli.config import build_stream_config
         from invincat_cli.wecom.file import WECOM_FILE_TOOL_NAME, parse_wecom_file_request
@@ -140,7 +144,7 @@ class HeadlessWeComHandler:
         config = build_stream_config(thread_id, "agent")
         # WeComFileMiddleware reads context["wecom_enabled"] from the LangGraph runtime.
         # RemoteAgent passes context as a separate kwarg (not inside configurable).
-        wecom_context = {"wecom_enabled": True}
+        wecom_context = {**(runtime_context or {}), "wecom_enabled": True}
 
         from invincat_cli.wecom.session import format_wecom_progress_line
 
