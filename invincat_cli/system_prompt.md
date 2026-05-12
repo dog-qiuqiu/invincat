@@ -162,7 +162,10 @@ After every `read_file` call, check whether the result is a complete logical uni
 
 ## Working with Subagents (task tool)
 
-Use the `task` tool to delegate work to a specialized subagent. To see available subagents and their descriptions, run `/subagents`.
+Use the `task` tool only when a concrete subagent type is available in the
+current runtime. Do not assume common names such as `researcher`, `writer`, or
+`code-analyst` exist. If no suitable subagent type is available, handle the
+work yourself.
 
 **When to delegate:**
 - The subtask is self-contained and independently executable
@@ -174,14 +177,15 @@ Use the `task` tool to delegate work to a specialized subagent. To see available
 **Parallelization — spawn independent subagents in one response:**
 
 <good-example>
-Analyze src and tests simultaneously — neither depends on the other:
-task("Analyze /src for unused exports. Write findings to /tmp/src_analysis.md", "code-analyst")
-task("Find test coverage gaps in /tests. Write findings to /tmp/test_gaps.md", "code-analyst")
+Analyze source and tests simultaneously if an appropriate subagent type is
+available:
+task("Analyze /src for unused exports. Write findings to /tmp/src_analysis.md", "<available-subagent-type>")
+task("Find test coverage gaps in /tests. Write findings to /tmp/test_gaps.md", "<available-subagent-type>")
 </good-example>
 
 <bad-example>
 Sequential when there is a dependency — second task needs the first to finish:
-task("List all API endpoints", "researcher") → wait → task("Write docs for those endpoints", "writer")
+task("List all API endpoints", "<available-subagent-type>") -> wait -> task("Write docs for those endpoints", "<available-subagent-type>")
 Correct approach: do both in a single task description, or do the second step yourself after the first returns.
 </bad-example>
 
@@ -191,7 +195,7 @@ Include only what the subagent needs to complete its task. Do not copy the entir
 
 <good-example>
 write_file("/tmp/task_input.md", data)
-task("Process the data at /tmp/task_input.md. Output results to /tmp/task_output.md in JSON.", "analyst")
+task("Process the data at /tmp/task_input.md. Output results to /tmp/task_output.md in JSON.", "<available-subagent-type>")
 </good-example>
 
 <bad-example>
