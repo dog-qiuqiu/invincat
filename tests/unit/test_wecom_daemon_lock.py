@@ -19,6 +19,7 @@ import pytest
 import invincat_cli.wecom.daemon as daemon_module
 from invincat_cli.wecom.daemon import (
     WeComDaemonConfig,
+    _wait_for_bridge_startup,
     _write_daemon_state,
     acquire_daemon_lock,
     is_daemon_running,
@@ -94,6 +95,74 @@ def test_stop_daemon_does_not_sigterm_stale_state_pid(
         os.close(lock_fd)
 
     assert killed == []
+
+
+def test_stop_daemon_falls_back_to_verified_lock_owner_pid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Socket-less stop may signal only when state pid and lock owner agree."""
+    state_dir = tmp_path / ".invincat"
+    state_dir.mkdir()
+    (state_dir / "wecom_daemon.json").write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "socket_path": str(state_dir / "missing.sock"),
+                "started_at": "2026-01-01T00:00:00",
+                "cwd": str(tmp_path),
+                "bot_id": "bot",
+            }
+        ),
+        encoding="utf-8",
+    )
+    killed: list[tuple[int, int]] = []
+
+    def fake_kill(pid: int, sig: int) -> None:
+        killed.append((pid, sig))
+
+    monkeypatch.setattr(daemon_module.os, "kill", fake_kill)
+
+    lock_fd = acquire_daemon_lock(tmp_path)
+    try:
+        assert asyncio.run(stop_daemon(tmp_path)) is True
+    finally:
+        os.close(lock_fd)
+
+    assert killed == [(os.getpid(), daemon_module.signal.SIGTERM)]
+
+
+def test_wait_for_bridge_startup_requires_ready_ack() -> None:
+    class FakeBridge:
+        def __init__(self) -> None:
+            self.ready = asyncio.Event()
+
+    async def _run() -> None:
+        bridge = FakeBridge()
+        bridge.ready.set()
+        bridge_task = asyncio.create_task(asyncio.sleep(60))
+        try:
+            await _wait_for_bridge_startup(bridge, bridge_task)
+        finally:
+            bridge_task.cancel()
+
+    asyncio.run(_run())
+
+
+def test_wait_for_bridge_startup_fails_when_bridge_exits_before_ready() -> None:
+    class FakeBridge:
+        def __init__(self) -> None:
+            self.ready = asyncio.Event()
+
+    async def _run() -> None:
+        async def _done() -> None:
+            return None
+
+        bridge_task = asyncio.create_task(_done())
+        await bridge_task
+        with pytest.raises(RuntimeError, match="stopped before subscription"):
+            await _wait_for_bridge_startup(FakeBridge(), bridge_task)
+
+    asyncio.run(_run())
 
 
 def test_lock_per_cwd(tmp_path: Path) -> None:

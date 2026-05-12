@@ -4818,7 +4818,7 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     AppMessage(
                         "WeCom daemon is running, but its control socket is not ready. "
-                        "No stop signal was sent; retry /wecombot-daemon-stop shortly."
+                        "No verified fallback stop was available; retry /wecombot-daemon-stop shortly."
                     )
                 )
 
@@ -4840,6 +4840,12 @@ class DeepAgentsApp(App):
                         f"  Started:          {info.get('started_at', '?')}\n"
                         f"  WeCom connection: {conn_label}\n"
                         f"  Messages handled: {info.get('messages_handled', '?')}"
+                        + (
+                            "\n  Control socket:   unavailable "
+                            f"({'verified stop fallback available' if info.get('verified_stop_fallback') else 'no verified stop fallback'})"
+                            if info.get("control_socket") == "unavailable"
+                            else ""
+                        )
                     )
                 )
 

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
 from invincat_cli.wecom.bridge import WeComBridge
@@ -974,6 +974,47 @@ def test_headless_wecom_handler_passes_scheduled_runtime_context(
     )
 
     assert contexts == [{SCHEDULE_CONTEXT_FLAG: True, "wecom_enabled": True}]
+
+
+def test_headless_wecom_handler_debounces_fast_text_stream(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from invincat_cli.wecom.headless import HeadlessWeComHandler
+
+    class FakeAgent:
+        async def astream(self, *_args, **_kwargs):  # noqa: ANN002, ANN003
+            for chunk in ("a", "b", "c", "d"):
+                yield ((), "messages", (AIMessage(content=chunk), {}))
+
+    async def send_request(_payload: dict) -> dict:
+        return {"errcode": 0}
+
+    monkeypatch.setattr(
+        "invincat_cli.config.build_stream_config",
+        lambda _thread_id, _agent_name: {},
+    )
+    handler = HeadlessWeComHandler(
+        agent=FakeAgent(),
+        cwd=tmp_path,
+        send_request=send_request,
+    )
+    emitted: list[str] = []
+
+    async def on_content(content: str) -> None:
+        emitted.append(content)
+
+    answer = asyncio.run(
+        handler._run_agent_turn(
+            "hello",
+            thread_id="thread-1",
+            inbound_frame={"body": {"chatid": "chat-1"}},
+            on_content=on_content,
+        )
+    )
+
+    assert answer == "abcd"
+    assert emitted == ["a", "abcd"]
 
 
 def test_wecom_daemon_scheduled_timeout_result_is_delivered() -> None:

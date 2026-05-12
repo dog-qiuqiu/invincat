@@ -33,7 +33,8 @@ _LOG_FILENAME = ".invincat/wecom_daemon.log"
 _SOCKET_FILENAME = ".invincat/wecom_daemon.sock"
 _LOCK_FILENAME = ".invincat/wecom_daemon.lock"
 _SOCKET_TIMEOUT = 5.0
-_STARTUP_TIMEOUT = 75.0
+_STARTUP_TIMEOUT = 120.0
+_BRIDGE_STARTUP_READY_TIMEOUT = 45.0
 _DELIVERY_RETRIES = 8                 # 1 initial attempt + 7 retries
 _DELIVERY_RETRY_DELAY = 15            # seconds between retries
 _DELIVERY_READY_TIMEOUT = 30          # per-attempt wait for bridge subscribe ACK
@@ -173,6 +174,20 @@ def acquire_daemon_lock(cwd: Path) -> int:
     return fd
 
 
+def _read_lockfile_pid(cwd: Path) -> int | None:
+    """Return the PID recorded by the daemon while holding the lockfile."""
+    lock_path = cwd / _LOCK_FILENAME
+    try:
+        raw = lock_path.read_text(encoding="ascii").strip().splitlines()[0]
+    except Exception:
+        return None
+    try:
+        pid = int(raw)
+    except ValueError:
+        return None
+    return pid if pid > 0 else None
+
+
 def is_daemon_running(cwd: Path) -> bool:
     """Return True if a daemon process holds the per-cwd lockfile."""
     lock_path = cwd / _LOCK_FILENAME
@@ -198,6 +213,50 @@ def is_daemon_running(cwd: Path) -> bool:
             os.close(fd)
         except OSError:
             pass
+
+
+def _state_pid(state: dict[str, Any]) -> int | None:
+    try:
+        pid = int(state.get("pid"))
+    except (TypeError, ValueError):
+        return None
+    return pid if pid > 0 else None
+
+
+def _verified_lock_owner_pid(cwd: Path, state: dict[str, Any]) -> int | None:
+    """Return a PID only when state and lockfile agree on the live owner.
+
+    This keeps the socket-less stop path conservative: we only signal the
+    process that both wrote the state file and recorded itself in the locked
+    lockfile.  Stale state alone is never trusted.
+    """
+    if state.get("cwd") != str(cwd):
+        return None
+    state_pid = _state_pid(state)
+    lock_pid = _read_lockfile_pid(cwd)
+    if state_pid is None or lock_pid is None or state_pid != lock_pid:
+        return None
+    if not is_daemon_running(cwd):
+        return None
+    return state_pid
+
+
+def _signal_verified_daemon_owner(cwd: Path, state: dict[str, Any]) -> bool:
+    pid = _verified_lock_owner_pid(cwd, state)
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        logger.warning("No permission to signal WeCom daemon pid=%s", pid)
+        return False
+    except OSError as exc:
+        logger.warning("Failed to signal WeCom daemon pid=%s: %s", pid, exc)
+        return False
+    logger.info("Sent SIGTERM to verified WeCom daemon pid=%s", pid)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -243,12 +302,15 @@ async def get_daemon_status(cwd: Path) -> dict[str, Any]:
         return resp
     except Exception:
         # Socket not yet up or temporarily unavailable
+        fallback_pid = _verified_lock_owner_pid(cwd, state)
         return {
             "running": True,
             "pid": pid,
             "started_at": state.get("started_at", ""),
             "connected": None,
             "messages_handled": None,
+            "control_socket": "unavailable",
+            "verified_stop_fallback": fallback_pid is not None,
         }
 
 
@@ -263,10 +325,7 @@ async def stop_daemon(cwd: Path) -> bool:
         return bool(resp.get("ok"))
     except Exception as exc:
         logger.debug("stop_daemon socket rpc failed: %s", exc)
-        # Do not fall back to the PID recorded in the state file. A crashed
-        # daemon can leave stale state behind while a new daemon already owns
-        # the lock, and the stale PID may now belong to an unrelated process.
-        return False
+        return _signal_verified_daemon_owner(cwd, state)
 
 
 # ---------------------------------------------------------------------------
@@ -583,6 +642,12 @@ async def _daemon_main(config: WeComDaemonConfig, *, startup_fd: int | None = No
         )
         bridge_holder.append(bridge)
 
+        # Start the WeCom bridge before reporting startup success.  A daemon
+        # that has a socket and state file but never subscribed is not useful.
+        bridge_task = asyncio.create_task(
+            bridge.run(bot_id=config.bot_id, secret=config.secret, ws_url=config.ws_url)
+        )
+
         # --- Unix socket IPC server ---
         # Bind socket FIRST, then write state file.  The previous order let
         # external callers see a "running" state file with a socket that
@@ -604,6 +669,8 @@ async def _daemon_main(config: WeComDaemonConfig, *, startup_fd: int | None = No
 
         _write_daemon_state(config)
         logger.info("Daemon state written to %s", config.state_file)
+
+        await _wait_for_bridge_startup(bridge, bridge_task)
         _report_startup("READY")
 
         # --- Scheduler ---
@@ -611,10 +678,6 @@ async def _daemon_main(config: WeComDaemonConfig, *, startup_fd: int | None = No
             _run_scheduler(config, handler, bridge_holder, stop_event, scheduler_runner_holder)
         )
 
-        # --- Run bridge ---
-        bridge_task = asyncio.create_task(
-            bridge.run(bot_id=config.bot_id, secret=config.secret, ws_url=config.ws_url)
-        )
         logger.info("WeCom daemon ready")
 
         # Wait until stop_event is set (by signal or socket stop command)
@@ -648,6 +711,45 @@ async def _daemon_main(config: WeComDaemonConfig, *, startup_fd: int | None = No
         if not startup_reported:
             _report_startup("ERROR daemon stopped before startup completed")
         logger.info("WeCom daemon stopped")
+
+
+async def _wait_for_bridge_startup(bridge: Any, bridge_task: asyncio.Task[None]) -> None:
+    """Wait until the WeCom subscribe ACK is observed, or fail startup."""
+    ready_wait = asyncio.create_task(bridge.ready.wait())
+    try:
+        done, pending = await asyncio.wait(
+            {ready_wait, bridge_task},
+            timeout=_BRIDGE_STARTUP_READY_TIMEOUT,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if ready_wait in done and ready_wait.result():
+            return
+        if bridge_task in done:
+            if bridge_task.cancelled():
+                raise RuntimeError("WeCom bridge was cancelled before subscription acknowledgement")
+            exc = bridge_task.exception()
+            if exc is not None:
+                raise RuntimeError(
+                    f"WeCom bridge failed before subscription acknowledgement: {exc}"
+                ) from exc
+            raise RuntimeError(
+                "WeCom bridge stopped before subscription acknowledgement; "
+                "check WECOM_BOT_ID / WECOM_BOT_SECRET / WECOM_WS_URL and the daemon log."
+            )
+        for task in pending:
+            if task is not bridge_task:
+                task.cancel()
+        raise RuntimeError(
+            "WeCom bridge did not receive subscription acknowledgement within "
+            f"{_BRIDGE_STARTUP_READY_TIMEOUT:.0f}s; check the daemon log."
+        )
+    finally:
+        if not ready_wait.done():
+            ready_wait.cancel()
+            try:
+                await ready_wait
+            except asyncio.CancelledError:
+                pass
 
 
 async def _bridge_send_request(

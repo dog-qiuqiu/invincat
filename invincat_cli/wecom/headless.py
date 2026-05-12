@@ -10,6 +10,7 @@ import asyncio
 import logging
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,80 @@ _STREAM_CHUNK_LENGTH = 3
 _MESSAGE_DATA_LENGTH = 2
 _HITL_AUTO_APPROVE_CAP = 50
 _MAX_SESSIONS = 256  # bound _sessions LRU; older idle entries are evicted
+_STREAM_UPDATE_INTERVAL = 0.5
+
+
+class _DebouncedContentEmitter:
+    """Coalesce high-frequency stream updates while preserving the latest text."""
+
+    def __init__(
+        self,
+        on_content: Callable[[str], Awaitable[None]],
+        *,
+        interval: float = _STREAM_UPDATE_INTERVAL,
+    ) -> None:
+        self._on_content = on_content
+        self._interval = max(0.0, interval)
+        self._latest: str | None = None
+        self._last_sent: str | None = None
+        self._last_sent_at = 0.0
+        self._task: asyncio.Task[None] | None = None
+
+    async def emit(self, content: str) -> None:
+        """Send immediately when due; otherwise schedule one latest-text update."""
+        self._latest = content
+        now = asyncio.get_running_loop().time()
+        if self._last_sent_at == 0.0 or now - self._last_sent_at >= self._interval:
+            await self.flush()
+            return
+        if self._task is None or self._task.done():
+            delay = max(0.0, self._interval - (now - self._last_sent_at))
+            self._task = asyncio.create_task(self._send_later(delay))
+
+    async def flush(self) -> None:
+        """Cancel any delayed send and deliver the latest pending content now."""
+        task = self._task
+        if task is not None and not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        self._task = None
+        latest = self._latest
+        if latest is None or latest == self._last_sent:
+            return
+        await self._send(latest)
+
+    async def close(self) -> None:
+        """Cancel a pending delayed send without emitting another update."""
+        task = self._task
+        if task is not None and not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        self._task = None
+
+    async def _send_later(self, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+            latest = self._latest
+            if latest is not None and latest != self._last_sent:
+                await self._send(latest)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("on_content callback failed", exc_info=True)
+        finally:
+            if self._task is asyncio.current_task():
+                self._task = None
+
+    async def _send(self, content: str) -> None:
+        try:
+            await self._on_content(content)
+        except Exception:
+            logger.debug("on_content callback failed", exc_info=True)
+        finally:
+            self._last_sent = content
+            self._last_sent_at = asyncio.get_running_loop().time()
 
 
 class HeadlessWeComHandler:
@@ -156,157 +231,162 @@ class HeadlessWeComHandler:
         running_tool: str | None = None
         completed_tools: int = 0
         progress_tick: int = 0
+        stream_emitter = _DebouncedContentEmitter(on_content)
 
-        for _ in range(_HITL_AUTO_APPROVE_CAP):
-            pending_resumes: dict[str, Any] = {}
+        async def _emit_immediate(content: str) -> None:
+            await stream_emitter.flush()
+            try:
+                await on_content(content)
+            except Exception:
+                logger.debug("on_content callback failed", exc_info=True)
 
-            async for chunk in self._agent.astream(
-                stream_input,
-                config=config,
-                context=wecom_context,
-                stream_mode=["messages", "updates"],
-                subgraphs=True,
-                durability="exit",
-            ):
-                if not isinstance(chunk, tuple) or len(chunk) != _STREAM_CHUNK_LENGTH:
-                    continue
-                namespace, mode, data = chunk
+        try:
+            for _ in range(_HITL_AUTO_APPROVE_CAP):
+                pending_resumes: dict[str, Any] = {}
 
-                # Only process main-agent output; ignore planner/subagent namespaces.
-                if namespace:
-                    continue
-
-                if mode == "messages":
-                    if not isinstance(data, tuple) or len(data) != _MESSAGE_DATA_LENGTH:
+                async for chunk in self._agent.astream(
+                    stream_input,
+                    config=config,
+                    context=wecom_context,
+                    stream_mode=["messages", "updates"],
+                    subgraphs=True,
+                    durability="exit",
+                ):
+                    if not isinstance(chunk, tuple) or len(chunk) != _STREAM_CHUNK_LENGTH:
                         continue
-                    message_obj, _meta = data
+                    namespace, mode, data = chunk
 
-                    if isinstance(message_obj, AIMessage):
-                        # Skip internal middleware LLM runs (memory agent, summarization).
-                        # These have lc_source set in metadata and must never reach the user.
-                        lc_source = _meta.get("lc_source") if isinstance(_meta, dict) else None
-                        if lc_source in {"memory_agent", "summarization"}:
+                    # Only process main-agent output; ignore planner/subagent namespaces.
+                    if namespace:
+                        continue
+
+                    if mode == "messages":
+                        if not isinstance(data, tuple) or len(data) != _MESSAGE_DATA_LENGTH:
                             continue
+                        message_obj, _meta = data
 
-                        # Detect tool calls starting — emit progress before AI text arrives.
-                        # Three formats to check (model-dependent):
-                        # 1. tool_calls — complete AIMessage (any model, post-stream)
-                        # 2. tool_call_chunks with name — OpenAI-style streaming delta
-                        # 3. content[{"type":"tool_use","name":...}] — Anthropic streaming delta
-                        detected_tool: str | None = None
-                        tool_calls = list(getattr(message_obj, "tool_calls", None) or [])
-                        if tool_calls:
-                            first = tool_calls[0]
-                            detected_tool = (
-                                first.get("name") if isinstance(first, dict)
-                                else getattr(first, "name", None)
-                            ) or None
-                        if not detected_tool:
-                            raw_chunks = getattr(message_obj, "tool_call_chunks", None) or []
-                            for c in raw_chunks:
-                                name = c.get("name") if isinstance(c, dict) else getattr(c, "name", "")
-                                if name:
-                                    detected_tool = name
-                                    break
-                        if not detected_tool:
-                            content_blocks = getattr(message_obj, "content", None)
-                            if isinstance(content_blocks, list):
-                                for block in content_blocks:
-                                    if (
-                                        isinstance(block, dict)
-                                        and block.get("type") == "tool_use"
-                                        and block.get("name")
-                                    ):
-                                        detected_tool = block["name"]
+                        if isinstance(message_obj, AIMessage):
+                            # Skip internal middleware LLM runs (memory agent, summarization).
+                            # These have lc_source set in metadata and must never reach the user.
+                            lc_source = _meta.get("lc_source") if isinstance(_meta, dict) else None
+                            if lc_source in {"memory_agent", "summarization"}:
+                                continue
+
+                            # Detect tool calls starting — emit progress before AI text arrives.
+                            # Three formats to check (model-dependent):
+                            # 1. tool_calls — complete AIMessage (any model, post-stream)
+                            # 2. tool_call_chunks with name — OpenAI-style streaming delta
+                            # 3. content[{"type":"tool_use","name":...}] — Anthropic streaming delta
+                            detected_tool: str | None = None
+                            tool_calls = list(getattr(message_obj, "tool_calls", None) or [])
+                            if tool_calls:
+                                first = tool_calls[0]
+                                detected_tool = (
+                                    first.get("name") if isinstance(first, dict)
+                                    else getattr(first, "name", None)
+                                ) or None
+                            if not detected_tool:
+                                raw_chunks = getattr(message_obj, "tool_call_chunks", None) or []
+                                for c in raw_chunks:
+                                    name = c.get("name") if isinstance(c, dict) else getattr(c, "name", "")
+                                    if name:
+                                        detected_tool = name
                                         break
+                            if not detected_tool:
+                                content_blocks = getattr(message_obj, "content", None)
+                                if isinstance(content_blocks, list):
+                                    for block in content_blocks:
+                                        if (
+                                            isinstance(block, dict)
+                                            and block.get("type") == "tool_use"
+                                            and block.get("name")
+                                        ):
+                                            detected_tool = block["name"]
+                                            break
 
-                        # Only emit progress when the tool name is new (avoid duplicate flushes
-                        # for each streaming delta chunk of the same tool call).
-                        if detected_tool and detected_tool != running_tool:
-                            running_tool = detected_tool
-                            progress = format_wecom_progress_line(
-                                running_tool=running_tool,
-                                completed_tools=completed_tools,
-                                assistant_started=False,
-                                tick=progress_tick,
-                            )
-                            progress_tick += 1
-                            try:
-                                await on_content(progress)
-                            except Exception:
-                                logger.debug("on_content callback failed", exc_info=True)
-
-                        text_delta = self._extract_ai_text(message_obj)
-                        if text_delta:
-                            accumulated += text_delta
-                            try:
-                                await on_content(accumulated)
-                            except Exception:
-                                logger.debug("on_content callback failed", exc_info=True)
-
-                    elif isinstance(message_obj, ToolMessage):
-                        tool_name = getattr(message_obj, "name", "")
-
-                        # Persist schedule management payloads that the TUI would
-                        # normally handle via on_schedule_payload / _handle_schedule_tool_payload.
-                        from invincat_cli.scheduler.tool import parse_schedule_tool_result
-                        sched_payload = parse_schedule_tool_result(message_obj.content)
-                        if sched_payload is not None:
-                            try:
-                                await self._process_schedule_payload(sched_payload, inbound_frame)
-                            except Exception:
-                                logger.warning("Schedule payload processing failed", exc_info=True)
-                                raise
-
-                        if tool_name == WECOM_FILE_TOOL_NAME:
-                            payload = parse_wecom_file_request(message_obj.content)
-                            if payload is not None:
-                                dedupe_id = (
-                                    payload.get("tool_call_id")
-                                    or getattr(message_obj, "tool_call_id", None)
-                                    or str(id(payload))
+                            # Only emit progress when the tool name is new (avoid duplicate flushes
+                            # for each streaming delta chunk of the same tool call).
+                            if detected_tool and detected_tool != running_tool:
+                                running_tool = detected_tool
+                                progress = format_wecom_progress_line(
+                                    running_tool=running_tool,
+                                    completed_tools=completed_tools,
+                                    assistant_started=False,
+                                    tick=progress_tick,
                                 )
-                                if dedupe_id not in processed_file_tool_ids:
-                                    processed_file_tool_ids.add(str(dedupe_id))
-                                    try:
-                                        await send_wecom_file_from_tool_payload(
-                                            inbound_frame,
-                                            payload,
-                                            cwd=self._cwd,
-                                            send_request=self._send_request,
-                                        )
-                                    except Exception as exc:
-                                        logger.warning(
-                                            "WeCom file send failed: %s", exc, exc_info=True
-                                        )
+                                progress_tick += 1
+                                await _emit_immediate(progress)
+                            text_delta = self._extract_ai_text(message_obj)
+                            if text_delta:
+                                accumulated += text_delta
+                                await stream_emitter.emit(accumulated)
 
-                        # Tool completed — update counters and emit progress.
-                        completed_tools += 1
-                        running_tool = None
-                        if not accumulated:
-                            # Only show progress if AI text hasn't started yet.
-                            progress = format_wecom_progress_line(
-                                running_tool=None,
-                                completed_tools=completed_tools,
-                                assistant_started=False,
-                                tick=progress_tick,
-                            )
-                            progress_tick += 1
-                            try:
-                                await on_content(progress)
-                            except Exception:
-                                logger.debug("on_content callback failed", exc_info=True)
+                        elif isinstance(message_obj, ToolMessage):
+                            tool_name = getattr(message_obj, "name", "")
 
-                elif mode == "updates" and isinstance(data, dict):
-                    for interrupt_obj in data.get("__interrupt__", []):
-                        pending_resumes[interrupt_obj.id] = {
-                            "decisions": [{"type": "approve"}]
-                        }
+                            # Persist schedule management payloads that the TUI would
+                            # normally handle via on_schedule_payload / _handle_schedule_tool_payload.
+                            from invincat_cli.scheduler.tool import parse_schedule_tool_result
+                            sched_payload = parse_schedule_tool_result(message_obj.content)
+                            if sched_payload is not None:
+                                try:
+                                    await self._process_schedule_payload(sched_payload, inbound_frame)
+                                except Exception:
+                                    logger.warning("Schedule payload processing failed", exc_info=True)
+                                    raise
 
-            if not pending_resumes:
-                break
-            # Resume all pending HITL interrupts with auto-approve
-            stream_input = Command(resume=pending_resumes)
+                            if tool_name == WECOM_FILE_TOOL_NAME:
+                                payload = parse_wecom_file_request(message_obj.content)
+                                if payload is not None:
+                                    dedupe_id = (
+                                        payload.get("tool_call_id")
+                                        or getattr(message_obj, "tool_call_id", None)
+                                        or str(id(payload))
+                                    )
+                                    if dedupe_id not in processed_file_tool_ids:
+                                        processed_file_tool_ids.add(str(dedupe_id))
+                                        try:
+                                            await send_wecom_file_from_tool_payload(
+                                                inbound_frame,
+                                                payload,
+                                                cwd=self._cwd,
+                                                send_request=self._send_request,
+                                            )
+                                        except Exception as exc:
+                                            logger.warning(
+                                                "WeCom file send failed: %s", exc, exc_info=True
+                                            )
+
+                            # Tool completed — update counters and emit progress.
+                            completed_tools += 1
+                            running_tool = None
+                            if not accumulated:
+                                # Only show progress if AI text hasn't started yet.
+                                progress = format_wecom_progress_line(
+                                    running_tool=None,
+                                    completed_tools=completed_tools,
+                                    assistant_started=False,
+                                    tick=progress_tick,
+                                )
+                                progress_tick += 1
+                                await _emit_immediate(progress)
+
+                    elif mode == "updates" and isinstance(data, dict):
+                        for interrupt_obj in data.get("__interrupt__", []):
+                            pending_resumes[interrupt_obj.id] = {
+                                "decisions": [{"type": "approve"}]
+                            }
+
+                if not pending_resumes:
+                    break
+                # Resume all pending HITL interrupts with auto-approve
+                stream_input = Command(resume=pending_resumes)
+        finally:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                await stream_emitter.close()
+            else:
+                await stream_emitter.flush()
 
         return accumulated.strip() or "（空回复）"
 
