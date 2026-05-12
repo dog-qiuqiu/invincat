@@ -41,6 +41,10 @@ def format_schedule_time_for_display(
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
 
-    from zoneinfo import ZoneInfo
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-    return dt.astimezone(ZoneInfo(timezone_name)).isoformat(timespec="minutes")
+    try:
+        tz = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        return dt.astimezone(timezone.utc).isoformat(timespec="minutes")
+    return dt.astimezone(tz).isoformat(timespec="minutes")

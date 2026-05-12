@@ -44,6 +44,7 @@ from invincat_cli.scheduler.tool import (
     SCHEDULE_CREATE_TYPE,
     SCHEDULE_LIST_TYPE,
     ScheduleMiddleware,
+    parse_once_at,
     parse_schedule_tool_result,
 )
 
@@ -936,6 +937,31 @@ def test_schedule_middleware_create_tool_rejects_invalid_options(tmp_path: Path)
     assert "timeout_seconds" in json.loads(result)["error"]
 
 
+def test_schedule_middleware_create_tool_rejects_invalid_timezone(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    mw = ScheduleMiddleware(store=store)
+    create_tool = next(t for t in mw.tools if t.name == "create_scheduled_task")
+
+    result = _invoke_tool(create_tool, {
+        "title": "Bad timezone",
+        "schedule": "daily 08:00",
+        "prompt": "test",
+        "timezone": "Bad/Zone",
+    })
+
+    assert "Invalid timezone" in json.loads(result)["error"]
+
+
+def test_parse_once_at_rejects_invalid_timezone_even_with_offset() -> None:
+    with pytest.raises(ValueError, match="Invalid timezone"):
+        parse_once_at("2026-05-10T20:00:00+08:00", "Bad/Zone")
+
+
+def test_parse_once_at_rejects_invalid_timezone_for_naive_time() -> None:
+    with pytest.raises(ValueError, match="Invalid timezone"):
+        parse_once_at("2026-05-10T20:00:00", "Bad/Zone")
+
+
 def test_schedule_middleware_create_tool_accepts_report_mode(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     mw = ScheduleMiddleware(store=store)
@@ -1012,6 +1038,18 @@ def test_schedule_time_display_uses_explicit_offset() -> None:
             "Asia/Shanghai",
         )
         == "2026-05-17T22:09+08:00"
+    )
+
+
+def test_schedule_time_display_falls_back_to_utc_for_invalid_timezone() -> None:
+    from invincat_cli.scheduler.display import format_schedule_time_for_display
+
+    assert (
+        format_schedule_time_for_display(
+            "2026-05-17T14:09:00+00:00",
+            "Bad/Zone",
+        )
+        == "2026-05-17T14:09+00:00"
     )
 
 
@@ -1162,6 +1200,22 @@ def test_schedule_middleware_rejects_schedule_update_for_one_shot(tmp_path: Path
     data = json.loads(result)
 
     assert "one-shot" in data["error"]
+
+
+def test_schedule_middleware_update_rejects_invalid_timezone(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    task = _make_task()
+    store.save_task(task)
+    mw = ScheduleMiddleware(store=store)
+    update_tool = next(t for t in mw.tools if t.name == "update_scheduled_task")
+
+    result = _invoke_tool(update_tool, {
+        "task_id": task.id,
+        "timezone": "Bad/Zone",
+    })
+    data = json.loads(result)
+
+    assert "Invalid timezone" in data["error"]
 
 
 def test_schedule_middleware_hides_tools_during_scheduled_run(tmp_path: Path) -> None:

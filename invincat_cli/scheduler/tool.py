@@ -49,11 +49,25 @@ def _tool_name(t: Any) -> str:  # noqa: ANN401
     return ""
 
 
+def validate_timezone_name(timezone_name: str) -> str:
+    """Validate and normalize an IANA timezone name."""
+    import zoneinfo
+
+    name = str(timezone_name or "").strip()
+    if not name:
+        raise ValueError("timezone must not be empty")
+    try:
+        zoneinfo.ZoneInfo(name)
+    except zoneinfo.ZoneInfoNotFoundError as exc:
+        raise ValueError(f"Invalid timezone: {name!r}") from exc
+    return name
+
+
 def parse_once_at(value: str, timezone_name: str) -> str:
     """Parse an absolute one-shot run time and return an ISO UTC timestamp."""
     from datetime import datetime, timezone
-    import zoneinfo
 
+    timezone_name = validate_timezone_name(timezone_name)
     raw = value.strip()
     if not raw:
         raise ValueError("once_at must not be empty")
@@ -65,7 +79,9 @@ def parse_once_at(value: str, timezone_name: str) -> str:
             "once_at must be an ISO datetime, e.g. 2026-05-10T20:00:00+08:00"
         ) from exc
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=zoneinfo.ZoneInfo(timezone_name))
+        from zoneinfo import ZoneInfo
+
+        dt = dt.replace(tzinfo=ZoneInfo(timezone_name))
     return dt.astimezone(timezone.utc).isoformat()
 
 
@@ -173,6 +189,11 @@ class ScheduleMiddleware(AgentMiddleware):
                 timeout_seconds: Maximum runtime before the run is marked timed out. Use 0 to disable timeout.
             """
             from invincat_cli.scheduler.parser import parse_schedule
+
+            try:
+                timezone = validate_timezone_name(timezone)
+            except ValueError as exc:
+                return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
             schedule_type = "once" if once_at else "recurring"
             run_at = None
@@ -327,6 +348,12 @@ class ScheduleMiddleware(AgentMiddleware):
                 )
 
             cron = task.cron
+            if timezone is not None:
+                try:
+                    timezone = validate_timezone_name(timezone)
+                except ValueError as exc:
+                    return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
             if schedule is not None:
                 try:
                     cron = parse_schedule(schedule)

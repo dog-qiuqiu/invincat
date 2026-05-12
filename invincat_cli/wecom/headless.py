@@ -331,6 +331,7 @@ class HeadlessWeComHandler:
             SCHEDULE_CREATE_TYPE,
             SCHEDULE_RUN_NOW_TYPE,
             SCHEDULE_UPDATE_TYPE,
+            validate_timezone_name,
         )
         from invincat_cli.wecom.protocol import resolve_wecom_active_chat_id
 
@@ -362,6 +363,7 @@ class HeadlessWeComHandler:
             title = payload.get("title", "Untitled")
             cron = payload.get("cron", "0 8 * * *")
             tz = payload.get("timezone", "Asia/Shanghai")
+            tz = validate_timezone_name(tz)
             prompt_text = payload.get("prompt", "")
             schedule_type = payload.get("schedule_type", "recurring")
             if schedule_type not in {"recurring", "once"}:
@@ -412,6 +414,11 @@ class HeadlessWeComHandler:
 
             now = datetime.now(timezone.utc)
             next_run = _parse_dt(run_at) if schedule_type == "once" else compute_next_run(cron, now, tz)
+            if next_run is None:
+                raise ValueError(
+                    "Could not compute the next scheduled run time. "
+                    "Check the schedule, timezone, and once_at value."
+                )
             task = ScheduledTask(
                 id=task_id,
                 title=title,
@@ -461,13 +468,18 @@ class HeadlessWeComHandler:
             if "enabled" in updates:
                 task.enabled = bool(updates["enabled"])
             if "timezone" in updates:
-                task.timezone = updates["timezone"]
+                task.timezone = validate_timezone_name(updates["timezone"])
             if "cron" in updates or "timezone" in updates:
                 next_run = (
                     _parse_dt(task.run_at)
                     if task.schedule_type == "once"
                     else compute_next_run(task.cron, datetime.now(timezone.utc), task.timezone)
                 )
+                if next_run is None:
+                    raise ValueError(
+                        "Could not compute the next scheduled run time. "
+                        "Check the schedule, timezone, and once_at value."
+                    )
                 task.next_run_at = next_run.isoformat() if next_run else None
             task.updated_at = datetime.now(timezone.utc).isoformat()
             store.save_task(task)

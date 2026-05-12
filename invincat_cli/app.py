@@ -4440,6 +4440,7 @@ class DeepAgentsApp(App):
         from invincat_cli.i18n import t
         from invincat_cli.scheduler.models import DeliverySpec, ReportSpec, ScheduledTask
         from invincat_cli.scheduler.runner import _parse_dt, compute_next_run
+        from invincat_cli.scheduler.tool import validate_timezone_name
         from invincat_cli.wecom.protocol import resolve_wecom_active_chat_id
 
         ptype = payload.get("type")
@@ -4451,6 +4452,11 @@ class DeepAgentsApp(App):
             title = payload.get("title", "Untitled")
             cron = payload.get("cron", "0 8 * * *")
             tz = payload.get("timezone", "Asia/Shanghai")
+            try:
+                tz = validate_timezone_name(tz)
+            except ValueError as exc:
+                await self._mount_message(ErrorMessage(str(exc)))
+                return
             prompt_text = payload.get("prompt", "")
             schedule_type = payload.get("schedule_type", "recurring")
             if schedule_type not in {"recurring", "once"}:
@@ -4481,6 +4487,14 @@ class DeepAgentsApp(App):
 
             now = datetime.now(timezone.utc)
             next_run = _parse_dt(run_at) if schedule_type == "once" else compute_next_run(cron, now, tz)
+            if next_run is None:
+                await self._mount_message(
+                    ErrorMessage(
+                        "Could not compute the next scheduled run time. "
+                        "Check the schedule, timezone, and once_at value."
+                    )
+                )
+                return
 
             task = ScheduledTask(
                 id=task_id,
@@ -4550,7 +4564,11 @@ class DeepAgentsApp(App):
             if "enabled" in updates:
                 task.enabled = bool(updates["enabled"])
             if "timezone" in updates:
-                task.timezone = updates["timezone"]
+                try:
+                    task.timezone = validate_timezone_name(updates["timezone"])
+                except ValueError as exc:
+                    await self._mount_message(ErrorMessage(str(exc)))
+                    return
             if "cron" in updates or "timezone" in updates:
                 now = datetime.now(timezone.utc)
                 next_run = (
@@ -4558,6 +4576,14 @@ class DeepAgentsApp(App):
                     if task.schedule_type == "once"
                     else compute_next_run(task.cron, now, task.timezone)
                 )
+                if next_run is None:
+                    await self._mount_message(
+                        ErrorMessage(
+                            "Could not compute the next scheduled run time. "
+                            "Check the schedule, timezone, and once_at value."
+                        )
+                    )
+                    return
                 task.next_run_at = next_run.isoformat() if next_run else None
             task.updated_at = datetime.now(timezone.utc).isoformat()
             self._scheduler_store.save_task(task)
