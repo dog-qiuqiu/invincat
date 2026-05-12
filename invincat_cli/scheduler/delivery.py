@@ -30,16 +30,46 @@ def is_wecom_deliverable_task(task: Any) -> bool:  # noqa: ANN401
     return bool(scheduled_task_wecom_chatid(task))
 
 
-def check_report_exists(task: "ScheduledTask", date_str: str) -> str | None:
-    """Return the report path if the file exists, else None."""
+def _report_filename(task: "ScheduledTask", date_str: str) -> str:
     import re
 
     report = task.report
-    filename = report.filename_template.format(
+    return report.filename_template.format(
         task_slug=re.sub(r"[^\w\-]", "-", task.title.lower())[:40].strip("-"),
         date=date_str,
     )
-    report_path = Path(task.cwd) / report.output_dir / filename
+
+
+def resolve_report_path(task: "ScheduledTask", date_str: str) -> Path:
+    """Return a checked absolute report path under the task working directory."""
+    report = task.report
+    filename = _report_filename(task, date_str)
+    cwd = Path(task.cwd).expanduser().resolve()
+    output_dir = Path(report.output_dir)
+    filename_path = Path(filename)
+    if output_dir.is_absolute() or filename_path.is_absolute():
+        raise ValueError("Scheduled report paths must be relative")
+    report_path = (cwd / output_dir / filename_path).resolve()
+    try:
+        report_path.relative_to(cwd)
+    except ValueError as exc:
+        raise ValueError("Scheduled report path escapes the task working directory") from exc
+    return report_path
+
+
+def report_display_path(task: "ScheduledTask", date_str: str) -> str:
+    """Return the relative report path shown to users and agent prompts."""
+    path = resolve_report_path(task, date_str)
+    return path.relative_to(Path(task.cwd).expanduser().resolve()).as_posix()
+
+
+def check_report_exists(task: "ScheduledTask", date_str: str) -> str | None:
+    """Return the report path if the file exists, else None."""
+    try:
+        report_path = resolve_report_path(task, date_str)
+    except ValueError:
+        logger.warning("Invalid scheduled report path", exc_info=True)
+        return None
     if report_path.exists() and report_path.stat().st_size > 0:
         return str(report_path)
     return None
@@ -47,17 +77,12 @@ def check_report_exists(task: "ScheduledTask", date_str: str) -> str | None:
 
 def save_fallback_report(task: "ScheduledTask", content: str, date_str: str) -> str | None:
     """Write agent response text as a fallback report and return the path."""
-    import re
-
     if not content.strip():
         return None
     try:
-        report = task.report
-        slug = re.sub(r"[^\w\-]", "-", task.title.lower())[:40].strip("-")
-        filename = report.filename_template.format(task_slug=slug, date=date_str)
-        report_dir = Path(task.cwd) / report.output_dir
+        report_path = resolve_report_path(task, date_str)
+        report_dir = report_path.parent
         report_dir.mkdir(parents=True, exist_ok=True)
-        report_path = report_dir / filename
         report_path.write_text(content, encoding="utf-8")
         logger.info("Saved fallback report to %s", report_path)
         return str(report_path)

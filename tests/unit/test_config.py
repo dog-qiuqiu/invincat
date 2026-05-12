@@ -99,6 +99,9 @@ class TestUtilityFunctions:
         assert is_shell_command_allowed("ls -la", allow_list) is True  # ls with args
         assert is_shell_command_allowed("/bin/ls", allow_list) is True
         assert is_shell_command_allowed("./script.sh", allow_list) is False
+        assert is_shell_command_allowed("cat ./README.md", ["cat"], cwd=Path.cwd()) is True
+        assert is_shell_command_allowed("cat ~/.ssh/id_rsa", ["cat"], cwd=Path.cwd()) is False
+        assert is_shell_command_allowed("grep token ../secrets", ["grep"], cwd=Path.cwd()) is False
 
     def test_build_stream_config(self):
         """Test building stream configuration."""

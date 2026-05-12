@@ -86,7 +86,7 @@ class ShellAllowListMiddleware(AgentMiddleware):
     interrupt/resume cycle that fragments traces.
     """
 
-    def __init__(self, allow_list: list[str]) -> None:
+    def __init__(self, allow_list: list[str], *, cwd: str | Path | None = None) -> None:
         """Initialize with the shell allow-list to validate commands against.
 
         Args:
@@ -110,6 +110,7 @@ class ShellAllowListMiddleware(AgentMiddleware):
             )
             raise TypeError(msg)
         self._allow_list = list(allow_list)
+        self._cwd = Path(cwd).expanduser().resolve() if cwd else None
 
     def _validate_tool_call(self, request: ToolCallRequest) -> ToolMessage | None:
         """Return an error tool message when a shell command is not allowed.
@@ -131,7 +132,7 @@ class ShellAllowListMiddleware(AgentMiddleware):
 
         args = request.tool_call.get("args") or {}
         command = args.get("command", "")
-        if is_shell_command_allowed(command, self._allow_list):
+        if is_shell_command_allowed(command, self._allow_list, cwd=self._cwd):
             logger.debug("Shell command allowed: %r", command)
             return None
 
@@ -741,7 +742,9 @@ def _format_execute_description(
     return "\n".join(lines)
 
 
-def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
+def _add_interrupt_on(
+    mcp_server_info: list[MCPServerInfo] | None = None,
+) -> dict[str, InterruptOnConfig]:
     """Configure human-in-the-loop interrupt settings for all gated tools.
 
     Every tool that can have side effects or access external resources
@@ -798,6 +801,15 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
         "update_async_subagent": async_subagent_interrupt_config,
         "cancel_async_subagent": async_subagent_interrupt_config,
     }
+
+    if mcp_server_info:
+        mcp_interrupt_config: InterruptOnConfig = {
+            "allowed_decisions": ["approve", "reject"],
+            "description": "Call an MCP tool provided by a configured MCP server.",
+        }
+        for server in mcp_server_info:
+            for tool in server.tools:
+                interrupt_map[tool.name] = mcp_interrupt_config
 
     if REQUIRE_COMPACT_TOOL_APPROVAL:
         interrupt_map["compact_conversation"] = {
@@ -972,7 +984,12 @@ def create_cli_agent(
             "name": GENERAL_PURPOSE_SUBAGENT["name"],
             "description": GENERAL_PURPOSE_SUBAGENT["description"],
             "system_prompt": GENERAL_PURPOSE_SUBAGENT["system_prompt"],
-            "middleware": [ShellAllowListMiddleware(restrictive_shell_allow_list)],
+            "middleware": [
+                ShellAllowListMiddleware(
+                    restrictive_shell_allow_list,
+                    cwd=effective_cwd,
+                )
+            ],
         }
         runtime_subagents.append(general_purpose_subagent)
 
@@ -1128,7 +1145,9 @@ def create_cli_agent(
     # Add shell allow-list middleware when interrupt_shell_only is active.
     shell_middleware_added = False
     if restrictive_shell_allow_list is not None:
-        agent_middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
+        agent_middleware.append(
+            ShellAllowListMiddleware(restrictive_shell_allow_list, cwd=effective_cwd)
+        )
         shell_middleware_added = True
 
     # Get or use custom system prompt
@@ -1151,7 +1170,7 @@ def create_cli_agent(
         interrupt_on = {}
     else:
         # Full HITL for destructive operations
-        interrupt_on = _add_interrupt_on()  # type: ignore[assignment]  # InterruptOnConfig is compatible at runtime
+        interrupt_on = _add_interrupt_on(mcp_server_info)  # type: ignore[assignment]  # InterruptOnConfig is compatible at runtime
 
     # Set up composite backend with routing
     # For local FilesystemBackend, route large tool results to /tmp to avoid polluting

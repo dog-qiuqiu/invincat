@@ -59,11 +59,13 @@ def _build_scheduled_prompt(task: "ScheduledTask", scheduled_for: datetime) -> s
 
     report: ReportSpec = task.report
     if report.mode == "report":
-        filename = report.filename_template.format(
-            task_slug=_slug(task.title),
-            date=date_str,
-        )
-        report_path = f"{report.output_dir}/{filename}"
+        from invincat_cli.scheduler.delivery import report_display_path
+
+        try:
+            report_path = report_display_path(task, date_str)
+        except ValueError:
+            logger.warning("Invalid scheduled report path for task %r", task.id, exc_info=True)
+            report_path = f"{report.output_dir}/{_slug(task.title)}-{date_str}.{report.format}"
         requirements = (
             f"Requirements:\n"
             f"1. Save the report to: {report_path}\n"

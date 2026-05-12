@@ -1446,6 +1446,18 @@ intentionally excluded. File-write and injection vectors are blocked separately
 by `DANGEROUS_SHELL_PATTERNS`.
 """
 
+PATH_SCOPED_READ_COMMANDS = frozenset({
+    "cat",
+    "head",
+    "tail",
+    "grep",
+    "wc",
+    "strings",
+    "md5sum",
+    "sha256sum",
+})
+"""Allow-listed commands whose file path arguments must stay under cwd."""
+
 
 def contains_dangerous_patterns(command: str) -> bool:
     """Check if a command contains dangerous shell patterns.
@@ -1475,7 +1487,30 @@ def contains_dangerous_patterns(command: str) -> bool:
     return bool(re.search(r"(?<![&])&(?![&])", command))
 
 
-def is_shell_command_allowed(command: str, allow_list: list[str] | None) -> bool:
+def _path_arg_stays_within_cwd(arg: str, cwd: Path) -> bool:
+    if arg == "-" or arg.startswith("-"):
+        return True
+    # Treat glob/pattern-only tokens as non-paths unless they explicitly refer to
+    # directories. Shell expansion happens later, so absolute, home, and parent
+    # traversal are rejected before the shell can expand them.
+    if arg.startswith(("~", "/")) or ".." in Path(arg).parts:
+        return False
+    try:
+        candidate = (cwd / arg).expanduser().resolve()
+        if "/" not in arg and not arg.startswith(".") and not candidate.exists():
+            return True
+        candidate.relative_to(cwd)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def is_shell_command_allowed(
+    command: str,
+    allow_list: list[str] | None,
+    *,
+    cwd: str | Path | None = None,
+) -> bool:
     """Check if a shell command is in the allow-list.
 
     The allow-list matches against the first token of the command (the executable
@@ -1494,6 +1529,7 @@ def is_shell_command_allowed(command: str, allow_list: list[str] | None) -> bool
         command: The full shell command to check.
         allow_list: List of allowed command names (e.g., `["ls", "cat", "grep"]`),
             the `SHELL_ALLOW_ALL` sentinel to allow any command, or `None`.
+        cwd: Working directory used to constrain read-command path arguments.
 
     Returns:
         `True` if the command is allowed, `False` otherwise.
@@ -1535,6 +1571,13 @@ def is_shell_command_allowed(command: str, allow_list: list[str] | None) -> bool
                 # Check if this command is in the allow set
                 if cmd_name not in allow_set:
                     return False
+                if Path(cmd_name).name in PATH_SCOPED_READ_COMMANDS:
+                    root = Path(cwd).expanduser().resolve() if cwd else Path.cwd()
+                    if not all(
+                        _path_arg_stays_within_cwd(arg, root)
+                        for arg in tokens[1:]
+                    ):
+                        return False
         except ValueError:
             # If we can't parse it, be conservative and require approval
             return False

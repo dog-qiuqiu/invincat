@@ -56,13 +56,13 @@ def check_cli_dependencies() -> None:
 
     if missing:
         print("\nMissing required CLI dependencies!")  # noqa: T201  # CLI output for missing dependencies
-        print("\nThe following packages are required to use the deepagents CLI:")  # noqa: T201  # CLI output for missing dependencies
+        print("\nThe following packages are required to use the invincat CLI:")  # noqa: T201  # CLI output for missing dependencies
         for pkg in missing:
             print(f"  - {pkg}")  # noqa: T201  # CLI output for missing dependencies
         print("\nPlease install them with:")  # noqa: T201  # CLI output for missing dependencies
-        print("  pip install deepagents[cli]")  # noqa: T201  # CLI output for missing dependencies
+        print("  pip install invincat-cli")  # noqa: T201  # CLI output for missing dependencies
         print("\nOr install all dependencies:")  # noqa: T201  # CLI output for missing dependencies
-        print("  pip install 'deepagents[cli]'")  # noqa: T201  # CLI output for missing dependencies
+        print("  pip install 'invincat-cli'")  # noqa: T201  # CLI output for missing dependencies
         sys.exit(1)
 
 
@@ -588,7 +588,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--trust-project-mcp",
         action="store_true",
-        help="Trust project-level MCP configs with stdio servers "
+        help="Trust project-level MCP configs "
         "(skip interactive approval prompt)",
     )
 
@@ -683,7 +683,7 @@ async def run_textual_cli_async(
 
             Merged on top of auto-discovered configs (highest precedence).
         no_mcp: Disable all MCP tool loading.
-        trust_project_mcp: Controls project-level stdio server trust.
+        trust_project_mcp: Controls project-level MCP server trust.
 
             `True` to allow, `False` to deny, `None` to check trust store.
 
@@ -820,7 +820,7 @@ async def _run_acp_cli_async(
         profile_override: Extra profile fields from `--profile-override`.
         mcp_config_path: Optional path to MCP servers JSON configuration file.
         no_mcp: Disable all MCP tool loading.
-        trust_project_mcp: Controls project-level stdio server trust.
+        trust_project_mcp: Controls project-level MCP server trust.
 
     Returns:
         Exit code for ACP mode.
@@ -1075,9 +1075,9 @@ def _print_session_stats(stats: Any, console: Any) -> None:  # noqa: ANN401
 
 
 def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
-    """Check whether project-level MCP stdio servers should be trusted.
+    """Check whether project-level MCP servers should be trusted.
 
-    When the project has no stdio servers in project-level configs, returns
+    When the project has no servers in project-level configs, returns
     `None` (no gate needed). When `--trust-project-mcp` was passed, returns
     `True`. Otherwise checks the persistent trust store; if untrusted, shows
     an interactive approval prompt.
@@ -1086,13 +1086,13 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
         trust_flag: Whether `--trust-project-mcp` was passed.
 
     Returns:
-        `True` to allow project stdio servers, `False` to deny, or `None`
-            when no project stdio servers exist.
+        `True` to allow project MCP servers, `False` to deny, or `None`
+            when no project MCP servers exist.
     """
     from invincat_cli.mcp.tools import (
         classify_discovered_configs,
         discover_mcp_configs,
-        extract_stdio_server_commands,
+        extract_server_summaries,
         load_mcp_config_lenient,
     )
     from invincat_cli.project_utils import ProjectContext
@@ -1107,14 +1107,14 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     if not project_configs:
         return None
 
-    # Collect all stdio servers across project configs
-    all_stdio: list[tuple[str, str, list[str]]] = []
+    # Collect all servers across project configs
+    all_servers: list[tuple[str, str, str]] = []
     for path in project_configs:
         cfg = load_mcp_config_lenient(path)
         if cfg is not None:
-            all_stdio.extend(extract_stdio_server_commands(cfg))
+            all_servers.extend(extract_server_summaries(cfg))
 
-    if not all_stdio:
+    if not all_servers:
         return None
 
     if trust_flag:
@@ -1143,9 +1143,10 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     prompt_console.print(
         "[bold yellow]Project MCP servers require approval:[/bold yellow]"
     )
-    for name, cmd, args in all_stdio:
-        args_str = " ".join(args) if args else ""
-        prompt_console.print(f'  [bold]"{name}"[/bold]:  {cmd} {args_str}')
+    for name, transport, detail in all_servers:
+        prompt_console.print(
+            f'  [bold]"{name}"[/bold] ({transport}):  {detail}'
+        )
     prompt_console.print()
 
     try:

@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from langchain.agents.middleware.human_in_the_loop import ActionRequest, HITLRequest
@@ -486,7 +487,7 @@ def _make_hitl_decision(
 
         command = action_request.get("args", {}).get("command", "")
 
-        if is_shell_command_allowed(command, settings.shell_allow_list):
+        if is_shell_command_allowed(command, settings.shell_allow_list, cwd=Path.cwd()):
             console.print(f"[dim]✓ Auto-approved: {escape_markup(command)}[/dim]")
             return {"type": "approve"}
 
@@ -799,8 +800,8 @@ async def run_non_interactive(
         mcp_config_path: Optional path to MCP servers JSON configuration file.
             Merged on top of auto-discovered configs (highest precedence).
         no_mcp: Disable all MCP tool loading.
-        trust_project_mcp: When `True`, allow project-level stdio MCP
-            servers. When `False` (default), project stdio servers are
+        trust_project_mcp: When `True`, allow project-level MCP
+            servers. When `False` (default), project MCP servers are
             silently skipped.
 
     Returns:

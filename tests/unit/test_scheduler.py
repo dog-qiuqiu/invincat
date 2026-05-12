@@ -20,7 +20,12 @@ from invincat_cli.scheduler.models import (
     ScheduledTask,
     TaskRun,
 )
-from invincat_cli.scheduler.delivery import is_wecom_deliverable_task
+from invincat_cli.scheduler.delivery import (
+    is_wecom_deliverable_task,
+    report_display_path,
+    resolve_report_path,
+    save_fallback_report,
+)
 from invincat_cli.scheduler.parser import describe_schedule, parse_schedule
 from invincat_cli.scheduler.runner import (
     SchedulerRunner,
@@ -1095,6 +1100,37 @@ def test_schedule_middleware_list_includes_delivery_and_output_mode(tmp_path: Pa
     assert data["tasks"][0]["schedule_type"] == "recurring"
     assert data["tasks"][0]["next_run_at"] == "2026-05-17T14:09:00+00:00"
     assert data["tasks"][0]["next_run_display"] == "2026-05-17T22:09+08:00"
+
+
+def test_report_path_stays_under_task_cwd(tmp_path: Path) -> None:
+    task = _make_task(cwd=str(tmp_path))
+    task.report = ReportSpec(
+        mode="report",
+        output_dir="reports",
+        filename_template="{task_slug}-{date}.txt",
+        format="text",
+    )
+
+    path = resolve_report_path(task, "2026-05-17")
+
+    assert path == tmp_path / "reports" / "test-task-2026-05-17.txt"
+    assert report_display_path(task, "2026-05-17") == "reports/test-task-2026-05-17.txt"
+
+
+def test_report_path_rejects_escape(tmp_path: Path) -> None:
+    task = _make_task(cwd=str(tmp_path))
+    task.report = ReportSpec(mode="report", output_dir="../outside")
+
+    with pytest.raises(ValueError, match="escapes"):
+        resolve_report_path(task, "2026-05-17")
+
+
+def test_save_fallback_report_rejects_escape(tmp_path: Path) -> None:
+    task = _make_task(cwd=str(tmp_path))
+    task.report = ReportSpec(mode="report", output_dir="../outside")
+
+    assert save_fallback_report(task, "content", "2026-05-17") is None
+    assert not (tmp_path.parent / "outside").exists()
 
 
 def test_schedule_middleware_create_tool_invalid_schedule(tmp_path: Path) -> None:

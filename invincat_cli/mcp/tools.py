@@ -285,26 +285,41 @@ def extract_stdio_server_commands(
     return results
 
 
-def _filter_project_stdio_servers(config: dict[str, Any]) -> dict[str, Any]:
-    """Return a copy of *config* with stdio servers removed.
+def extract_server_summaries(
+    config: dict[str, Any],
+) -> list[tuple[str, str, str]]:
+    """Extract display summaries for all configured MCP servers.
 
-    Remote (SSE/HTTP) servers are kept because they don't execute local code.
+    Returns:
+        List of `(server_name, transport, detail)` tuples.
+    """
+    results: list[tuple[str, str, str]] = []
+    servers = config.get("mcpServers", {})
+    if not isinstance(servers, dict):
+        return results
+    for name, srv in servers.items():
+        if not isinstance(srv, dict):
+            continue
+        server_type = _resolve_server_type(srv)
+        if server_type == "stdio":
+            args = srv.get("args", [])
+            detail = f"{srv.get('command', '')} {' '.join(args)}".strip()
+        else:
+            detail = str(srv.get("url", ""))
+        results.append((name, server_type, detail))
+    return results
+
+
+def _empty_project_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Return an MCP config with all project-level servers removed.
 
     Args:
         config: Parsed MCP config dict.
 
     Returns:
-        Filtered config dict.
+        Empty config dict preserving the MCP shape.
     """
-    servers = config.get("mcpServers", {})
-    if not isinstance(servers, dict):
-        return config
-    filtered = {
-        name: srv
-        for name, srv in servers.items()
-        if isinstance(srv, dict) and _resolve_server_type(srv) != "stdio"
-    }
-    return {"mcpServers": filtered}
+    return {"mcpServers": {}}
 
 
 def merge_mcp_configs(configs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -591,10 +606,10 @@ async def resolve_and_load_mcp_tools(
             auto-discovered configs (highest precedence). Errors are
             fatal.
         no_mcp: If True, disable all MCP loading.
-        trust_project_mcp: Controls project-level stdio server trust:
+        trust_project_mcp: Controls project-level MCP server trust:
 
-            - `True`: allow all project stdio servers (flag/prompt approved).
-            - `False`: filter out project stdio servers, log warning.
+            - `True`: allow all project MCP servers (flag/prompt approved).
+            - `False`: filter out project MCP servers, log warning.
             - `None` (default): check the persistent trust store; if the
                 fingerprint matches, allow; otherwise filter + warn.
         project_context: Explicit project path context for config discovery
@@ -630,29 +645,30 @@ async def resolve_and_load_mcp_tools(
         if cfg is not None:
             configs.append(cfg)
 
-    # Project-level configs need trust gating for stdio servers
+    project_root = str(_resolve_project_config_base(project_context).resolve())
+    project_fingerprint: str | None = None
+
+    # Project-level configs need trust gating. Stdio servers can execute local
+    # code, while remote servers can still expose prompt-injected tools and
+    # exfiltrate local context through tool inputs.
     for path in project_configs:
         cfg = load_mcp_config_lenient(path)
         if cfg is None:
             continue
 
-        stdio_servers = extract_stdio_server_commands(cfg)
-        if not stdio_servers:
-            # No stdio servers — safe to load (remote only)
-            configs.append(cfg)
+        server_summaries = extract_server_summaries(cfg)
+        if not server_summaries:
             continue
 
         if trust_project_mcp is True:
             configs.append(cfg)
         elif trust_project_mcp is False:
-            filtered = _filter_project_stdio_servers(cfg)
+            filtered = _empty_project_config(cfg)
             if filtered.get("mcpServers"):
                 configs.append(filtered)
-            skipped = [
-                f"{name}: {cmd} {' '.join(args)}" for name, cmd, args in stdio_servers
-            ]
+            skipped = [f"{name} ({typ}): {detail}" for name, typ, detail in server_summaries]
             logger.warning(
-                "Skipped untrusted project stdio MCP servers: %s",
+                "Skipped untrusted project MCP servers: %s",
                 "; ".join(skipped),
             )
         else:
@@ -662,20 +678,20 @@ async def resolve_and_load_mcp_tools(
                 is_project_mcp_trusted,
             )
 
-            project_root = str(_resolve_project_config_base(project_context).resolve())
-            fingerprint = compute_config_fingerprint(project_configs)
-            if is_project_mcp_trusted(project_root, fingerprint):
+            if project_fingerprint is None:
+                project_fingerprint = compute_config_fingerprint(project_configs)
+            if is_project_mcp_trusted(project_root, project_fingerprint):
                 configs.append(cfg)
             else:
-                filtered = _filter_project_stdio_servers(cfg)
+                filtered = _empty_project_config(cfg)
                 if filtered.get("mcpServers"):
                     configs.append(filtered)
                 skipped = [
-                    f"{name}: {cmd} {' '.join(args)}"
-                    for name, cmd, args in stdio_servers
+                    f"{name} ({typ}): {detail}"
+                    for name, typ, detail in server_summaries
                 ]
                 logger.warning(
-                    "Skipped untrusted project stdio MCP servers "
+                    "Skipped untrusted project MCP servers "
                     "(config changed or not yet approved): %s",
                     "; ".join(skipped),
                 )

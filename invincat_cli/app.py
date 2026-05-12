@@ -2364,7 +2364,11 @@ class DeepAgentsApp(App):
             for req in action_requests:
                 if req.get("name") in SHELL_TOOL_NAMES:
                     command = req.get("args", {}).get("command", "")
-                    if is_shell_command_allowed(command, settings.shell_allow_list):
+                    if is_shell_command_allowed(
+                        command,
+                        settings.shell_allow_list,
+                        cwd=self._cwd,
+                    ):
                         approved_commands.append(command)
                     else:
                         all_auto_approved = False
@@ -4511,11 +4515,11 @@ class DeepAgentsApp(App):
 
             next_run_str = _format_schedule_time_for_display(next_run, tz)
             schedule_desc = _describe_schedule_for_display(cron, tz, schedule_type)
-            report_path = (
-                f"reports/{slug}-{{date}}.md"
-                if output_mode == "report"
-                else "message only"
-            )
+            report_path = "message only"
+            if output_mode == "report":
+                from invincat_cli.scheduler.delivery import report_display_path
+
+                report_path = report_display_path(task, "{date}")
             await self._mount_message(
                 AppMessage(
                     t("schedule.created").format(
