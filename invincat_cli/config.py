@@ -1141,56 +1141,6 @@ class Settings:
         return Path.home() / ".invincat"
 
     @staticmethod
-    def get_user_agent_md_path(agent_name: str) -> Path:
-        """Get user-level AGENTS.md path for a specific agent.
-
-        Returns path regardless of whether the file exists.
-
-        Args:
-            agent_name: Name of the agent
-
-        Returns:
-            Path to ~/.invincat/{agent_name}/AGENTS.md
-        """
-        return Path.home() / ".invincat" / agent_name / "AGENTS.md"
-
-    def get_project_agent_md_path(self) -> list[Path]:
-        """Get project-level AGENTS.md paths.
-
-        Checks both `{project_root}/.invincat/AGENTS.md` and
-        `{project_root}/AGENTS.md`, returning all that exist. If both are
-        present, both are loaded and their instructions are combined, with
-        `.invincat/AGENTS.md` first.
-
-        Returns:
-            Existing AGENTS.md paths.
-
-                Empty if neither file exists or not in a project, one entry if
-                only one is present, or two entries if both locations have the
-                file.
-        """
-        if not self.project_root:
-            return []
-        from invincat_cli.project_utils import find_project_agent_md
-
-        return find_project_agent_md(self.project_root)
-
-    def get_project_agent_md_expected_path(self) -> Path | None:
-        """Get the expected path for project-level AGENTS.md.
-
-        Returns the path where project-level memory should be stored,
-        regardless of whether the file exists. Prefers `.invincat/AGENTS.md`
-        over `AGENTS.md` at project root.
-
-        Returns:
-            Path to project_root/.invincat/AGENTS.md if project_root exists,
-            None otherwise.
-        """
-        if not self.project_root:
-            return None
-        return self.project_root / ".invincat" / "AGENTS.md"
-
-    @staticmethod
     def _is_valid_agent_name(agent_name: str) -> bool:
         """Validate to prevent invalid filesystem paths and security issues.
 
@@ -1291,27 +1241,6 @@ class Settings:
             return None
         skills_dir.mkdir(parents=True, exist_ok=True)
         return skills_dir
-
-    def get_user_agents_dir(self, agent_name: str) -> Path:
-        """Get user-level agents directory path for custom subagent definitions.
-
-        Args:
-            agent_name: Name of the CLI agent (e.g., "deepagents")
-
-        Returns:
-            Path to ~/.invincat/{agent_name}/agents/
-        """
-        return self.get_agent_dir(agent_name) / "agents"
-
-    def get_project_agents_dir(self) -> Path | None:
-        """Get project-level agents directory path for custom subagent definitions.
-
-        Returns:
-            Path to {project_root}/.invincat/agents/, or None if not in a project
-        """
-        if not self.project_root:
-            return None
-        return self.project_root / ".invincat" / "agents"
 
     @property
     def user_agents_dir(self) -> Path:
@@ -1760,19 +1689,6 @@ def reset_langsmith_url_cache() -> None:
     """Reset the LangSmith URL cache (for testing)."""
     global _langsmith_url_cache  # noqa: PLW0603  # Module-level cache requires global statement
     _langsmith_url_cache = None
-
-
-def get_default_coding_instructions() -> str:
-    """Get the default coding agent instructions.
-
-    These are the immutable base instructions that cannot be modified by the agent.
-    Long-term memory (AGENTS.md) is handled separately by the middleware.
-
-    Returns:
-        The default agent instructions as a string.
-    """
-    default_prompt_path = Path(__file__).parent / "default_agent_prompt.md"
-    return default_prompt_path.read_text()
 
 
 def detect_provider(model_name: str) -> str | None:

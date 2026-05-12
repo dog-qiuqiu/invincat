@@ -17,7 +17,7 @@ Invincat 面向真实工程协作场景，而不是只做“聊天演示”。
 - 先规划再执行：`/plan` 支持先产出计划并审批，再交给主 agent 执行，降低高风险改动失误。
 - 长会话稳定：微压缩 + offload 让上下文更耐用，长任务不容易因窗口限制中断。
 - 记忆机制可落地：用户级/项目级记忆跨会话保留，可通过 `/memory` 直接查看与管理。
-- 扩展能力强：支持 MCP、技能（skills）、subagents，便于接入团队自定义流程。
+- 扩展能力强：支持 MCP、技能（skills）、async subagents，便于接入团队自定义流程。
 - 定时任务内置：无需 cron 或脚本，直接用自然语言创建周期任务和一次性延迟任务，结果自动推送。
 
 ## Agent 设计架构与职责
@@ -30,7 +30,7 @@ Invincat 采用多 agent 协同架构，并为每类 agent 设定明确责任边
 2. 若开启 `/plan`，消息路由到 `Planner Agent`；否则路由到 `Main Agent`。
 3. `Main Agent` 在审批与中间件约束下执行文件、命令、Web、MCP 等工具调用。
 4. 每个“非 trivial 且完成”的回合结束后，`Memory Agent` 以异步方式抽取并更新记忆。
-5. 需要并行或专项处理时，`Main Agent` 可委派给本地或异步 subagent。
+5. 需要处理长耗时远程任务时，`Main Agent` 可委派给 async subagent。
 
 ### Agent 职责矩阵
 
@@ -39,7 +39,6 @@ Invincat 采用多 agent 协同架构，并为每类 agent 设定明确责任边
 | Main Agent | 端到端完成用户任务 | 读写文件、执行命令、调用 MCP/工具、协调子任务 | 不能直接读写 `memory_user.json` / `memory_project.json` |
 | Planner Agent（`/plan`） | 产出并迭代可执行计划 | 只读收集上下文、`write_todos`、`approve_plan`、必要时 `ask_user` | 不做实现动作（禁止改文件、禁止执行命令） |
 | Memory Agent | 在回合后维护长期记忆 | 基于证据执行 `create/update/rescore/retier/archive/delete/noop` | 保守抽取，低置信度或短期信息默认不写入 |
-| Local Subagents | 并行处理有边界的子任务 | 接收主 agent 委派，执行明确范围工作 | 只处理委派范围，最终集成权在主 agent |
 | Async Subagents | 承接长耗时/远程任务 | 通过异步工具发起、更新、取消远程任务 | 作为委派执行单元，不拥有主会话控制权 |
 
 ### 运行时约束
@@ -300,7 +299,7 @@ flowchart LR
 | 全局记忆存储 | `~/.invincat/{assistant_id}/memory_user.json`（默认：`~/.invincat/agent/memory_user.json`） | 所有项目通用（编码风格、个人偏好）|
 | 项目记忆存储 | `{项目根目录}/.invincat/memory_project.json`（若未识别项目根则回退到 `{cwd}/.invincat/memory_project.json`） | 当前项目上下文（仓库约定、架构、技术栈）；未识别项目根时回退到当前工作目录 |
 
-`AGENTS.md` 已从运行时记忆注入链路中弃用，当前以 `memory_*.json` 为唯一真源。
+主 agent 的 `AGENTS.md` 运行时记忆链路已移除，当前以 `memory_*.json` 为唯一真源。
 
 ### 自动记忆更新
 

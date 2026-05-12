@@ -1185,7 +1185,6 @@ class MemoryAgentMiddleware(AgentMiddleware):
     def __init__(
         self,
         *,
-        memory_paths: list[str],
         memory_store_paths: dict[str, str] | None = None,
         context_messages: int | None = None,
         min_turn_interval: int | None = None,

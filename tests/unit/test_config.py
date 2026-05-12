@@ -51,15 +51,6 @@ class TestSettings:
                 assert agent_dir == expected
                 assert "test-agent" in str(agent_dir)
 
-    def test_get_user_agent_md_path(self):
-        """Test getting user-level AGENTS.md path."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("invincat_cli.config.Path.home", return_value=Path(tmpdir)):
-                md_path = Settings.get_user_agent_md_path("test-agent")
-
-                expected = Path(tmpdir) / ".invincat" / "test-agent" / "AGENTS.md"
-                assert md_path == expected
-
     def test_provider_key_properties(self):
         """Test provider key availability properties."""
         with patch.dict(os.environ, {}, clear=True):

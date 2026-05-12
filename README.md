@@ -17,7 +17,7 @@ Invincat is designed for real engineering work in local repositories, not demo-o
 - Plan-first delivery mode: `/plan` lets teams review and approve checklists before execution, reducing risky one-shot edits.
 - Long-context durability: micro compression + offload keep long sessions usable without losing operational history.
 - Practical memory model: user/project memory stores persist conventions across sessions and are inspectable via `/memory`.
-- Extensible architecture: MCP tools, skills, and subagents allow adapting the assistant to team-specific workflows.
+- Extensible architecture: MCP tools, skills, and async subagents allow adapting the assistant to team-specific workflows.
 - Built-in scheduler: create recurring or one-shot tasks in natural language; results are delivered to the TUI or WeCom automatically.
 
 ## Agent Architecture
@@ -30,7 +30,7 @@ Invincat uses a multi-agent runtime with clear role boundaries.
 2. If `/plan` mode is active, input is routed to the `Planner Agent`; otherwise to the `Main Agent`.
 3. `Main Agent` executes tools (file/shell/web/MCP) under approval and middleware guardrails.
 4. After a non-trivial turn completes, `Memory Agent` runs asynchronously to extract durable user/project memory updates.
-5. When needed, `Main Agent` delegates bounded subtasks to local or async subagents.
+5. When needed, `Main Agent` delegates long-running remote work to async subagents.
 
 ### Agent Roles and Responsibilities
 
@@ -39,7 +39,6 @@ Invincat uses a multi-agent runtime with clear role boundaries.
 | Main Agent | Execute user tasks end-to-end | Read/write files, run commands, use MCP/tools, coordinate subtasks | Must not directly read/write `memory_user.json` or `memory_project.json` |
 | Planner Agent (`/plan`) | Produce and refine executable plans | Read-only context gathering, `write_todos`, `approve_plan`, optional clarification via `ask_user` | No implementation actions (no file edits, no command execution) |
 | Memory Agent | Curate durable memory after each completed turn | Score and apply memory ops (`create/update/rescore/retier/archive/delete/noop`) to user/project stores | Conservative extraction; skips low-confidence or ephemeral facts |
-| Local Subagents | Parallelize bounded in-process subtasks | Handle scoped tasks delegated by main agent with explicit instructions | Operate only within delegated scope; main agent remains final integrator |
 | Async Subagents | Offload long/remote tasks | Launch/update/cancel remote subagent jobs via async tools | Treated as delegated workers, not primary conversation owner |
 
 ### Runtime Guardrails
@@ -309,7 +308,7 @@ flowchart LR
 | Global Memory Store | `~/.invincat/{assistant_id}/memory_user.json` (default: `~/.invincat/agent/memory_user.json`) | Universal for all projects (coding style, personal preferences) |
 | Project Memory Store | `{project root}/.invincat/memory_project.json` (fallback: `{cwd}/.invincat/memory_project.json` when project root is not detected) | Current project context (repository conventions, architecture, stack); falls back to current working directory when no project root is detected |
 
-`AGENTS.md` is deprecated for runtime memory injection. The runtime memory pipeline now uses `memory_*.json` as the single source of truth.
+Main-agent `AGENTS.md` runtime memory has been removed. Runtime memory now uses `memory_*.json` as the single source of truth.
 
 ### Auto Memory Update
 

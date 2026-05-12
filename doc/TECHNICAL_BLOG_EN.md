@@ -34,7 +34,7 @@ flowchart TD
     P --> T[write_todos / approve_plan]
     T -->|Plan approved| M
     M --> Tools[File / Shell / Web / MCP / Skills]
-    M --> S[Local / Async Subagents]
+    M --> S[Async Subagents]
     M --> C[Context Management]
     M --> A[Primary Response]
     A --> Mem[Memory Agent]
@@ -43,7 +43,7 @@ flowchart TD
     Inj --> M
 ```
 
-The Main Agent is responsible for end-to-end task execution. The Planner Agent is responsible for planning only — it does not perform implementation actions. The Memory Agent asynchronously extracts long-term memory operations after each turn completes. Subagents handle well-bounded subtasks or remote long-running tasks. The UI layer renders messages, handles tool call approvals, displays memory status, and manages sessions.
+The Main Agent is responsible for end-to-end task execution. The Planner Agent is responsible for planning only — it does not perform implementation actions. The Memory Agent asynchronously extracts long-term memory operations after each turn completes. Async Subagents handle remote long-running tasks. The UI layer renders messages, handles tool call approvals, displays memory status, and manages sessions.
 
 The key trade-off in this architecture is: let each agent handle only what it is best at, rather than having a single model simultaneously responsible for planning, execution, memory governance, and safety judgments. Separating responsibilities reduces complexity and makes the system easier to audit and evolve.
 
@@ -71,7 +71,7 @@ This design sacrifices some one-shot speed, but gains much stronger controllabil
 
 ### Subagents: Controlled Delegation
 
-Subagents are used for parallel or specialized task processing. Local Subagents are suited for well-bounded subtasks that execute locally; Async Subagents can interface with remote LangGraph deployments to handle long-running tasks. The Main Agent retains final integration responsibility — Subagents do not own the primary session control.
+Async Subagents can interface with remote LangGraph deployments to handle long-running tasks. The Main Agent retains final integration responsibility — Subagents do not own the primary session control.
 
 This allows the system to scale to more complex task orchestration while preventing runaway delegation.
 
@@ -255,7 +255,7 @@ The core principle of recall governance is: memory should improve decision quali
 
 Invincat CLI makes deliberate trade-offs across several dimensions.
 
-On performance: the primary response does not wait for memory writes to complete — the Memory Agent runs asynchronously after each turn. Micro-compression does not rely on LLM calls, reducing additional cost. On accuracy: memory writes follow a conservative strategy — noop when uncertain, and project memory requires tool evidence. On extensibility: MCP, skills, subagents, and async subagents provide integration points for external capabilities. On maintainability: core state uses JSON and structured operations, lowering debugging costs. On safety: tool approval, Planner-only read constraints, memory file protection, and path allow-listing collectively reduce the risk of accidental damage.
+On performance: the primary response does not wait for memory writes to complete — the Memory Agent runs asynchronously after each turn. Micro-compression does not rely on LLM calls, reducing additional cost. On accuracy: memory writes follow a conservative strategy — noop when uncertain, and project memory requires tool evidence. On extensibility: MCP, skills, and async subagents provide integration points for external capabilities. On maintainability: core state uses JSON and structured operations, lowering debugging costs. On safety: tool approval, Planner-only read constraints, memory file protection, and path allow-listing collectively reduce the risk of accidental damage.
 
 These trade-offs reflect a project that does not pursue "maximum model freedom," but instead places model capabilities within well-defined engineering boundaries.
 
@@ -269,7 +269,7 @@ Invincat CLI's strengths lie not in any single feature, but in its overall gover
 
 **Third, good observability.** Users can inspect user/project memories via `/memory`; the Memory Store is readable JSON that can be audited and rolled back.
 
-**Fourth, strong extensibility.** MCP, skills, local subagents, and remote async subagents leave room for teams to customize workflows.
+**Fourth, strong extensibility.** MCP, skills, and remote async subagents leave room for teams to customize workflows.
 
 **Fifth, high safety and controllability.** Tool approval, plan approval, path allow-listing, memory file protection, and structured writes collectively reduce risk.
 

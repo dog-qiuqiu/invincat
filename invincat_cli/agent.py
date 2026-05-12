@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import shutil
 import tempfile
 import tomllib
 from datetime import datetime
@@ -22,7 +21,7 @@ if TYPE_CHECKING:
 
     from deepagents.backends.sandbox import SandboxBackendProtocol
     from deepagents.middleware.async_subagents import AsyncSubAgent
-    from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
+    from deepagents.middleware.subagents import SubAgent
     from langchain.agents.middleware import InterruptOnConfig
     from langchain.agents.middleware.types import AgentState
     from langchain.messages import ToolCall
@@ -45,7 +44,6 @@ from invincat_cli.config import (
     _ShellAllowAll,
     config,
     console,
-    get_default_coding_instructions,
     get_glyphs,
     settings,
 )
@@ -57,7 +55,6 @@ from invincat_cli.local_context import (
     _ExecutableBackend,
 )
 from invincat_cli.project_utils import ProjectContext, get_server_project_context
-from invincat_cli.subagents import list_subagents
 from invincat_cli.unicode_security import (
     check_url_safety,
     detect_dangerous_unicode,
@@ -331,7 +328,7 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
 
 
 def list_agents(*, output_format: OutputFormat = "text") -> None:
-    """List all available agents.
+    """List user-level agent data directories.
 
     Args:
         output_format: Output format — `'text'` (Rich) or `'json'`.
@@ -363,7 +360,8 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
                     {
                         "name": agent_name,
                         "path": str(agent_path),
-                        "has_agents_md": (agent_path / "AGENTS.md").exists(),
+                        "has_memory": (agent_path / "memory_user.json").exists(),
+                        "has_skills": (agent_path / "skills").is_dir(),
                         "is_default": agent_name == DEFAULT_AGENT_NAME,
                     }
                 )
@@ -377,121 +375,25 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
     for agent_path in sorted(agents_dir.iterdir()):
         if agent_path.is_dir():
             agent_name = escape_markup(agent_path.name)
-            agent_md = agent_path / "AGENTS.md"
             is_default = agent_path.name == DEFAULT_AGENT_NAME
             default_label = " [dim](default)[/dim]" if is_default else ""
-
             bullet = get_glyphs().bullet
-            if agent_md.exists():
-                console.print(
-                    f"  {bullet} [bold]{agent_name}[/bold]{default_label}",
-                    style=theme.PRIMARY,
-                )
-                console.print(
-                    f"    {escape_markup(str(agent_path))}",
-                    style=theme.MUTED,
-                )
-            else:
-                console.print(
-                    f"  {bullet} [bold]{agent_name}[/bold]{default_label}"
-                    " [dim](incomplete)[/dim]",
-                    style=theme.WARNING,
-                )
-                console.print(
-                    f"    {escape_markup(str(agent_path))}",
-                    style=theme.MUTED,
-                )
+            markers = []
+            if (agent_path / "memory_user.json").exists():
+                markers.append("memory")
+            if (agent_path / "skills").is_dir():
+                markers.append("skills")
+            marker_label = f" [dim]({', '.join(markers)})[/dim]" if markers else ""
+            console.print(
+                f"  {bullet} [bold]{agent_name}[/bold]{default_label}{marker_label}",
+                style=theme.PRIMARY,
+            )
+            console.print(
+                f"    {escape_markup(str(agent_path))}",
+                style=theme.MUTED,
+            )
 
     console.print()
-
-
-def reset_agent(
-    agent_name: str,
-    source_agent: str | None = None,
-    *,
-    dry_run: bool = False,
-    output_format: OutputFormat = "text",
-) -> None:
-    """Reset an agent to default or copy from another agent.
-
-    Args:
-        agent_name: Name of the agent to reset.
-        source_agent: Copy AGENTS.md from this agent instead of default.
-        dry_run: If `True`, print what would happen without making changes.
-        output_format: Output format — `'text'` (Rich) or `'json'`.
-
-    Raises:
-        SystemExit: If the source agent is not found.
-    """
-    agents_dir = settings.user_deepagents_dir
-    agent_dir = agents_dir / agent_name
-
-    if source_agent:
-        source_dir = agents_dir / source_agent
-        source_md = source_dir / "AGENTS.md"
-
-        if not source_md.exists():
-            console.print(
-                f"[bold red]Error:[/bold red] Source agent '{source_agent}' not found "
-                "or has no AGENTS.md\n"
-                "  Available agents: deepagents agents list"
-            )
-            raise SystemExit(1)
-
-        source_content = source_md.read_text()
-        action_desc = f"contents of agent '{source_agent}'"
-    else:
-        source_content = get_default_coding_instructions()
-        action_desc = "default"
-
-    if dry_run:
-        if output_format == "json":
-            from invincat_cli.io.output import write_json
-
-            write_json(
-                "reset",
-                {
-                    "agent": agent_name,
-                    "reset_to": source_agent or "default",
-                    "path": str(agent_dir),
-                    "dry_run": True,
-                },
-            )
-            return
-        exists = "remove and recreate" if agent_dir.exists() else "create"
-        console.print(f"Would {exists} {agent_dir} with {action_desc} prompt.")
-        console.print("No changes made.", style=theme.MUTED)
-        return
-
-    if agent_dir.exists():
-        shutil.rmtree(agent_dir)
-        if output_format != "json":
-            console.print(
-                f"Removed existing agent directory: {agent_dir}", style=theme.WARNING
-            )
-
-    agent_dir.mkdir(parents=True, exist_ok=True)
-    agent_md = agent_dir / "AGENTS.md"
-    agent_md.write_text(source_content)
-
-    if output_format == "json":
-        from invincat_cli.io.output import write_json
-
-        write_json(
-            "reset",
-            {
-                "agent": agent_name,
-                "reset_to": source_agent or "default",
-                "path": str(agent_dir),
-            },
-        )
-        return
-
-    console.print(
-        f"{get_glyphs().checkmark} Agent '{agent_name}' reset to {action_desc}",
-        style=theme.PRIMARY,
-    )
-    console.print(f"Location: {agent_dir}\n", style=theme.MUTED)
 
 
 MODEL_IDENTITY_RE = re.compile(r"### Model Identity\n\n.*?(?=###|\Z)", re.DOTALL)
@@ -994,8 +896,7 @@ def create_cli_agent(
         cwd: Override the working directory for the agent's filesystem backend
             and system prompt.
         project_context: Explicit project path context for project-sensitive
-            behavior such as project `AGENTS.md` files, skills, subagents, and
-            MCP trust.
+            behavior such as skills, subagents, and MCP trust.
         scheduler_cwd_scope: Optional cwd used to scope scheduler management
             tools. When set, schedule tools cannot list or load tasks from other
             working directories.
@@ -1019,14 +920,9 @@ def create_cli_agent(
         else (project_context.user_cwd if project_context is not None else None)
     )
 
-    # Setup agent directory for persistent memory (if enabled)
+    # Setup agent directory for persistent memory/skills (if enabled).
     if enable_memory or enable_skills:
-        agent_dir = settings.ensure_agent_dir(assistant_id)
-        agent_md = agent_dir / "AGENTS.md"
-        if not agent_md.exists():
-            # Create empty file for user customizations
-            # Base instructions are loaded fresh from get_system_prompt()
-            agent_md.touch()
+        settings.ensure_agent_dir(assistant_id)
 
     # Skills directories (if enabled)
     skills_dir = None
@@ -1047,8 +943,6 @@ def create_cli_agent(
             else settings.get_project_agent_skills_dir()
         )
 
-    # Load custom subagents from filesystem
-    custom_subagents: list[SubAgent | CompiledSubAgent] = []
     restrictive_shell_allow_list: list[str] | None = None
     if interrupt_shell_only and not auto_approve:
         # Prefer the explicitly forwarded allow-list (set by the CLI process
@@ -1067,47 +961,20 @@ def create_cli_agent(
                 "available; falling back to standard HITL interrupts"
             )
 
-    user_agents_dir = settings.get_user_agents_dir(assistant_id)
-    project_agents_dir = (
-        project_context.project_agents_dir()
-        if project_context is not None
-        else settings.get_project_agents_dir()
-    )
-
-    for subagent_meta in list_subagents(
-        user_agents_dir=user_agents_dir,
-        project_agents_dir=project_agents_dir,
-    ):
-        subagent: SubAgent = {
-            "name": subagent_meta["name"],
-            "description": subagent_meta["description"],
-            "system_prompt": subagent_meta["system_prompt"],
-        }
-        if subagent_meta["model"]:
-            subagent["model"] = subagent_meta["model"]
-        if restrictive_shell_allow_list is not None:
-            subagent["middleware"] = [
-                ShellAllowListMiddleware(restrictive_shell_allow_list)
-            ]
-        custom_subagents.append(subagent)
-
+    runtime_subagents: list[SubAgent] = []
     if restrictive_shell_allow_list is not None:
         from deepagents.middleware.subagents import (
             GENERAL_PURPOSE_SUBAGENT,
             SubAgent as RuntimeSubAgent,
         )
 
-        if not any(
-            subagent["name"] == GENERAL_PURPOSE_SUBAGENT["name"]
-            for subagent in custom_subagents
-        ):
-            general_purpose_subagent: RuntimeSubAgent = {
-                "name": GENERAL_PURPOSE_SUBAGENT["name"],
-                "description": GENERAL_PURPOSE_SUBAGENT["description"],
-                "system_prompt": GENERAL_PURPOSE_SUBAGENT["system_prompt"],
-                "middleware": [ShellAllowListMiddleware(restrictive_shell_allow_list)],
-            }
-            custom_subagents.append(general_purpose_subagent)
+        general_purpose_subagent: RuntimeSubAgent = {
+            "name": GENERAL_PURPOSE_SUBAGENT["name"],
+            "description": GENERAL_PURPOSE_SUBAGENT["description"],
+            "system_prompt": GENERAL_PURPOSE_SUBAGENT["system_prompt"],
+            "middleware": [ShellAllowListMiddleware(restrictive_shell_allow_list)],
+        }
+        runtime_subagents.append(general_purpose_subagent)
 
     # Build middleware stack based on enabled features
     agent_middleware = []
@@ -1175,7 +1042,7 @@ def create_cli_agent(
         from invincat_cli.auto_memory import RefreshableMemoryMiddleware
 
         user_store_path = str(
-            settings.get_user_agent_md_path(assistant_id).parent / "memory_user.json"
+            settings.get_agent_dir(assistant_id) / "memory_user.json"
         )
         project_store_path = str(_project_store_dir / "memory_project.json")
         memory_store_paths = {"user": user_store_path, "project": project_store_path}
@@ -1192,7 +1059,6 @@ def create_cli_agent(
 
         agent_middleware.append(
             MemoryAgentMiddleware(
-                memory_paths=[],
                 memory_store_paths=memory_store_paths,
             )
         )
@@ -1323,8 +1189,8 @@ def create_cli_agent(
         agent_middleware.extend(extra_middleware)
 
     # Create the agent
-    all_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = [
-        *custom_subagents,
+    all_subagents: list[SubAgent | AsyncSubAgent] = [
+        *runtime_subagents,
         *(async_subagents or []),
     ]
     agent = create_deep_agent(

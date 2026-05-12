@@ -335,23 +335,6 @@ def parse_args() -> argparse.Namespace:
     )
     add_json_output_arg(agents_list)
 
-    agents_reset = agents_sub.add_parser(
-        "reset",
-        help="Reset an agent's prompt to default",
-        add_help=False,
-        parents=help_parent(_lazy_help("show_reset_help")),
-    )
-    add_json_output_arg(agents_reset)
-    agents_reset.add_argument("--agent", required=True, help="Name of agent to reset")
-    agents_reset.add_argument(
-        "--target", dest="source_agent", help="Copy prompt from another agent"
-    )
-    agents_reset.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would happen without making changes",
-    )
-
     setup_skills_parser(
         subparsers,
         make_help_action=_make_help_action,
@@ -1480,19 +1463,12 @@ def cli_main() -> None:
 
             show_help()
         elif args.command == "agents":
-            from invincat_cli.agent import list_agents, reset_agent
+            from invincat_cli.agent import list_agents
             from invincat_cli.ui import show_agents_help
 
             # "ls" is an argparse alias for "list"
             if args.agents_command in {"list", "ls"}:
                 list_agents(output_format=output_format)
-            elif args.agents_command == "reset":
-                reset_agent(
-                    args.agent,
-                    args.source_agent,
-                    dry_run=args.dry_run,
-                    output_format=output_format,
-                )
             else:
                 show_agents_help()
         elif args.command == "wecombot":

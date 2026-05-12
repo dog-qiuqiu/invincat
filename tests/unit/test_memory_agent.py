@@ -202,7 +202,6 @@ def test_duplicate_create_deduped_to_noop() -> None:
 def test_load_or_recover_store_initializes_empty_when_missing(tmp_path: Path) -> None:
     store = tmp_path / "memory_project.json"
     middleware = MemoryAgentMiddleware(
-        memory_paths=[],
         memory_store_paths={"project": str(store)},
     )
     loaded = middleware._load_or_recover_store("project", "t1", "a1")
@@ -427,17 +426,14 @@ def test_invalid_fact_delete_wins_over_same_id_metadata_conflict() -> None:
 
 
 def test_atomic_write_and_whitelist_authorization(tmp_path: Path) -> None:
-    agents = tmp_path / "AGENTS.md"
     store = tmp_path / "memory_project.json"
     outsider = tmp_path / "other.txt"
     middleware = MemoryAgentMiddleware(
-        memory_paths=[str(agents)],
         memory_store_paths={"project": str(store)},
     )
     _atomic_write_text(store, "{}")
     assert store.read_text(encoding="utf-8") == "{}"
     assert middleware._is_authorized_path(store)
-    assert not middleware._is_authorized_path(agents)
     assert not middleware._is_authorized_path(outsider)
 
 
@@ -837,7 +833,7 @@ class _FailingMemoryModel:
 
 
 def test_resolve_memory_model_uses_default_deepseek_thinking(monkeypatch: Any) -> None:
-    middleware = MemoryAgentMiddleware(memory_paths=[])
+    middleware = MemoryAgentMiddleware()
     runtime = type(
         "Runtime",
         (),
@@ -865,7 +861,7 @@ def test_resolve_memory_model_uses_default_deepseek_thinking(monkeypatch: Any) -
 
 
 def test_aafter_agent_emits_status_and_advances_cursor(monkeypatch: Any) -> None:
-    middleware = MemoryAgentMiddleware(memory_paths=["/tmp/AGENTS.md"])
+    middleware = MemoryAgentMiddleware()
     middleware._captured_model = object()
     runtime = _Runtime()
 
@@ -891,7 +887,7 @@ def test_aafter_agent_emits_status_and_advances_cursor(monkeypatch: Any) -> None
 
 
 def test_aafter_agent_does_not_advance_cursor_on_extract_failure(monkeypatch: Any) -> None:
-    middleware = MemoryAgentMiddleware(memory_paths=["/tmp/AGENTS.md"])
+    middleware = MemoryAgentMiddleware()
     middleware._captured_model = object()
     runtime = _Runtime()
 
@@ -925,7 +921,6 @@ def test_aafter_agent_runs_cleanup_even_for_trivial_turn(
     _write_memory_store(store, project_store)
 
     middleware = MemoryAgentMiddleware(
-        memory_paths=[],
         memory_store_paths={"project": str(store)},
     )
     middleware._captured_model = object()
@@ -947,7 +942,6 @@ def test_unreadable_store_is_auto_recovered_before_extract(tmp_path: Path) -> No
     store.write_text("{not-json", encoding="utf-8")
 
     middleware = MemoryAgentMiddleware(
-        memory_paths=[],
         memory_store_paths={"project": str(store)},
     )
 
@@ -981,7 +975,6 @@ def test_extract_deletes_existing_invalid_fact_even_when_model_noops(tmp_path: P
     _write_memory_store(store, project_store)
 
     middleware = MemoryAgentMiddleware(
-        memory_paths=[],
         memory_store_paths={"project": str(store)},
     )
     written = asyncio.run(
@@ -1012,7 +1005,6 @@ def test_extract_cleanup_is_written_before_model_failure(tmp_path: Path) -> None
     _write_memory_store(store, project_store)
 
     middleware = MemoryAgentMiddleware(
-        memory_paths=[],
         memory_store_paths={"project": str(store)},
     )
     written = asyncio.run(
@@ -1043,7 +1035,6 @@ def test_extract_cleanup_runs_when_model_returns_malformed_json(tmp_path: Path) 
     _write_memory_store(store, project_store)
 
     middleware = MemoryAgentMiddleware(
-        memory_paths=[],
         memory_store_paths={"project": str(store)},
     )
     written = asyncio.run(
@@ -1089,7 +1080,6 @@ def test_schema_invalid_store_is_auto_recovered_before_extract(tmp_path: Path) -
     store.write_text('{"scope":"project","items":"bad"}', encoding="utf-8")
 
     middleware = MemoryAgentMiddleware(
-        memory_paths=[],
         memory_store_paths={"project": str(store)},
     )
     before = store.read_text(encoding="utf-8")
@@ -1116,7 +1106,6 @@ def test_load_or_recover_store_recovers_unreadable_store_with_backup(tmp_path: P
     store.write_text("{bad-json", encoding="utf-8")
 
     middleware = MemoryAgentMiddleware(
-        memory_paths=[],
         memory_store_paths={"project": str(store)},
     )
 
@@ -1152,7 +1141,6 @@ def test_extract_includes_target_language_instruction_for_chinese_turn(tmp_path:
     store = tmp_path / "memory_project.json"
     model = _CapturingMemoryModel()
     middleware = MemoryAgentMiddleware(
-        memory_paths=[],
         memory_store_paths={"project": str(store)},
     )
 
@@ -1179,7 +1167,6 @@ def test_extract_passes_plain_transcript_instead_of_native_tool_call_messages(tm
     store = tmp_path / "memory_project.json"
     model = _CapturingMemoryModel()
     middleware = MemoryAgentMiddleware(
-        memory_paths=[],
         memory_store_paths={"project": str(store)},
     )
     tool_call = {
@@ -1245,7 +1232,6 @@ def test_recover_corrupt_store_without_legacy_fallback(tmp_path: Path) -> None:
     store.write_text("{bad-json", encoding="utf-8")
 
     middleware = MemoryAgentMiddleware(
-        memory_paths=[],
         memory_store_paths={"project": str(store)},
     )
     recovered = middleware._load_or_recover_store("project", "t1", "a1")

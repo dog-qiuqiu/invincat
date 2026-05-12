@@ -61,7 +61,7 @@ This is the concrete closure of the Memory Store design rationale above.
   - User scope: `~/.invincat/{assistant_id}/memory_user.json`
   - Project scope: `{project_root}/.invincat/memory_project.json` (fallback: `{cwd}/.invincat/memory_project.json` when project root is not detected)
 - Conversation history (checkpoints/offload) is not long-term policy memory.
-- `AGENTS.md` is deprecated in the runtime memory injection path.
+- Main-agent `AGENTS.md` runtime memory has been removed; runtime memory now uses `memory_*.json` as the single source of truth.
 
 ## 2. Core Components
 
@@ -215,8 +215,8 @@ Signal-based early trigger:
 
 ## 10. Known Boundary
 
-- Automatic migration from legacy `AGENTS.md` is currently not in the JSON-only runtime path by default.
-- If your deployment has old `AGENTS.md` only, run a migration step before enforcing JSON-only rollout.
+- Legacy main-agent `AGENTS.md` is no longer read, created, or automatically migrated by the runtime.
+- If your deployment has old `AGENTS.md` only, migrate it externally into `memory_*.json` first.
 
 ## 11. Architecture Advantages and Innovation Points
 

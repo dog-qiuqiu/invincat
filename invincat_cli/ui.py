@@ -52,7 +52,7 @@ def show_help() -> None:
     console.print(
         "  deepagents [OPTIONS]                           Start interactive thread"
     )
-    console.print("  deepagents agents <list|reset>                 Manage agents")
+    console.print("  deepagents agents <list>                       Manage agent data")
     console.print(
         "  deepagents skills <list|create|info|delete>    Manage agent skills"
     )
@@ -151,20 +151,17 @@ def show_list_help() -> None:
     """
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents list [options]")
+    console.print("  deepagents agents list [options]")
     console.print()
     console.print(
-        "List all agents found in ~/.invincat/. Each agent has its own",
-    )
-    console.print(
-        "AGENTS.md system prompt and separate thread history.",
+        "List agent data directories found in ~/.invincat/.",
     )
     console.print()
     _print_option_section()
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents list")
-    console.print("  deepagents list --json")
+    console.print("  deepagents agents list")
+    console.print("  deepagents agents list --json")
     console.print()
 
 
@@ -176,43 +173,11 @@ def show_agents_help() -> None:
     console.print()
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
     console.print("  list|ls           List all agents")
-    console.print("  reset             Reset an agent's prompt to default")
     console.print()
     _print_option_section()
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents agents list")
-    console.print("  deepagents agents reset --agent coder")
-    console.print("  deepagents agents reset --agent coder --target researcher")
-    console.print()
-
-
-def show_reset_help() -> None:
-    """Show help information for the `reset` subcommand."""
-    console.print()
-    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents reset --agent NAME [--target SRC]")
-    console.print()
-    console.print(
-        "Restore an agent's AGENTS.md to the built-in default, or copy",
-    )
-    console.print(
-        "another agent's AGENTS.md. This deletes the agent's directory",
-    )
-    console.print(
-        "and recreates it with the new prompt.",
-    )
-    console.print()
-    _print_option_section(
-        "  --agent NAME            Agent to reset (required)",
-        "  --target SRC            Copy AGENTS.md from another agent instead",
-        "  --dry-run               Show what would happen without making changes",
-    )
-    console.print()
-    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents reset --agent coder")
-    console.print("  deepagents reset --agent coder --target researcher")
-    console.print("  deepagents reset --agent coder --dry-run")
     console.print()
 
 

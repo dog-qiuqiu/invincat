@@ -7330,9 +7330,7 @@ class DeepAgentsApp(App):
         from invincat_cli.config import settings
 
         assistant_id = self._assistant_id or "agent"
-        user_store = (
-            settings.get_user_agent_md_path(assistant_id).parent / "memory_user.json"
-        )
+        user_store = settings.get_agent_dir(assistant_id) / "memory_user.json"
 
         store_paths: dict[str, str] = {"user": str(user_store.expanduser().resolve())}
         from invincat_cli.project_utils import find_project_root
