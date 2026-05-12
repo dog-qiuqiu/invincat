@@ -4022,12 +4022,6 @@ class DeepAgentsApp(App):
             await self._handle_wecombot_command(command, action="status")
         elif cmd == "/wecombot-stop":
             await self._handle_wecombot_command(command, action="stop")
-        elif cmd == "/wecombot-daemon-start":
-            await self._handle_wecombot_daemon_command(action="start")
-        elif cmd == "/wecombot-daemon-stop":
-            await self._handle_wecombot_daemon_command(action="stop")
-        elif cmd == "/wecombot-daemon-status":
-            await self._handle_wecombot_daemon_command(action="status")
         elif cmd == "/schedule" or cmd.startswith("/schedule "):
             await self._handle_schedule_command(command)
         elif cmd == "/theme":
@@ -4768,86 +4762,6 @@ class DeepAgentsApp(App):
         await self._mount_message(
             AppMessage("Usage: /wecombot-start | /wecombot-status | /wecombot-stop")
         )
-
-    async def _handle_wecombot_daemon_command(self, *, action: str) -> None:
-        """Manage the background WeCom daemon (start / stop / status)."""
-        from pathlib import Path
-
-        from invincat_cli.wecom.daemon import (
-            WeComDaemonConfig,
-            get_daemon_status,
-            is_daemon_running,
-            start_daemon_async,
-            stop_daemon,
-        )
-
-        cmd_label = f"/wecombot-daemon-{action}"
-        await self._mount_message(UserMessage(cmd_label))
-        cwd = Path(self._cwd)
-
-        if action == "start":
-            if is_daemon_running(cwd):
-                await self._mount_message(AppMessage("WeCom daemon is already running."))
-                return
-            try:
-                config = WeComDaemonConfig.from_env(cwd)
-            except ValueError as exc:
-                await self._mount_message(ErrorMessage(str(exc)))
-                return
-            try:
-                await start_daemon_async(config)
-            except RuntimeError as exc:
-                await self._mount_message(ErrorMessage(str(exc)))
-                return
-            await self._mount_message(
-                AppMessage(
-                    f"WeCom daemon started in the background.\n"
-                    f"Logs: {config.log_file}\n"
-                    "Use /wecombot-daemon-status to check or /wecombot-daemon-stop to stop."
-                )
-            )
-
-        elif action == "stop":
-            if not is_daemon_running(cwd):
-                await self._mount_message(AppMessage("WeCom daemon is not running."))
-                return
-            stopped = await stop_daemon(cwd)
-            if stopped:
-                await self._mount_message(AppMessage("WeCom daemon stopped."))
-            else:
-                await self._mount_message(
-                    AppMessage(
-                        "WeCom daemon is running, but its control socket is not ready. "
-                        "No verified fallback stop was available; retry /wecombot-daemon-stop shortly."
-                    )
-                )
-
-        elif action == "status":
-            info = await get_daemon_status(cwd)
-            if not info.get("running"):
-                await self._mount_message(AppMessage("WeCom daemon: not running"))
-            else:
-                connected = info.get("connected")
-                conn_label = (
-                    "connected"
-                    if connected
-                    else ("disconnected" if connected is False else "unknown")
-                )
-                await self._mount_message(
-                    AppMessage(
-                        f"WeCom daemon: running\n"
-                        f"  PID:              {info.get('pid', '?')}\n"
-                        f"  Started:          {info.get('started_at', '?')}\n"
-                        f"  WeCom connection: {conn_label}\n"
-                        f"  Messages handled: {info.get('messages_handled', '?')}"
-                        + (
-                            "\n  Control socket:   unavailable "
-                            f"({'verified stop fallback available' if info.get('verified_stop_fallback') else 'no verified stop fallback'})"
-                            if info.get("control_socket") == "unavailable"
-                            else ""
-                        )
-                    )
-                )
 
     async def _run_wecombot_bridge(self) -> None:
         """Run WeCom long-connection client and bridge to current session."""

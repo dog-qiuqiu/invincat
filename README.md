@@ -665,18 +665,18 @@ export WECOM_ALLOWED_CHATIDS="chatid1,chatid2"
 export DEEPAGENTS_CLI_SHELL_ALLOW_LIST="recommended"
 ```
 
-You can run the WeCom integration in three ways:
+You can run the WeCom integration in two ways:
 
 | Mode | Command | When to use |
 |------|---------|-------------|
 | TUI bridge | `/wecombot-start` / `/wecombot-status` / `/wecombot-stop` | Bridge WeCom into the currently open TUI session |
-| Background daemon | `/wecombot-daemon-start` / `/wecombot-daemon-status` / `/wecombot-daemon-stop` | Keep WeCom online after the TUI exits |
 | Foreground daemon | `invincat-cli wecombot` | Debugging or running under `systemd`/`supervisor` |
 
 The TUI bridge shares the active TUI conversation. Starting it from the TUI also
 enables auto-approve so remote WeCom turns do not block on local approval
 prompts. Background and foreground daemon modes are per-project and keep their
-own daemon state under the project's `.invincat/` directory.
+prompts. Foreground daemon mode is per-project and keeps its own daemon state
+under the project's `.invincat/` directory.
 
 ### Foreground Daemon
 

@@ -650,15 +650,14 @@ export WECOM_ALLOWED_CHATIDS="chatid1,chatid2"
 export DEEPAGENTS_CLI_SHELL_ALLOW_LIST="recommended"
 ```
 
-企业微信集成有三种运行方式：
+企业微信集成有两种运行方式：
 
 | 方式 | 命令 | 适用场景 |
 |------|------|----------|
 | TUI 桥接 | `/wecombot-start` / `/wecombot-status` / `/wecombot-stop` | 把企业微信消息接入当前打开的 TUI 会话 |
-| 后台 daemon | `/wecombot-daemon-start` / `/wecombot-daemon-status` / `/wecombot-daemon-stop` | TUI 退出后仍保持企业微信在线 |
 | 前台 daemon | `invincat-cli wecombot` | 调试，或交给 `systemd`/`supervisor` 托管 |
 
-TUI 桥接共享当前 TUI 对话。通过 TUI 启动桥接时会自动开启 auto-approve，避免远端企业微信回合卡在本地审批提示上。后台和前台 daemon 都按项目目录隔离，并把运行状态写入当前项目的 `.invincat/` 目录。
+TUI 桥接共享当前 TUI 对话。通过 TUI 启动桥接时会自动开启 auto-approve，避免远端企业微信回合卡在本地审批提示上。前台 daemon 按项目目录隔离，并把运行状态写入当前项目的 `.invincat/` 目录。
 
 ### 前台 daemon 用法
 
