@@ -8,6 +8,7 @@ import os
 import re
 import uuid
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -19,6 +20,15 @@ logger = logging.getLogger(__name__)
 
 _MISFIRE_TOLERANCE_SECONDS = 300  # 5 minutes — tasks within tolerance fire immediately
 _MISFIRE_MAX_SECONDS = 86400  # 24 hours — older misfires are not recovered
+
+
+@dataclass
+class _PendingRun:
+    task: "ScheduledTask"
+    scheduled_for: datetime
+    expected_next_run_at: str | None
+    manual: bool = False
+    require_enabled: bool = True
 
 
 def compute_next_run(cron: str, after: datetime, tz_name: str) -> datetime | None:
@@ -128,8 +138,9 @@ class SchedulerRunner:
         self._runner_pid = os.getpid()
         self._runner_id = f"{runner_kind}:{self._runner_pid}:{uuid.uuid4().hex}"
         self._running_task_ids: set[str] = set()
-        self._pending_runs: list[tuple["ScheduledTask", datetime, str | None]] = []
+        self._pending_runs: list[_PendingRun] = []
         self._pending_task_ids: set[str] = set()
+        self._manual_run_ids: set[str] = set()
         self._timeout_tasks: dict[str, asyncio.Task] = {}
         self._reconcile_stale_runs()
 
@@ -224,25 +235,35 @@ class SchedulerRunner:
         if was_missed:
             self._notify(f"Missed scheduled task: {task.title!r} — running now")
 
-        self._pending_runs.append((task, next_run, task.next_run_at))
+        self._pending_runs.append(
+            _PendingRun(
+                task=task,
+                scheduled_for=next_run,
+                expected_next_run_at=task.next_run_at,
+            )
+        )
         self._pending_task_ids.add(task.id)
         await self._drain_pending(now)
 
     async def _drain_pending(self, now: datetime) -> None:
         while self._pending_runs and not self._is_busy():
-            task, scheduled_for, expected_next_run_at = self._pending_runs.pop(0)
+            pending = self._pending_runs.pop(0)
+            task = pending.task
             self._pending_task_ids.discard(task.id)
             current_task = self._store.load_task(task.id)
-            if current_task is None or not current_task.enabled:
+            if current_task is None:
+                continue
+            if pending.require_enabled and not current_task.enabled:
                 continue
             if self._cwd is not None and current_task.cwd != self._cwd:
                 continue
             await self._fire(
                 current_task,
-                scheduled_for,
+                pending.scheduled_for,
                 now,
-                expected_next_run_at=expected_next_run_at,
-                require_enabled=True,
+                expected_next_run_at=pending.expected_next_run_at,
+                require_enabled=pending.require_enabled,
+                manual=pending.manual,
             )
 
     async def drain_pending_now(self) -> None:
@@ -256,10 +277,18 @@ class SchedulerRunner:
             return
         if self._is_busy():
             if task.id not in self._pending_task_ids:
-                self._pending_runs.append((task, now, None))
+                self._pending_runs.append(
+                    _PendingRun(
+                        task=task,
+                        scheduled_for=now,
+                        expected_next_run_at=None,
+                        manual=True,
+                        require_enabled=False,
+                    )
+                )
                 self._pending_task_ids.add(task.id)
         else:
-            await self._fire(task, now, now, require_enabled=False)
+            await self._fire(task, now, now, require_enabled=False, manual=True)
 
     async def _fire(
         self,
@@ -269,6 +298,7 @@ class SchedulerRunner:
         *,
         expected_next_run_at: str | None = None,
         require_enabled: bool = True,
+        manual: bool = False,
     ) -> None:
         from invincat_cli.scheduler.models import TaskRun
 
@@ -289,19 +319,24 @@ class SchedulerRunner:
             runner_pid=self._runner_pid,
         )
         is_once = task.schedule_type == "once"
-        next_run = None if is_once else compute_next_run(task.cron, now, task.timezone)
+        if manual:
+            next_run = _parse_dt(task.next_run_at)
+        else:
+            next_run = None if is_once else compute_next_run(task.cron, now, task.timezone)
         claimed = self._store.try_start_run(
             task.id,
             run,
             expected_next_run_at=expected_next_run_at,
             next_run_at=next_run.isoformat() if next_run else None,
-            clear_next_run_at=is_once,
+            clear_next_run_at=is_once and not manual,
             require_enabled=require_enabled,
         )
         if not claimed:
             logger.info("Scheduled task %r was already claimed or is no longer runnable", task.id)
             return
         self._running_task_ids.add(task.id)
+        if manual:
+            self._manual_run_ids.add(run_id)
 
         prompt = _build_scheduled_prompt(task, scheduled_for)
         try:
@@ -383,12 +418,15 @@ class SchedulerRunner:
             # corrupting counters based on a state we cannot verify.
             logger.warning("Run %r not found in store; releasing lock without updating stats", run_id)
             self._running_task_ids.discard(task_id)
+            self._manual_run_ids.discard(run_id)
             return
         if run.finished_at is not None:
             # Already completed (e.g. timeout fired before agent finished).
             # Release the lock but do not double-count stats or overwrite status.
             self._running_task_ids.discard(task_id)
+            self._manual_run_ids.discard(run_id)
             return
+        manual = run_id in self._manual_run_ids
         run.finished_at = now
         run.status = status
         run.report_path = report_path
@@ -404,12 +442,13 @@ class SchedulerRunner:
             failure_count_delta=1 if status in ("failed", "timeout") else 0,
         )
         task = self._store.load_task(task_id)
-        if task is not None and task.schedule_type == "once":
+        if task is not None and task.schedule_type == "once" and not manual:
             if task.delete_after_run:
                 self._store.delete_task(task_id)
             else:
                 self._store.disable_task_after_run(task_id)
         self._running_task_ids.discard(task_id)
+        self._manual_run_ids.discard(run_id)
 
 
 def _parse_dt(iso: str | None) -> datetime | None:

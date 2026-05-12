@@ -1393,6 +1393,96 @@ def test_runner_claim_prevents_second_runner_duplicate_fire(tmp_path: Path) -> N
     assert second_fired == []
 
 
+def test_runner_fire_now_preserves_recurring_next_run(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    original_next = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+    task = _make_task(next_run_at=original_next)
+    store.save_task(task)
+    fired: list[tuple[str, str]] = []
+
+    async def inject(task_id: str, run_id: str, _prompt: str) -> None:
+        fired.append((task_id, run_id))
+
+    runner = SchedulerRunner(
+        store,
+        inject_message=inject,
+        notify=MagicMock(),
+        is_busy=lambda: False,
+    )
+
+    asyncio.run(runner.fire_now(task))
+    assert len(fired) == 1
+    loaded = store.load_task("task-1")
+    assert loaded is not None
+    assert loaded.next_run_at == original_next
+
+    task_id, run_id = fired[0]
+    runner.finish_run(run_id, task_id, status="success")
+    loaded = store.load_task("task-1")
+    assert loaded is not None
+    assert loaded.next_run_at == original_next
+
+
+def test_runner_fire_now_preserves_one_shot_task(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    run_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    task = _make_task(next_run_at=run_at)
+    task.schedule_type = "once"
+    task.run_at = run_at
+    task.delete_after_run = True
+    store.save_task(task)
+    fired: list[tuple[str, str]] = []
+
+    async def inject(task_id: str, run_id: str, _prompt: str) -> None:
+        fired.append((task_id, run_id))
+
+    runner = SchedulerRunner(
+        store,
+        inject_message=inject,
+        notify=MagicMock(),
+        is_busy=lambda: False,
+    )
+
+    asyncio.run(runner.fire_now(task))
+    task_id, run_id = fired[0]
+    runner.finish_run(run_id, task_id, status="success")
+
+    loaded = store.load_task("task-1")
+    assert loaded is not None
+    assert loaded.enabled is True
+    assert loaded.next_run_at == run_at
+    assert loaded.run_at == run_at
+
+
+def test_runner_queued_fire_now_preserves_next_run(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    original_next = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+    task = _make_task(next_run_at=original_next)
+    store.save_task(task)
+    busy = True
+    fired: list[tuple[str, str]] = []
+
+    async def inject(task_id: str, run_id: str, _prompt: str) -> None:
+        fired.append((task_id, run_id))
+
+    runner = SchedulerRunner(
+        store,
+        inject_message=inject,
+        notify=MagicMock(),
+        is_busy=lambda: busy,
+    )
+
+    asyncio.run(runner.fire_now(task))
+    assert fired == []
+    busy = False
+    asyncio.run(runner.drain_pending_now())
+
+    assert len(fired) == 1
+    loaded = store.load_task("task-1")
+    assert loaded is not None
+    assert loaded.next_run_at == original_next
+
+
 def test_try_start_run_recovers_stale_running_row(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     now = datetime.now(timezone.utc).isoformat()
