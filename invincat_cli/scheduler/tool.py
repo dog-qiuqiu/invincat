@@ -85,6 +85,36 @@ def parse_once_at(value: str, timezone_name: str) -> str:
     return dt.astimezone(timezone.utc).isoformat()
 
 
+def validate_schedule_create_options(
+    *,
+    output_mode: Any,
+    report_format: Any,
+    misfire_policy: Any,
+    timeout_seconds: Any,
+) -> tuple[str, str, str, int]:
+    """Validate shared create-task options from tool or payload boundaries."""
+    output_mode_s = str(output_mode or "message")
+    if output_mode_s not in {"message", "report"}:
+        raise ValueError("output_mode must be 'message' or 'report'")
+
+    report_format_s = str(report_format or "markdown")
+    if report_format_s not in {"markdown", "text"}:
+        raise ValueError("report_format must be 'markdown' or 'text'")
+
+    misfire_policy_s = str(misfire_policy or "run_once")
+    if misfire_policy_s not in {"run_once", "skip"}:
+        raise ValueError("misfire_policy must be 'run_once' or 'skip'")
+
+    try:
+        timeout_seconds_i = int(timeout_seconds if timeout_seconds is not None else 600)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("timeout_seconds must be an integer >= 0") from exc
+    if timeout_seconds_i < 0:
+        raise ValueError("timeout_seconds must be >= 0")
+
+    return output_mode_s, report_format_s, misfire_policy_s, timeout_seconds_i
+
+
 def _is_once_schedule_marker(schedule: str) -> bool:
     normalized = schedule.strip().lower().replace("_", "-")
     return normalized in {"once", "one-shot", "oneshot", "delay", "delayed"}
@@ -220,26 +250,17 @@ class ScheduleMiddleware(AgentMiddleware):
                 except ValueError as exc:
                     return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
-            if output_mode not in {"message", "report"}:
-                return json.dumps(
-                    {"error": "output_mode must be 'message' or 'report'"},
-                    ensure_ascii=False,
+            try:
+                output_mode, report_format, misfire_policy, timeout_seconds = (
+                    validate_schedule_create_options(
+                        output_mode=output_mode,
+                        report_format=report_format,
+                        misfire_policy=misfire_policy,
+                        timeout_seconds=timeout_seconds,
+                    )
                 )
-            if report_format not in {"markdown", "text"}:
-                return json.dumps(
-                    {"error": "report_format must be 'markdown' or 'text'"},
-                    ensure_ascii=False,
-                )
-            if misfire_policy not in {"run_once", "skip"}:
-                return json.dumps(
-                    {"error": "misfire_policy must be 'run_once' or 'skip'"},
-                    ensure_ascii=False,
-                )
-            if timeout_seconds < 0:
-                return json.dumps(
-                    {"error": "timeout_seconds must be >= 0"},
-                    ensure_ascii=False,
-                )
+            except ValueError as exc:
+                return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
             payload = {
                 "type": SCHEDULE_CREATE_TYPE,

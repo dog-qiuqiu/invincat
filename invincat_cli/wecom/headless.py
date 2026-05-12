@@ -331,6 +331,7 @@ class HeadlessWeComHandler:
             SCHEDULE_CREATE_TYPE,
             SCHEDULE_RUN_NOW_TYPE,
             SCHEDULE_UPDATE_TYPE,
+            validate_schedule_create_options,
             validate_timezone_name,
         )
         from invincat_cli.wecom.protocol import resolve_wecom_active_chat_id
@@ -370,12 +371,14 @@ class HeadlessWeComHandler:
                 schedule_type = "recurring"
             run_at = payload.get("run_at")
             delete_after_run = bool(payload.get("delete_after_run", False))
-            output_mode = payload.get("output_mode", "message")
-            if output_mode not in {"message", "report"}:
-                output_mode = "message"
-            report_format = payload.get("report_format", "markdown")
-            misfire_policy = payload.get("misfire_policy", "run_once")
-            timeout_seconds = int(payload.get("timeout_seconds", 600))
+            output_mode, report_format, misfire_policy, timeout_seconds = (
+                validate_schedule_create_options(
+                    output_mode=payload.get("output_mode", "message"),
+                    report_format=payload.get("report_format", "markdown"),
+                    misfire_policy=payload.get("misfire_policy", "run_once"),
+                    timeout_seconds=payload.get("timeout_seconds", 600),
+                )
+            )
             slug = re.sub(r"[^\w\-]", "-", title.lower())[:40].strip("-")
 
             # Resolve the WeCom delivery target from the inbound frame.

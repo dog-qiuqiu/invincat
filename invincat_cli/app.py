@@ -4440,7 +4440,10 @@ class DeepAgentsApp(App):
         from invincat_cli.i18n import t
         from invincat_cli.scheduler.models import DeliverySpec, ReportSpec, ScheduledTask
         from invincat_cli.scheduler.runner import _parse_dt, compute_next_run
-        from invincat_cli.scheduler.tool import validate_timezone_name
+        from invincat_cli.scheduler.tool import (
+            validate_schedule_create_options,
+            validate_timezone_name,
+        )
         from invincat_cli.wecom.protocol import resolve_wecom_active_chat_id
 
         ptype = payload.get("type")
@@ -4463,12 +4466,18 @@ class DeepAgentsApp(App):
                 schedule_type = "recurring"
             run_at = payload.get("run_at")
             delete_after_run = bool(payload.get("delete_after_run", False))
-            output_mode = payload.get("output_mode", "message")
-            if output_mode not in {"message", "report"}:
-                output_mode = "message"
-            report_format = payload.get("report_format", "markdown")
-            misfire_policy = payload.get("misfire_policy", "run_once")
-            timeout_seconds = int(payload.get("timeout_seconds", 600))
+            try:
+                output_mode, report_format, misfire_policy, timeout_seconds = (
+                    validate_schedule_create_options(
+                        output_mode=payload.get("output_mode", "message"),
+                        report_format=payload.get("report_format", "markdown"),
+                        misfire_policy=payload.get("misfire_policy", "run_once"),
+                        timeout_seconds=payload.get("timeout_seconds", 600),
+                    )
+                )
+            except ValueError as exc:
+                await self._mount_message(ErrorMessage(str(exc)))
+                return
             slug = re.sub(r"[^\w\-]", "-", title.lower())[:40].strip("-")
             delivery_channel = payload.get("delivery", "tui")
             delivery = DeliverySpec()

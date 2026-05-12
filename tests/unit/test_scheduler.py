@@ -46,6 +46,7 @@ from invincat_cli.scheduler.tool import (
     ScheduleMiddleware,
     parse_once_at,
     parse_schedule_tool_result,
+    validate_schedule_create_options,
 )
 
 
@@ -937,6 +938,16 @@ def test_schedule_middleware_create_tool_rejects_invalid_options(tmp_path: Path)
     assert "timeout_seconds" in json.loads(result)["error"]
 
 
+def test_validate_schedule_create_options_rejects_malformed_timeout() -> None:
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        validate_schedule_create_options(
+            output_mode="message",
+            report_format="markdown",
+            misfire_policy="run_once",
+            timeout_seconds="not-an-int",
+        )
+
+
 def test_schedule_middleware_create_tool_rejects_invalid_timezone(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     mw = ScheduleMiddleware(store=store)
@@ -1729,6 +1740,43 @@ def test_app_resolves_active_scheduled_wecom_chat_id(tmp_path: Path) -> None:
     app._scheduler_store = store
 
     assert app._active_scheduled_wecom_chat_id() == "chat-1"
+
+
+def test_app_schedule_payload_rejects_invalid_create_options() -> None:
+    from invincat_cli.app import DeepAgentsApp
+
+    saved: list[ScheduledTask] = []
+    mounted: list[object] = []
+
+    class FakeStore:
+        def save_task(self, task: ScheduledTask) -> None:
+            saved.append(task)
+
+    async def mount_message(message: object) -> None:
+        mounted.append(message)
+
+    app = DeepAgentsApp.__new__(DeepAgentsApp)
+    app._scheduler_store = FakeStore()
+    app._cwd = "/tmp"
+    app._current_wecom_inbound_frame = None
+    app._mount_message = mount_message
+
+    asyncio.run(
+        app._handle_schedule_tool_payload(
+            {
+                "type": SCHEDULE_CREATE_TYPE,
+                "task_id": "bad-timeout",
+                "title": "Bad timeout",
+                "cron": "0 8 * * *",
+                "timezone": "Asia/Shanghai",
+                "prompt": "test",
+                "timeout_seconds": "not-an-int",
+            }
+        )
+    )
+
+    assert saved == []
+    assert mounted
 
 
 def test_scheduled_wecom_file_request_sends_to_task_chat(

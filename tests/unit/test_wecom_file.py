@@ -1067,6 +1067,48 @@ def test_headless_schedule_payload_rejects_cross_cwd_update(
     assert other_task.title == "Other"
 
 
+def test_headless_schedule_payload_rejects_invalid_create_options(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from invincat_cli.scheduler.tool import SCHEDULE_CREATE_TYPE
+    from invincat_cli.wecom.headless import HeadlessWeComHandler
+
+    saved: list[object] = []
+
+    class FakeStore:
+        def save_task(self, task) -> None:  # noqa: ANN001
+            saved.append(task)
+
+    async def send_request(_payload: dict) -> dict:
+        return {"errcode": 0}
+
+    monkeypatch.setattr("invincat_cli.scheduler.store.SchedulerStore", FakeStore)
+    handler = HeadlessWeComHandler(
+        agent=object(),
+        cwd=tmp_path,
+        send_request=send_request,
+    )
+
+    with pytest.raises(ValueError, match="misfire_policy"):
+        asyncio.run(
+            handler._process_schedule_payload(
+                {
+                    "type": SCHEDULE_CREATE_TYPE,
+                    "task_id": "bad-policy",
+                    "title": "Bad policy",
+                    "cron": "0 8 * * *",
+                    "timezone": "Asia/Shanghai",
+                    "prompt": "test",
+                    "misfire_policy": "later",
+                },
+                {"body": {"chatid": "chat-1"}},
+            )
+        )
+
+    assert saved == []
+
+
 def test_headless_schedule_payload_rejects_cross_cwd_delete(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
