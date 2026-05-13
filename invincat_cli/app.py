@@ -88,8 +88,8 @@ from invincat_cli.app_runtime.approval import (
     build_auto_approved_shell_message,
     build_interaction_widget_id,
     deadline_expired,
-    disallowed_plan_interrupt_tools,
     map_raw_approval_to_plan_decision,
+    plan_interrupt_guard_disallowed_tools,
     plan_todos_fingerprint,
     pending_widget_deadline,
     resolve_auto_approved_shell_commands,
@@ -1979,42 +1979,40 @@ class DeepAgentsApp(App):
 
         # In /plan mode, hard-reject non-read/plan interrupting tools so
         # planner cannot proceed with implementation-side effects.
-        if (
-            not bypass_plan_guard
-            and self._session_state
-            and self._session_state.plan_mode
-            and self._active_turn_is_planner
-            and action_requests
-        ):
-            disallowed_tool_names = disallowed_plan_interrupt_tools(action_requests)
-            if disallowed_tool_names:
-                # If planner already wrote todos in this turn, surface plan
-                # approval immediately (before rejecting the disallowed write).
-                try:
-                    await self._maybe_approve_current_planner_todos()
-                except Exception:
-                    logger.debug(
-                        "Failed to trigger immediate /plan approval before rejecting tool call",
-                        exc_info=True,
-                    )
-                result_future.set_result({"type": "reject"})
-                denied = ", ".join(disallowed_tool_names)
-                try:
-                    from invincat_cli.i18n import t
+        disallowed_tool_names = plan_interrupt_guard_disallowed_tools(
+            action_requests,
+            bypass_plan_guard=bypass_plan_guard,
+            plan_mode=bool(self._session_state and self._session_state.plan_mode),
+            active_turn_is_planner=self._active_turn_is_planner,
+        )
+        if disallowed_tool_names:
+            # If planner already wrote todos in this turn, surface plan
+            # approval immediately (before rejecting the disallowed write).
+            try:
+                await self._maybe_approve_current_planner_todos()
+            except Exception:
+                logger.debug(
+                    "Failed to trigger immediate /plan approval before rejecting tool call",
+                    exc_info=True,
+                )
+            result_future.set_result({"type": "reject"})
+            denied = ", ".join(disallowed_tool_names)
+            try:
+                from invincat_cli.i18n import t
 
-                    messages = self.query_one("#messages", Container)
-                    await self._mount_before_queued(
-                        messages,
-                        AppMessage(
-                            t("plan.auto_reject_non_plan_tool").format(tools=denied)
-                        ),
-                    )
-                except Exception:  # noqa: BLE001  # best-effort status message
-                    logger.debug(
-                        "Failed to mount /plan auto-reject notice",
-                        exc_info=True,
-                    )
-                return result_future
+                messages = self.query_one("#messages", Container)
+                await self._mount_before_queued(
+                    messages,
+                    AppMessage(
+                        t("plan.auto_reject_non_plan_tool").format(tools=denied)
+                    ),
+                )
+            except Exception:  # noqa: BLE001  # best-effort status message
+                logger.debug(
+                    "Failed to mount /plan auto-reject notice",
+                    exc_info=True,
+                )
+            return result_future
 
         approved_commands = resolve_auto_approved_shell_commands(
             action_requests,

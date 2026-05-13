@@ -12,6 +12,7 @@ from invincat_cli.app_runtime.approval import (
     disallowed_plan_interrupt_tools,
     map_raw_approval_to_plan_decision,
     normalize_plan_todos,
+    plan_interrupt_guard_disallowed_tools,
     plan_todos_fingerprint,
     pending_widget_deadline,
     resolve_auto_approved_shell_commands,
@@ -30,6 +31,48 @@ def test_disallowed_plan_interrupt_tools_filters_allowed_tools() -> None:
         ],
         allowed_tools=frozenset({"web_search"}),
     ) == ["edit_file", "write_file"]
+
+
+def test_plan_interrupt_guard_disallowed_tools_requires_active_plan_guard() -> None:
+    requests = [{"name": "web_search"}, {"name": "write_file"}]
+
+    assert plan_interrupt_guard_disallowed_tools(
+        requests,
+        bypass_plan_guard=False,
+        plan_mode=True,
+        active_turn_is_planner=True,
+        allowed_tools=frozenset({"web_search"}),
+    ) == ["write_file"]
+    assert (
+        plan_interrupt_guard_disallowed_tools(
+            requests,
+            bypass_plan_guard=True,
+            plan_mode=True,
+            active_turn_is_planner=True,
+            allowed_tools=frozenset({"web_search"}),
+        )
+        == []
+    )
+    assert (
+        plan_interrupt_guard_disallowed_tools(
+            requests,
+            bypass_plan_guard=False,
+            plan_mode=False,
+            active_turn_is_planner=True,
+            allowed_tools=frozenset({"web_search"}),
+        )
+        == []
+    )
+    assert (
+        plan_interrupt_guard_disallowed_tools(
+            requests,
+            bypass_plan_guard=False,
+            plan_mode=True,
+            active_turn_is_planner=False,
+            allowed_tools=frozenset({"web_search"}),
+        )
+        == []
+    )
 
 
 def test_resolve_auto_approved_shell_commands_requires_all_requests_allowed() -> None:

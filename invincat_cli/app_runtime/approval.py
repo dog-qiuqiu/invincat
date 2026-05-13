@@ -56,6 +56,23 @@ def disallowed_plan_interrupt_tools(
     )
 
 
+def plan_interrupt_guard_disallowed_tools(
+    action_requests: object,
+    *,
+    bypass_plan_guard: bool,
+    plan_mode: bool,
+    active_turn_is_planner: bool,
+    allowed_tools: frozenset[str] = PLAN_MODE_ALLOWED_INTERRUPT_TOOLS,
+) -> list[str]:
+    """Return disallowed tool names when `/plan` interrupt guard applies."""
+    if bypass_plan_guard or not plan_mode or not active_turn_is_planner:
+        return []
+    return disallowed_plan_interrupt_tools(
+        action_requests,
+        allowed_tools=allowed_tools,
+    )
+
+
 def resolve_auto_approved_shell_commands(
     action_requests: object,
     *,
