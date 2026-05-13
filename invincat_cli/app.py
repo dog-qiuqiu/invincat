@@ -1362,30 +1362,6 @@ class DeepAgentsApp(App):
 
         return await wecom_send_request(self, payload, timeout=timeout)
 
-    async def _process_wecom_message_via_cli(
-        self,
-        text: str,
-        *,
-        inbound_frame: dict[str, Any],
-        on_content: Callable[[str], Awaitable[None]] | None = None,
-    ) -> str:
-        """Inject one WeCom message into the current session and return the final answer.
-
-        on_content, if provided, is called with a one-line progress string while
-        the agent works. The complete assistant text is sent only once in the
-        final finish=True frame.
-        """
-        from invincat_cli.app_runtime.wecom_handlers import (
-            process_wecom_message_via_cli,
-        )
-
-        return await process_wecom_message_via_cli(
-            self,
-            text,
-            inbound_frame=inbound_frame,
-            on_content=on_content,
-        )
-
     async def _handle_skill_command(self, command: str) -> None:
         """Handle a `/skill:<name>` command by loading and invoking a skill.
 

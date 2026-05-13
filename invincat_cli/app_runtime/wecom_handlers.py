@@ -116,7 +116,8 @@ async def wecom_handle_inbound_message(
         inbound_frame: dict[str, Any],
         on_content: Callable[[str], Awaitable[None]],
     ) -> str:
-        return await app._process_wecom_message_via_cli(
+        return await process_wecom_message_via_cli(
+            app,
             text,
             inbound_frame=inbound_frame,
             on_content=on_content,
