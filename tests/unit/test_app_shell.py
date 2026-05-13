@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from invincat_cli.app_shell import (
+from invincat_cli.app_runtime.shell import (
     format_shell_output,
     is_interactive_command,
     shell_termination_strategy,

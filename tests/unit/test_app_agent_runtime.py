@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from invincat_cli.app_agent_runtime import (
+from invincat_cli.app_runtime.agent import (
     AgentThreadOverrideContext,
     AgentTurnRequest,
     build_agent_cli_context,
@@ -21,7 +21,7 @@ from invincat_cli.app_agent_runtime import (
     should_route_message_to_planner,
     should_retry_scheduled_turn,
 )
-from invincat_cli.app_state import QueuedMessage
+from invincat_cli.app_runtime.state import QueuedMessage
 
 
 def test_scheduled_run_from_message_requires_both_ids() -> None:

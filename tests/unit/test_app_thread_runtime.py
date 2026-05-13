@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from invincat_cli.app_thread_runtime import (
+from invincat_cli.app_runtime.thread_runtime import (
     thread_loading_status,
     thread_resume_block_message_key,
     thread_resume_block_reason,

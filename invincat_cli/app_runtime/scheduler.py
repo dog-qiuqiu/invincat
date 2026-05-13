@@ -6,7 +6,7 @@ from collections import deque
 from collections.abc import Iterable
 from pathlib import Path
 
-from invincat_cli.app_state import QueuedMessage
+from invincat_cli.app_runtime.state import QueuedMessage
 
 
 def remove_scheduled_messages(

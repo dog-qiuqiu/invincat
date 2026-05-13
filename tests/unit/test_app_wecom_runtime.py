@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from invincat_cli.app_wecom_runtime import (
+from invincat_cli.app_runtime.wecom import (
     DEFAULT_WECOM_WS_URL,
     WeComTurnContext,
     load_wecom_bot_config,

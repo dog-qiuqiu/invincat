@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from langchain_core.messages import HumanMessage, ToolMessage
 
-from invincat_cli.app_plan_runtime import (
+from invincat_cli.app_runtime.plan import (
     build_plan_handoff_prompt,
     build_plan_text,
     build_planner_system_prompt,

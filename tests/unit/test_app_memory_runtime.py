@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from invincat_cli.app_memory_runtime import (
+from invincat_cli.app_runtime.memory import (
     AUTO_OFFLOAD_COOLDOWN_SECONDS,
     build_auto_offload_message,
     build_offload_budget_cache_key,

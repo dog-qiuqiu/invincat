@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from invincat_cli.app_thread_history import (
+from invincat_cli.app_runtime.thread_history import (
     build_resume_summary,
     convert_messages_to_data,
     merge_thread_state_with_fallback,

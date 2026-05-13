@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from invincat_cli.app_model_runtime import (
+from invincat_cli.app_runtime.model_runtime import (
     choose_default_model_clear_fn,
     choose_default_model_save_fn,
     current_model_display,

@@ -6,13 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from invincat_cli.app_scheduler_runtime import (
+from invincat_cli.app_runtime.scheduler import (
     active_scheduled_task_id,
     remove_scheduled_messages,
     resolve_scheduled_wecom_file_path,
     scheduled_run_matches,
 )
-from invincat_cli.app_state import QueuedMessage
+from invincat_cli.app_runtime.state import QueuedMessage
 
 
 def test_remove_scheduled_messages_filters_only_matching_run() -> None:

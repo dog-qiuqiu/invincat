@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from invincat_cli.app_state import ThreadHistoryPayload
+from invincat_cli.app_runtime.state import ThreadHistoryPayload
 from invincat_cli.core.session_stats import format_token_count
 from invincat_cli.widgets.message_store import MessageData, MessageType, ToolStatus
 

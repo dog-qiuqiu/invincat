@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from invincat_cli.app_server_runtime import (
+from invincat_cli.app_runtime.server import (
     count_mcp_tools,
     format_similar_threads,
     normalize_server_start_error,

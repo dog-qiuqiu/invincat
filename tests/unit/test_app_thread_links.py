@@ -6,7 +6,7 @@ import asyncio
 
 from textual.content import Content
 
-from invincat_cli.app_thread_links import build_thread_message
+from invincat_cli.app_runtime.thread_links import build_thread_message
 
 
 def test_build_thread_message_links_thread_id() -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from invincat_cli.app_skill_runtime import (
+from invincat_cli.app_runtime.skill import (
     build_skill_agent_metadata,
     build_skill_invocation_prompt,
     find_skill,

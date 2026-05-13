@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from invincat_cli.app_approval_runtime import (
+from invincat_cli.app_runtime.approval import (
     APPROVAL_PLACEHOLDER_CLASS,
     APPROVAL_PLACEHOLDER_TEXT,
     build_approve_plan_action_request,

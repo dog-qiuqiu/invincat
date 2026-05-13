@@ -6,7 +6,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from invincat_cli.app_state import TextualSessionState
+from invincat_cli.app_runtime.state import TextualSessionState
 from invincat_cli.skills.load import ExtendedSkillMetadata
 
 

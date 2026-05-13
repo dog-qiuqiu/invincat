@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from invincat_cli.app_tokens import build_tokens_message
+from invincat_cli.app_runtime.tokens import build_tokens_message
 from invincat_cli.i18n import Language, set_language
 
 

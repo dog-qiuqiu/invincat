@@ -8,7 +8,7 @@ from invincat_cli.command_registry import (
     SIDE_EFFECT_FREE,
 )
 from invincat_cli.plan_agent import PLANNER_ALLOWED_TOOLS
-from invincat_cli.app_approval_runtime import PLAN_MODE_ALLOWED_INTERRUPT_TOOLS
+from invincat_cli.app_runtime.approval import PLAN_MODE_ALLOWED_INTERRUPT_TOOLS
 
 
 class TestSlashCommandRegistration:

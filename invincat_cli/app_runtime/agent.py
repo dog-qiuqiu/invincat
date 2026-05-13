@@ -6,12 +6,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from invincat_cli.app_errors import (
+from invincat_cli.app_runtime.errors import (
     format_exception_details,
     is_scheduled_retryable_error,
     looks_like_masked_internal_error,
 )
-from invincat_cli.app_state import QueuedMessage
+from invincat_cli.app_runtime.state import QueuedMessage
 from invincat_cli.core.cli_context import CLIContext
 
 WeComFileRequestHandler = Callable[[dict[str, Any]], Awaitable[None]]

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from invincat_cli.app_model_args import (
+from invincat_cli.app_runtime.model_args import (
     extract_model_params_flag,
     parse_model_target,
 )

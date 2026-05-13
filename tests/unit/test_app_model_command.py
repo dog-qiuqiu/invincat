@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from invincat_cli.app_model_command import (
+from invincat_cli.app_runtime.model_command import (
     MODEL_DEFAULT_USAGE,
     ModelCommandAction,
     parse_model_command,

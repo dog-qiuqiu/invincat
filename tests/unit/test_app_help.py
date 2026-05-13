@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from invincat_cli.app_help import build_help_content
+from invincat_cli.app_runtime.help import build_help_content
 from invincat_cli.command_registry import COMMANDS
 from invincat_cli.core.version import DOCS_URL
 

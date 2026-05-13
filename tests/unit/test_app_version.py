@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError
 
-from invincat_cli.app_version import build_version_message, resolve_version_message
+from invincat_cli.app_runtime.version import build_version_message, resolve_version_message
 from invincat_cli.i18n import Language, set_language
 
 

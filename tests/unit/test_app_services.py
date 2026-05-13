@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from invincat_cli.app import DeepAgentsApp
-from invincat_cli.app_services import AppServices
+from invincat_cli.app_runtime.services import AppServices
 
 
 def test_app_construction_does_not_initialize_scheduler_store() -> None:

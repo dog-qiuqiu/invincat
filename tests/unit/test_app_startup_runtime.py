@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import cast
 
-from invincat_cli.app_startup_runtime import (
+from invincat_cli.app_runtime.startup import (
     build_startup_slash_commands,
     create_startup_session_state,
     resolve_memory_status_model,

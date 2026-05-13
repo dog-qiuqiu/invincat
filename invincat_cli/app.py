@@ -68,7 +68,7 @@ from textual.widgets import Static
 
 from invincat_cli import theme
 from invincat_cli.model_config import ModelTarget
-from invincat_cli.app_state import (
+from invincat_cli.app_runtime.state import (
     AppResult,
     DeferredAction,
     InputMode,
@@ -77,7 +77,7 @@ from invincat_cli.app_state import (
     ThreadHistoryPayload,
     new_thread_id,
 )
-from invincat_cli.app_approval_runtime import (
+from invincat_cli.app_runtime.approval import (
     APPROVAL_PLACEHOLDER_CLASS,
     APPROVAL_PLACEHOLDER_TEXT,
     DEFERRED_APPROVAL_TIMEOUT_SECONDS,
@@ -96,7 +96,7 @@ from invincat_cli.app_approval_runtime import (
     should_cancel_detached_placeholder,
     user_is_typing,
 )
-from invincat_cli.app_plan_runtime import (
+from invincat_cli.app_runtime.plan import (
     build_plan_text,
     build_plan_handoff_prompt,
     build_planner_system_prompt,
@@ -108,7 +108,7 @@ from invincat_cli.app_plan_runtime import (
     planner_turn_approve_plan_decision,
     planner_turn_has_write_todos,
 )
-from invincat_cli.app_memory_runtime import (
+from invincat_cli.app_runtime.memory import (
     AUTO_OFFLOAD_COOLDOWN_SECONDS,
     AUTO_OFFLOAD_THRESHOLD,
     build_auto_offload_message,
@@ -119,11 +119,11 @@ from invincat_cli.app_memory_runtime import (
     resolve_auto_offload_decision,
     resolve_memory_update_notification,
 )
-from invincat_cli.app_model_args import (
+from invincat_cli.app_runtime.model_args import (
     split_model_spec,
 )
-from invincat_cli.app_model_command import MODEL_DEFAULT_USAGE, parse_model_command
-from invincat_cli.app_model_runtime import (
+from invincat_cli.app_runtime.model_command import MODEL_DEFAULT_USAGE, parse_model_command
+from invincat_cli.app_runtime.model_runtime import (
     choose_default_model_clear_fn,
     choose_default_model_save_fn,
     is_target_already_using,
@@ -132,15 +132,15 @@ from invincat_cli.app_model_runtime import (
     normalize_default_model_spec,
     resolve_model_spec,
 )
-from invincat_cli.app_queueing import can_bypass_busy_queue
-from invincat_cli.app_reload import build_reload_report
-from invincat_cli.app_scheduler_runtime import (
+from invincat_cli.app_runtime.queueing import can_bypass_busy_queue
+from invincat_cli.app_runtime.reload import build_reload_report
+from invincat_cli.app_runtime.scheduler import (
     active_scheduled_task_id,
     remove_scheduled_messages,
     resolve_scheduled_wecom_file_path,
     scheduled_run_matches,
 )
-from invincat_cli.app_agent_runtime import (
+from invincat_cli.app_runtime.agent import (
     AgentThreadOverrideContext,
     AgentTurnRequest,
     build_agent_cli_context,
@@ -155,8 +155,8 @@ from invincat_cli.app_agent_runtime import (
     should_route_message_to_planner,
     should_retry_scheduled_turn,
 )
-from invincat_cli.app_services import AppServices
-from invincat_cli.app_server_runtime import (
+from invincat_cli.app_runtime.services import AppServices
+from invincat_cli.app_runtime.server import (
     count_mcp_tools,
     normalize_server_start_error,
     resolve_mcp_preload_result,
@@ -167,44 +167,44 @@ from invincat_cli.app_server_runtime import (
     should_drain_queue_on_server_ready,
     should_update_default_agent_from_thread,
 )
-from invincat_cli.app_shell import (
+from invincat_cli.app_runtime.shell import (
     format_shell_output,
     is_interactive_command,
     shell_termination_strategy,
     should_start_new_shell_session,
 )
-from invincat_cli.app_skill_runtime import (
+from invincat_cli.app_runtime.skill import (
     build_skill_agent_metadata,
     build_skill_invocation_prompt,
     discover_skills_and_roots,
     find_skill,
 )
-from invincat_cli.app_startup_runtime import (
+from invincat_cli.app_runtime.startup import (
     build_startup_slash_commands,
     create_startup_session_state,
     resolve_memory_status_model,
     resolve_startup_followup,
     resolve_startup_model_overrides,
 )
-from invincat_cli.app_theme_prefs import (
+from invincat_cli.app_runtime.theme_prefs import (
     load_theme_preference,
     save_theme_preference,
 )
-from invincat_cli.app_tokens import build_tokens_message
-from invincat_cli.app_thread_history import (
+from invincat_cli.app_runtime.tokens import build_tokens_message
+from invincat_cli.app_runtime.thread_history import (
     build_resume_summary,
     merge_thread_state_with_fallback,
     thread_history_payload_from_state_values,
 )
-from invincat_cli.app_thread_links import build_thread_message
-from invincat_cli.app_thread_runtime import (
+from invincat_cli.app_runtime.thread_links import build_thread_message
+from invincat_cli.app_runtime.thread_runtime import (
     thread_loading_status,
     thread_resume_block_message_key,
     thread_resume_block_reason,
     thread_switch_failed_message,
 )
-from invincat_cli.app_version import resolve_version_message
-from invincat_cli.app_wecom_runtime import (
+from invincat_cli.app_runtime.version import resolve_version_message
+from invincat_cli.app_runtime.wecom import (
     WeComTurnContext,
     load_wecom_bot_config,
     wecom_bot_is_running,
@@ -3161,7 +3161,7 @@ class DeepAgentsApp(App):
             self.exit()
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
-            from invincat_cli.app_help import build_help_content
+            from invincat_cli.app_runtime.help import build_help_content
 
             await self._mount_message(AppMessage(build_help_content()))
 

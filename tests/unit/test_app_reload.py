@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from invincat_cli.app_reload import build_reload_report
+from invincat_cli.app_runtime.reload import build_reload_report
 
 
 def test_build_reload_report_with_changes() -> None:

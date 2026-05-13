@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from invincat_cli.app_queueing import can_bypass_busy_queue
+from invincat_cli.app_runtime.queueing import can_bypass_busy_queue
 
 
 def test_can_bypass_busy_queue_for_immediate_ui_bare_commands() -> None:
