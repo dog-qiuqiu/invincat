@@ -103,14 +103,11 @@ from invincat_cli.app_runtime.agent import (
     build_agent_error_detail,
     can_start_agent_turn,
     next_agent_turn_start_state,
-    queued_scheduled_run_state,
     resolve_agent_task_exception_decision,
     resolve_agent_cleanup_start_state,
     resolve_wecom_file_request_handler,
     should_clear_scheduled_run_before_send,
-    should_continue_queue_after_sync_message,
     should_continue_after_deferred_actions,
-    should_process_next_from_queue,
     should_route_message_to_planner,
 )
 from invincat_cli.app_runtime.services import AppServices
@@ -2602,54 +2599,9 @@ class DeepAgentsApp(App):
         Dequeues and processes the next pending message in FIFO order.
         Uses the `_processing_pending` flag to prevent reentrant execution.
         """
-        if not should_process_next_from_queue(
-            processing_pending=self._processing_pending,
-            has_pending_messages=bool(self._pending_messages),
-            exiting=self._exit,
-        ):
-            return
+        from invincat_cli.app_runtime.queue_handlers import process_next_from_queue
 
-        self._processing_pending = True
-        try:
-            msg = self._pending_messages.popleft()
-
-            scheduled_state = queued_scheduled_run_state(
-                msg,
-                message_offset=self._message_store.total_count,
-            )
-            self._active_scheduled_run = scheduled_state.active_run
-            if scheduled_state.message_offset is not None:
-                self._scheduled_run_message_offset = scheduled_state.message_offset
-            self._scheduled_turn_status = scheduled_state.turn_status
-            self._scheduled_turn_error = scheduled_state.turn_error
-            self._scheduled_turn_retry_used = scheduled_state.retry_used
-
-            # Remove the ephemeral queued-message widget
-            if self._queued_widgets:
-                widget = self._queued_widgets.popleft()
-                await widget.remove()
-
-            await self._process_message(msg.text, msg.mode)
-        except Exception as _queue_exc:
-            logger.exception("Failed to process queued message")
-            self._finish_active_scheduled_run_as_failed(str(_queue_exc))
-            await self._mount_message(
-                ErrorMessage(
-                    t("queue.process_failed").format(message=msg.text[:60])
-                )
-            )
-        finally:
-            self._processing_pending = False
-
-        # Command mode messages complete synchronously without spawning
-        # a worker, so cleanup won't fire again. Continue draining the
-        # queue if no worker was started.
-        if should_continue_queue_after_sync_message(
-            agent_running=self._agent_running,
-            shell_running=self._shell_running,
-            has_pending_messages=bool(self._pending_messages),
-        ):
-            await self._process_next_from_queue()
+        await process_next_from_queue(self)
 
     async def _cleanup_agent_task(self, *, generation: int = 0) -> None:
         """Clean up after agent task completes or is cancelled.
@@ -2980,54 +2932,15 @@ class DeepAgentsApp(App):
         Caller must ensure `_pending_messages` is non-empty. A defensive guard
         is included in case of async TOCTOU races.
         """
-        if not self._pending_messages:
-            return
+        from invincat_cli.app_runtime.queue_handlers import pop_last_queued_message
 
-        # Guard: the two deques must stay in lockstep (each enqueue appends to
-        # both; each dequeue removes from both).  If they differ in length the
-        # tracking is already corrupted — abort rather than remove the wrong
-        # widget or leave a dangling message with no visual counterpart.
-        if len(self._pending_messages) != len(self._queued_widgets):
-            logger.error(
-                "_pending_messages (%d) and _queued_widgets (%d) are out of sync; "
-                "skipping pop to avoid mismatched removal. "
-                "Call _discard_queue() to reset both deques.",
-                len(self._pending_messages),
-                len(self._queued_widgets),
-            )
-            return
-
-        msg = self._pending_messages.pop()
-        widget = self._queued_widgets.pop()
-        # Textual's Widget.remove() is safe to call from sync context — it
-        # posts a removal message to the event loop and returns an awaitable
-        # that can optionally be awaited for completion.  Not awaiting here is
-        # intentional: the caller (action_interrupt) is a sync action handler
-        # and the DOM update will be applied on the next layout pass.
-        widget.remove()
-
-        if not self._chat_input:
-            logger.warning(
-                "Chat input unavailable during queue pop; "
-                "message text cannot be restored: %s",
-                msg.text[:60],
-            )
-            self.notify(t("queue.discarded"), timeout=2)
-            return
-
-        if not self._chat_input.value.strip():
-            self._chat_input.value = msg.text
-            self.notify(t("queue.moved_to_input"), timeout=2)
-        else:
-            self.notify(t("queue.discarded_input_not_empty"), timeout=3)
+        pop_last_queued_message(self)
 
     def _discard_queue(self) -> None:
         """Clear pending messages, deferred actions, and queued widgets."""
-        self._pending_messages.clear()
-        for w in self._queued_widgets:
-            w.remove()
-        self._queued_widgets.clear()
-        self._deferred_actions.clear()
+        from invincat_cli.app_runtime.queue_handlers import discard_queue
+
+        discard_queue(self)
 
     def _defer_action(self, action: DeferredAction) -> None:
         """Queue a deferred action, replacing any existing action of the same kind.
