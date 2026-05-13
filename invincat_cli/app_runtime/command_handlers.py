@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import webbrowser
 from contextlib import suppress
 from typing import Any
 
 from textual.app import ScreenStackError
 from textual.containers import VerticalScroll
+from textual.content import Content
 from textual.css.query import NoMatches
+from textual.style import Style as TStyle
 
 from invincat_cli import theme
 from invincat_cli.app_runtime.command import route_slash_command
@@ -17,12 +21,25 @@ from invincat_cli.app_runtime.model_command import (
     parse_model_command,
 )
 from invincat_cli.app_runtime.reload import build_reload_report
+from invincat_cli.app_runtime.state import DeferredAction
 from invincat_cli.app_runtime.tokens import build_tokens_message
 from invincat_cli.app_runtime.version import resolve_version_message
-from invincat_cli.widgets.messages import AppMessage, ErrorMessage, UserMessage
+from invincat_cli.core.version import CHANGELOG_URL, DOCS_URL
+from invincat_cli.widgets.messages import (
+    AppMessage,
+    ErrorMessage,
+    QueuedUserMessage,
+    UserMessage,
+)
 from invincat_cli.widgets.welcome import WelcomeBanner
 
 logger = logging.getLogger(__name__)
+
+COMMAND_URLS: dict[str, str] = {
+    "/changelog": CHANGELOG_URL,
+    "/docs": DOCS_URL,
+    "/feedback": "https://github.com/langchain-ai/deepagents/issues/new/choose",
+}
 
 
 async def handle_app_command(app: Any, command: str) -> None:  # noqa: ANN401
@@ -40,7 +57,7 @@ async def handle_app_command(app: Any, command: str) -> None:  # noqa: ANN401
 
         await app._mount_message(AppMessage(build_help_content()))
     elif route.kind == "url":
-        await app._open_url_command(command, cmd)
+        await handle_url_command(app, command, cmd)
     elif route.kind == "version":
         await app._mount_message(UserMessage(command))
         await app._mount_message(AppMessage(resolve_version_message()))
@@ -58,7 +75,7 @@ async def handle_app_command(app: Any, command: str) -> None:  # noqa: ANN401
     elif route.kind == "threads":
         await app._show_thread_selector()
     elif route.kind == "trace":
-        await app._handle_trace_command(command)
+        await handle_trace_command(app, command)
     elif route.kind == "update":
         await app._handle_update_command()
     elif route.kind == "auto_update":
@@ -134,6 +151,78 @@ async def handle_tokens_command(app: Any, command: str) -> None:  # noqa: ANN401
             )
         )
     )
+
+
+async def _mount_url_output(app: Any, command: str, url: str) -> None:  # noqa: ANN401
+    await app._mount_message(UserMessage(command))
+    link = Content.styled(url, TStyle(dim=True, italic=True, link=url))
+    await app._mount_message(AppMessage(link))
+
+
+async def _defer_url_output(app: Any, command: str, url: str) -> None:  # noqa: ANN401
+    queued_widget = QueuedUserMessage(command)
+    app._queued_widgets.append(queued_widget)
+    await app._mount_message(queued_widget)
+
+    async def _mount_output() -> None:
+        if queued_widget in app._queued_widgets:
+            app._queued_widgets.remove(queued_widget)
+        with suppress(Exception):
+            await queued_widget.remove()
+        await _mount_url_output(app, command, url)
+
+    app._deferred_actions.append(
+        DeferredAction(kind="chat_output", execute=_mount_output)
+    )
+
+
+async def handle_url_command(app: Any, command: str, cmd: str) -> None:  # noqa: ANN401
+    """Open a static URL command and render a clickable chat link."""
+    url = COMMAND_URLS[cmd]
+    webbrowser.open(url)
+
+    if app._agent_running or app._shell_running:
+        await _defer_url_output(app, command, url)
+        return
+
+    await _mount_url_output(app, command, url)
+
+
+async def handle_trace_command(app: Any, command: str) -> None:  # noqa: ANN401
+    """Open the current thread in LangSmith."""
+    from invincat_cli.config import build_langsmith_thread_url
+    from invincat_cli.i18n import t
+
+    if not app._session_state:
+        await app._mount_message(UserMessage(command))
+        await app._mount_message(AppMessage(t("trace.no_active_session")))
+        return
+    thread_id = app._session_state.thread_id
+    try:
+        url = await asyncio.to_thread(build_langsmith_thread_url, thread_id)
+    except Exception:
+        logger.exception("Failed to build LangSmith thread URL for %s", thread_id)
+        await app._mount_message(UserMessage(command))
+        await app._mount_message(AppMessage(t("trace.resolve_failed")))
+        return
+    if not url:
+        await app._mount_message(UserMessage(command))
+        await app._mount_message(AppMessage(t("trace.not_configured")))
+        return
+
+    def _open_browser() -> None:
+        try:
+            webbrowser.open(url)
+        except Exception:
+            logger.debug("Could not open browser for URL: %s", url, exc_info=True)
+
+    asyncio.get_running_loop().run_in_executor(None, _open_browser)
+
+    if app._agent_running or app._shell_running:
+        await _defer_url_output(app, command, url)
+        return
+
+    await _mount_url_output(app, command, url)
 
 
 async def handle_model_command(app: Any, command: str) -> None:  # noqa: ANN401

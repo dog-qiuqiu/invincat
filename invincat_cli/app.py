@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import time
-import webbrowser
 
 
 def _patch_textual_utf8_decoder() -> None:
@@ -55,11 +54,9 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from textual.app import App, ScreenStackError
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
-from textual.content import Content
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.style import Style as TStyle
 from textual.theme import Theme
 from textual.widgets import Static
 
@@ -159,7 +156,6 @@ from invincat_cli.i18n import t
 # All other config imports — settings, create_model, detect_provider, etc. — are
 # deferred to local imports at their call sites since they are only accessed
 # after user interaction begins.
-from invincat_cli.core.version import CHANGELOG_URL, DOCS_URL
 from invincat_cli.config import is_ascii_mode
 from invincat_cli.widgets.chat_input import ChatInput
 from invincat_cli.widgets.loading import LoadingWidget
@@ -272,16 +268,6 @@ if _IS_ITERM:
         _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
 
     atexit.register(_restore_cursor_guide)
-
-
-_COMMAND_URLS: dict[str, str] = {
-    "/changelog": CHANGELOG_URL,
-    "/docs": DOCS_URL,
-    "/feedback": "https://github.com/langchain-ai/deepagents/issues/new/choose",
-}
-
-
-"""Slash-command to URL mapping for commands that just open a browser."""
 
 
 class DeepAgentsApp(App):
@@ -2416,33 +2402,9 @@ class DeepAgentsApp(App):
             command: The raw command text (displayed as user message).
             cmd: The normalized slash command used to look up the URL.
         """
-        url = _COMMAND_URLS[cmd]
-        webbrowser.open(url)
+        from invincat_cli.app_runtime.command_handlers import handle_url_command
 
-        if self._agent_running or self._shell_running:
-            queued_widget = QueuedUserMessage(command)
-            self._queued_widgets.append(queued_widget)
-            await self._mount_message(queued_widget)
-
-            async def _mount_output() -> None:
-                # Remove the ephemeral queued widget, then mount real output.
-                if queued_widget in self._queued_widgets:
-                    self._queued_widgets.remove(queued_widget)
-                with suppress(Exception):
-                    await queued_widget.remove()
-                await self._mount_message(UserMessage(command))
-                link = Content.styled(url, TStyle(dim=True, italic=True, link=url))
-                await self._mount_message(AppMessage(link))
-
-            # Append directly — no dedup; each URL command gets its own output.
-            self._deferred_actions.append(
-                DeferredAction(kind="chat_output", execute=_mount_output)
-            )
-            return
-
-        await self._mount_message(UserMessage(command))
-        link = Content.styled(url, TStyle(dim=True, italic=True, link=url))
-        await self._mount_message(AppMessage(link))
+        await handle_url_command(self, command, cmd)
 
     async def _handle_trace_command(self, command: str) -> None:
         """Open the current thread in LangSmith.
@@ -2456,65 +2418,9 @@ class DeepAgentsApp(App):
         Args:
             command: The raw command text (displayed as user message).
         """
-        from invincat_cli.config import build_langsmith_thread_url
+        from invincat_cli.app_runtime.command_handlers import handle_trace_command
 
-        if not self._session_state:
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(AppMessage(t("trace.no_active_session")))
-            return
-        thread_id = self._session_state.thread_id
-        try:
-            url = await asyncio.to_thread(build_langsmith_thread_url, thread_id)
-        except Exception:
-            logger.exception("Failed to build LangSmith thread URL for %s", thread_id)
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(t("trace.resolve_failed"))
-            )
-            return
-        if not url:
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(
-                    t("trace.not_configured")
-                )
-            )
-            return
-
-        def _open_browser() -> None:
-            try:
-                webbrowser.open(url)
-            except Exception:
-                logger.debug("Could not open browser for URL: %s", url, exc_info=True)
-
-        asyncio.get_running_loop().run_in_executor(None, _open_browser)
-
-        # Defer chat output while a turn is in progress — rendering the user
-        # echo + link immediately would splice it into the middle of the
-        # streaming assistant response
-        if self._agent_running or self._shell_running:
-            queued_widget = QueuedUserMessage(command)
-            self._queued_widgets.append(queued_widget)
-            await self._mount_message(queued_widget)
-
-            async def _mount_output() -> None:
-                if queued_widget in self._queued_widgets:
-                    self._queued_widgets.remove(queued_widget)
-                with suppress(Exception):
-                    await queued_widget.remove()
-                await self._mount_message(UserMessage(command))
-                link = Content.styled(url, TStyle(dim=True, italic=True, link=url))
-                await self._mount_message(AppMessage(link))
-
-            # Append directly — no dedup; each /trace invocation gets its own output.
-            self._deferred_actions.append(
-                DeferredAction(kind="chat_output", execute=_mount_output)
-            )
-            return
-
-        await self._mount_message(UserMessage(command))
-        link = Content.styled(url, TStyle(dim=True, italic=True, link=url))
-        await self._mount_message(AppMessage(link))
+        await handle_trace_command(self, command)
 
     async def _handle_command(self, command: str) -> None:
         """Handle a slash command.
