@@ -100,14 +100,10 @@ from invincat_cli.app_runtime.agent import (
     AgentThreadOverrideContext,
     AgentTurnRequest,
     build_agent_cli_context,
-    build_agent_error_detail,
     can_start_agent_turn,
     next_agent_turn_start_state,
-    resolve_agent_task_exception_decision,
-    resolve_agent_cleanup_start_state,
     resolve_wecom_file_request_handler,
     should_clear_scheduled_run_before_send,
-    should_continue_after_deferred_actions,
     should_route_message_to_planner,
 )
 from invincat_cli.app_runtime.services import AppServices
@@ -2546,52 +2542,19 @@ class DeepAgentsApp(App):
 
     async def _handle_agent_task_exception(self, exc: BaseException) -> bool:
         """Handle a failed agent turn and return whether it should retry."""
-        decision = resolve_agent_task_exception_decision(
-            active_scheduled_run=self._active_scheduled_run,
-            retry_used=self._scheduled_turn_retry_used,
-            exc=exc,
+        from invincat_cli.app_runtime.agent_handlers import (
+            handle_agent_task_exception,
         )
-        if decision.retry:
-            self._scheduled_turn_retry_used = True
-            logger.warning(
-                "Scheduled run transient agent error; retrying once after %.1fs",
-                _SCHEDULED_TRANSIENT_RETRY_DELAY_SECONDS,
-                exc_info=True,
-            )
-            with suppress(Exception):
-                if decision.retry_notice is not None:
-                    await self._mount_message(AppMessage(decision.retry_notice))
-        else:
-            self._scheduled_turn_status = decision.scheduled_turn_status or "failed"
-            self._scheduled_turn_error = decision.scheduled_turn_error
 
-        logger.exception("Agent execution failed")
-        error_detail = self._agent_error_detail_with_server_log(exc)
-        if self._ui_adapter:
-            self._ui_adapter.finalize_pending_tools_with_error(
-                t("agent.error").format(error=error_detail)
-            )
-        if not decision.retry:
-            try:
-                await self._mount_message(
-                    ErrorMessage(t("agent.error").format(error=error_detail))
-                )
-            except Exception:
-                logger.debug(
-                    "Could not mount error message (app closing?)",
-                    exc_info=True,
-                )
-        return decision.retry
+        return await handle_agent_task_exception(self, exc)
 
     def _agent_error_detail_with_server_log(self, exc: BaseException) -> str:
         """Build agent error detail, including server log tail when useful."""
-        server_log_tail: str | None = None
-        if self._server_proc is not None:
-            try:
-                server_log_tail = self._server_proc.read_log_tail(max_chars=4000)
-            except Exception:
-                logger.debug("Failed to read server log tail", exc_info=True)
-        return build_agent_error_detail(exc, server_log_tail=server_log_tail)
+        from invincat_cli.app_runtime.agent_handlers import (
+            agent_error_detail_with_server_log,
+        )
+
+        return agent_error_detail_with_server_log(self, exc)
 
     async def _process_next_from_queue(self) -> None:
         """Process the next message from the queue if any exist.
@@ -2613,81 +2576,23 @@ class DeepAgentsApp(App):
                 a shielded-but-cancelled old worker from clobbering the flags of
                 the new concurrent worker that started after ESC was pressed.
         """
-        cleanup_state = resolve_agent_cleanup_start_state(
-            generation=generation,
-            current_generation=self._agent_generation,
-        )
-        if cleanup_state.should_reset_running_state:
-            self._agent_running = False
-            self._agent_worker = None
-            self._active_turn_is_planner = False
+        from invincat_cli.app_runtime.agent_handlers import cleanup_agent_task
 
-        # Remove spinner if present
-        await self._set_spinner(None)
-
-        if cleanup_state.should_restore_input and self._chat_input:
-            self._chat_input.set_cursor_active(active=True)
-
-        # Ensure token display is restored (in case of early cancellation).
-        # Pass the cached approximate flag so an interrupted "+" isn't clobbered.
-        if cleanup_state.should_restore_tokens:
-            self._show_tokens(approximate=self._tokens_approximate)
-
-        if cleanup_state.should_skip_post_cleanup:
-            self._handle_stale_agent_cleanup(generation=generation)
-            return
-
-        try:
-            await self._maybe_drain_deferred()
-        except Exception:
-            logger.exception("Failed to drain deferred actions during agent cleanup")
-            with suppress(Exception):
-                await self._mount_message(
-                    ErrorMessage(
-                        "A deferred action failed after task completion. "
-                        "You may need to retry the operation."
-                    )
-                )
-
-        if not should_continue_after_deferred_actions(
-            agent_running=self._agent_running,
-            shell_running=self._shell_running,
-        ):
-            return
-
-        await self._run_post_agent_cleanup_side_effects()
+        await cleanup_agent_task(self, generation=generation)
 
     def _handle_stale_agent_cleanup(self, *, generation: int) -> None:
         """Handle cleanup for an older worker generation."""
-        # A newer agent took over — skip queue drain, deferred actions, and
-        # auto-offload so they don't interfere with the new agent's turn. But
-        # still clear any stale scheduled-run context so the next user turn
-        # isn't wrongly treated as a scheduled run.
-        self._finish_active_scheduled_run_as_failed("Interrupted by user")
-        logger.debug(
-            "Skipping stale cleanup for generation %d (current: %d)",
-            generation,
-            self._agent_generation,
-        )
+        from invincat_cli.app_runtime.agent_handlers import handle_stale_agent_cleanup
+
+        handle_stale_agent_cleanup(self, generation=generation)
 
     async def _run_post_agent_cleanup_side_effects(self) -> None:
         """Run cleanup side effects after deferred actions have settled."""
-        # Auto-offload when context window is near full (no-op when below threshold)
-        try:
-            await self._maybe_auto_offload()
-        except Exception:
-            logger.exception("Auto-offload failed during agent cleanup")
+        from invincat_cli.app_runtime.agent_handlers import (
+            run_post_agent_cleanup_side_effects,
+        )
 
-        # Notify user if memory files were updated this turn
-        await self._maybe_notify_memory_update()
-
-        # Must happen before draining queue so the next message doesn't
-        # overwrite _active_scheduled_run first.
-        await self._complete_active_scheduled_run()
-        await self._drain_scheduler_if_idle()
-
-        # Process next message from queue if any
-        await self._process_next_from_queue()
+        await run_post_agent_cleanup_side_effects(self)
 
     async def _complete_active_scheduled_run(self) -> None:
         """Record completion and WeCom delivery for the active scheduled run."""
