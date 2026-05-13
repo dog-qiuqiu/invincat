@@ -15,6 +15,7 @@ from invincat_cli.app_runtime.agent import (
     is_planner_agent_turn,
     next_agent_turn_start_state,
     queued_scheduled_run_state,
+    resolve_agent_cleanup_start_state,
     resolve_agent_task_exception_decision,
     resolve_wecom_file_request_handler,
     scheduled_run_from_message,
@@ -198,6 +199,24 @@ def test_agent_cleanup_decisions() -> None:
         agent_running=True,
         shell_running=False,
     ) is False
+
+
+def test_resolve_agent_cleanup_start_state() -> None:
+    current = resolve_agent_cleanup_start_state(generation=2, current_generation=2)
+
+    assert current.is_current_generation is True
+    assert current.should_reset_running_state is True
+    assert current.should_restore_input is True
+    assert current.should_restore_tokens is True
+    assert current.should_skip_post_cleanup is False
+
+    stale = resolve_agent_cleanup_start_state(generation=1, current_generation=2)
+
+    assert stale.is_current_generation is False
+    assert stale.should_reset_running_state is False
+    assert stale.should_restore_input is False
+    assert stale.should_restore_tokens is False
+    assert stale.should_skip_post_cleanup is True
 
 
 def test_agent_thread_override_context_restores_thread_id() -> None:

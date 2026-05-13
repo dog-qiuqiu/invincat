@@ -52,6 +52,17 @@ class AgentTaskExceptionDecision:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentCleanupStartState:
+    """Cleanup decisions derived from the worker generation."""
+
+    is_current_generation: bool
+    should_reset_running_state: bool
+    should_restore_input: bool
+    should_restore_tokens: bool
+    should_skip_post_cleanup: bool
+
+
+@dataclass(frozen=True, slots=True)
 class QueuedScheduledRunState:
     """State to apply when a queued message starts a scheduled run."""
 
@@ -192,6 +203,25 @@ def next_agent_turn_start_state(
 def is_current_agent_generation(*, generation: int, current_generation: int) -> bool:
     """Return whether cleanup belongs to the currently active agent worker."""
     return generation == current_generation
+
+
+def resolve_agent_cleanup_start_state(
+    *,
+    generation: int,
+    current_generation: int,
+) -> AgentCleanupStartState:
+    """Resolve cleanup actions allowed for a worker generation."""
+    is_current = is_current_agent_generation(
+        generation=generation,
+        current_generation=current_generation,
+    )
+    return AgentCleanupStartState(
+        is_current_generation=is_current,
+        should_reset_running_state=is_current,
+        should_restore_input=is_current,
+        should_restore_tokens=is_current,
+        should_skip_post_cleanup=not is_current,
+    )
 
 
 def should_continue_after_deferred_actions(

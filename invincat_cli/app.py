@@ -148,6 +148,7 @@ from invincat_cli.app_runtime.scheduler import (
     remove_scheduled_messages,
     resolve_scheduled_wecom_file_path,
     scheduled_run_matches,
+    should_deliver_scheduled_result,
 )
 from invincat_cli.app_runtime.agent import (
     AgentThreadOverrideContext,
@@ -155,10 +156,10 @@ from invincat_cli.app_runtime.agent import (
     build_agent_cli_context,
     build_agent_error_detail,
     can_start_agent_turn,
-    is_current_agent_generation,
     next_agent_turn_start_state,
     queued_scheduled_run_state,
     resolve_agent_task_exception_decision,
+    resolve_agent_cleanup_start_state,
     resolve_wecom_file_request_handler,
     should_clear_scheduled_run_before_send,
     should_continue_queue_after_sync_message,
@@ -4762,11 +4763,11 @@ class DeepAgentsApp(App):
                 a shielded-but-cancelled old worker from clobbering the flags of
                 the new concurrent worker that started after ESC was pressed.
         """
-        is_current_generation = is_current_agent_generation(
+        cleanup_state = resolve_agent_cleanup_start_state(
             generation=generation,
             current_generation=self._agent_generation,
         )
-        if is_current_generation:
+        if cleanup_state.should_reset_running_state:
             self._agent_running = False
             self._agent_worker = None
             self._active_turn_is_planner = False
@@ -4774,25 +4775,16 @@ class DeepAgentsApp(App):
         # Remove spinner if present
         await self._set_spinner(None)
 
-        if is_current_generation and self._chat_input:
+        if cleanup_state.should_restore_input and self._chat_input:
             self._chat_input.set_cursor_active(active=True)
 
         # Ensure token display is restored (in case of early cancellation).
         # Pass the cached approximate flag so an interrupted "+" isn't clobbered.
-        if is_current_generation:
+        if cleanup_state.should_restore_tokens:
             self._show_tokens(approximate=self._tokens_approximate)
 
-        if not is_current_generation:
-            # A newer agent took over — skip queue drain, deferred actions, and
-            # auto-offload so they don't interfere with the new agent's turn.
-            # But still clear any stale scheduled-run context so the next
-            # user turn isn't wrongly treated as a scheduled run.
-            self._finish_active_scheduled_run_as_failed("Interrupted by user")
-            logger.debug(
-                "Skipping stale cleanup for generation %d (current: %d)",
-                generation,
-                self._agent_generation,
-            )
+        if cleanup_state.should_skip_post_cleanup:
+            self._handle_stale_agent_cleanup(generation=generation)
             return
 
         try:
@@ -4807,15 +4799,29 @@ class DeepAgentsApp(App):
                     )
                 )
 
-        # Deferred actions may start a new run (for example approved plan
-        # handoff to the main agent). Avoid post-cleanup side effects from the
-        # old run once a new run is already active.
         if not should_continue_after_deferred_actions(
             agent_running=self._agent_running,
             shell_running=self._shell_running,
         ):
             return
 
+        await self._run_post_agent_cleanup_side_effects()
+
+    def _handle_stale_agent_cleanup(self, *, generation: int) -> None:
+        """Handle cleanup for an older worker generation."""
+        # A newer agent took over — skip queue drain, deferred actions, and
+        # auto-offload so they don't interfere with the new agent's turn. But
+        # still clear any stale scheduled-run context so the next user turn
+        # isn't wrongly treated as a scheduled run.
+        self._finish_active_scheduled_run_as_failed("Interrupted by user")
+        logger.debug(
+            "Skipping stale cleanup for generation %d (current: %d)",
+            generation,
+            self._agent_generation,
+        )
+
+    async def _run_post_agent_cleanup_side_effects(self) -> None:
+        """Run cleanup side effects after deferred actions have settled."""
         # Auto-offload when context window is near full (no-op when below threshold)
         try:
             await self._maybe_auto_offload()
@@ -4842,32 +4848,50 @@ class DeepAgentsApp(App):
         self._active_scheduled_run = None
         try:
             if self._scheduler_runner is not None:
-                run = self._scheduler_store.load_run(run_id)
-                if run is None or run.finished_at is None:
-                    try:
-                        await self._deliver_scheduled_result_to_wecom(
-                            task_id=task_id,
-                            run_id=run_id,
-                            status=self._scheduled_turn_status,
-                            error=self._scheduled_turn_error,
-                        )
-                    except Exception:
-                        logger.exception(
-                            "Failed to deliver scheduled run %r to WeCom",
-                            run_id,
-                        )
-                try:
-                    self._scheduler_runner.finish_run(
-                        run_id,
-                        task_id,
-                        status=self._scheduled_turn_status,
-                        error=self._scheduled_turn_error,
-                    )
-                except Exception:
-                    logger.exception("Failed to finish scheduled run %r", run_id)
+                await self._deliver_active_scheduled_result_if_needed(
+                    run_id=run_id,
+                    task_id=task_id,
+                )
+                self._finish_scheduled_run(run_id=run_id, task_id=task_id)
         finally:
-            self._scheduled_turn_error = None
-            self._scheduled_turn_retry_used = False
+            self._reset_scheduled_turn_state()
+
+    async def _deliver_active_scheduled_result_if_needed(
+        self,
+        *,
+        run_id: str,
+        task_id: str,
+    ) -> None:
+        """Deliver scheduled result to WeCom unless the run already finished."""
+        run = self._scheduler_store.load_run(run_id)
+        if not should_deliver_scheduled_result(run):
+            return
+        try:
+            await self._deliver_scheduled_result_to_wecom(
+                task_id=task_id,
+                run_id=run_id,
+                status=self._scheduled_turn_status,
+                error=self._scheduled_turn_error,
+            )
+        except Exception:
+            logger.exception("Failed to deliver scheduled run %r to WeCom", run_id)
+
+    def _finish_scheduled_run(self, *, run_id: str, task_id: str) -> None:
+        """Mark a scheduled run as finished in the scheduler runner."""
+        try:
+            self._scheduler_runner.finish_run(
+                run_id,
+                task_id,
+                status=self._scheduled_turn_status,
+                error=self._scheduled_turn_error,
+            )
+        except Exception:
+            logger.exception("Failed to finish scheduled run %r", run_id)
+
+    def _reset_scheduled_turn_state(self) -> None:
+        """Reset per-turn scheduled-run result bookkeeping."""
+        self._scheduled_turn_error = None
+        self._scheduled_turn_retry_used = False
 
     async def _drain_scheduler_if_idle(self) -> None:
         """Drain scheduler fire-now queue when no foreground task is running."""

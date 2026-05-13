@@ -11,6 +11,7 @@ from invincat_cli.app_runtime.scheduler import (
     remove_scheduled_messages,
     resolve_scheduled_wecom_file_path,
     scheduled_run_matches,
+    should_deliver_scheduled_result,
 )
 from invincat_cli.app_runtime.state import QueuedMessage
 
@@ -54,6 +55,16 @@ def test_scheduled_run_helpers() -> None:
     )
     assert active_scheduled_task_id(("run-1", "task-1")) == "task-1"
     assert active_scheduled_task_id(None) is None
+
+
+def test_should_deliver_scheduled_result() -> None:
+    class Run:
+        def __init__(self, finished_at: str | None) -> None:
+            self.finished_at = finished_at
+
+    assert should_deliver_scheduled_result(None)
+    assert should_deliver_scheduled_result(Run(None))
+    assert not should_deliver_scheduled_result(Run("2026-05-13T00:00:00+00:00"))
 
 
 def test_resolve_scheduled_wecom_file_path_accepts_project_file(tmp_path: Path) -> None:

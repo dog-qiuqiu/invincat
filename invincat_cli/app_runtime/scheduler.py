@@ -46,6 +46,11 @@ def active_scheduled_task_id(
     return task_id
 
 
+def should_deliver_scheduled_result(run: object | None) -> bool:
+    """Return whether a scheduled run still needs result delivery."""
+    return run is None or getattr(run, "finished_at", None) is None
+
+
 def resolve_scheduled_wecom_file_path(
     raw_path: object,
     *,
