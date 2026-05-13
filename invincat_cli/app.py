@@ -74,10 +74,7 @@ from invincat_cli.app_runtime.state import (
 from invincat_cli.app_runtime.approval import (
     INTERACTION_POLL_SECONDS,
     TYPING_IDLE_THRESHOLD_SECONDS,
-    build_approve_plan_action_request,
-    build_auto_approved_shell_message,
     deadline_expired,
-    map_raw_approval_to_plan_decision,
     plan_todos_fingerprint,
     pending_interaction_timeout_log,
     pending_widget_deadline,
@@ -1269,52 +1266,27 @@ class DeepAgentsApp(App):
         disallowed_tool_names: list[str],
     ) -> None:
         """Mount the `/plan` guard rejection notice and approval prompt."""
-        try:
-            await self._maybe_approve_current_planner_todos()
-        except Exception:
-            logger.debug(
-                "Failed to trigger immediate /plan approval before rejecting tool call",
-                exc_info=True,
-            )
+        from invincat_cli.app_runtime.approval_handlers import (
+            handle_plan_guard_auto_reject,
+        )
 
-        denied = ", ".join(disallowed_tool_names)
-        try:
-            from invincat_cli.i18n import t
-
-            messages = self.query_one("#messages", Container)
-            await self._mount_before_queued(
-                messages,
-                AppMessage(t("plan.auto_reject_non_plan_tool").format(tools=denied)),
-            )
-        except Exception:  # noqa: BLE001  # best-effort status message
-            logger.debug(
-                "Failed to mount /plan auto-reject notice",
-                exc_info=True,
-            )
+        await handle_plan_guard_auto_reject(self, disallowed_tool_names)
 
     async def _mount_auto_approval_messages(self, commands: list[str]) -> None:
         """Mount system messages for shell commands approved by allow-list."""
-        try:
-            messages = self.query_one("#messages", Container)
-            for command in commands:
-                auto_msg = AppMessage(build_auto_approved_shell_message(command))
-                await self._mount_before_queued(messages, auto_msg)
-            with suppress(NoMatches, ScreenStackError):
-                self.query_one("#chat", VerticalScroll).anchor()
-        except Exception:  # noqa: BLE001  # Resilient auto-message display
-            logger.debug("Failed to display auto-approval message", exc_info=True)
+        from invincat_cli.app_runtime.approval_handlers import (
+            mount_auto_approval_messages,
+        )
+
+        await mount_auto_approval_messages(self, commands)
 
     async def _wait_for_pending_approval_widget(self) -> None:
         """Wait briefly for any active approval widget before showing another."""
-        if self._pending_approval_widget is None:
-            return
+        from invincat_cli.app_runtime.approval_handlers import (
+            wait_for_pending_approval_widget,
+        )
 
-        queue_deadline = pending_widget_deadline(now=_monotonic())
-        while self._pending_approval_widget is not None:  # noqa: ASYNC110
-            if deadline_expired(now=_monotonic(), deadline=queue_deadline):
-                logger.warning(pending_interaction_timeout_log(kind="approval"))
-                break
-            await asyncio.sleep(INTERACTION_POLL_SECONDS)
+        await wait_for_pending_approval_widget(self)
 
     async def _mount_approval_widget(
         self,
@@ -1330,19 +1302,9 @@ class DeepAgentsApp(App):
             menu: The `ApprovalMenu` instance to mount.
             result_future: The future to resolve/reject for the caller.
         """
-        try:
-            messages = self.query_one("#messages", Container)
-            await self._mount_before_queued(messages, menu)
-            self.call_after_refresh(menu.scroll_visible)
-            self.call_after_refresh(menu.focus)
-        except Exception as e:
-            logger.exception(
-                "Failed to mount approval menu (id=%s) in messages container",
-                menu.id,
-            )
-            self._pending_approval_widget = None
-            if not result_future.done():
-                result_future.set_exception(e)
+        from invincat_cli.app_runtime.approval_handlers import mount_approval_widget
+
+        await mount_approval_widget(self, menu, result_future)
 
     async def _deferred_show_approval(
         self,
@@ -1367,20 +1329,11 @@ class DeepAgentsApp(App):
 
     async def _remove_approval_placeholder(self, *, context: str) -> None:
         """Remove any mounted deferred approval placeholder."""
-        placeholder = self._approval_placeholder
-        if placeholder is None:
-            return
-        self._approval_placeholder = None
-        if not placeholder.is_attached:
-            return
-        try:
-            await placeholder.remove()
-        except Exception:
-            logger.warning(
-                "Failed to remove approval placeholder during %s",
-                context,
-                exc_info=True,
-            )
+        from invincat_cli.app_runtime.approval_handlers import (
+            remove_approval_placeholder,
+        )
+
+        await remove_approval_placeholder(self, context=context)
 
     def _on_auto_approve_enabled(self) -> None:
         """Handle auto-approve being enabled via the HITL approval menu.
@@ -1390,11 +1343,9 @@ class DeepAgentsApp(App):
         bar indicator, and session state so subsequent tool calls skip
         the approval prompt.
         """
-        self._auto_approve = True
-        if self._status_bar:
-            self._status_bar.set_auto_approve(enabled=True)
-        if self._session_state:
-            self._session_state.auto_approve = True
+        from invincat_cli.app_runtime.approval_handlers import enable_auto_approve
+
+        enable_auto_approve(self)
 
     async def _handle_plan_task(self) -> None:
         """Handle /plan command.
@@ -1863,31 +1814,9 @@ class DeepAgentsApp(App):
             A Future that resolves to a dict with `'type'` (`'approved'` or
                 `'rejected'`).
         """
-        loop = asyncio.get_running_loop()
-        mapped_future: asyncio.Future[dict[str, Any]] = loop.create_future()
+        from invincat_cli.app_runtime.approval_handlers import request_approve_plan
 
-        action_request = build_approve_plan_action_request(todos)
-        self._planner_prompted_todos_fingerprint = plan_todos_fingerprint(todos)
-
-        raw_future = await self._request_approval(
-            [action_request],
-            self._assistant_id,
-            bypass_plan_guard=True,
-            allow_auto_approve=False,
-        )
-
-        async def _map_plan_decision() -> None:
-            try:
-                raw = await raw_future
-                mapped = map_raw_approval_to_plan_decision(raw)
-                if not mapped_future.done():
-                    mapped_future.set_result(mapped)
-            except Exception as exc:
-                if not mapped_future.done():
-                    mapped_future.set_exception(exc)
-
-        self.run_worker(_map_plan_decision(), exclusive=False)
-        return mapped_future
+        return await request_approve_plan(self, todos)
 
     async def on_approve_widget_approved(
         self,

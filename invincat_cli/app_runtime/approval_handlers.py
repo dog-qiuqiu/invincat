@@ -6,23 +6,35 @@ import asyncio
 import logging
 import time
 import uuid
+from contextlib import suppress
 from typing import Any
 
+from textual.app import ScreenStackError
 from textual.containers import Container
+from textual.containers import VerticalScroll
+from textual.css.query import NoMatches
 from textual.widgets import Static
 
 from invincat_cli.app_runtime.approval import (
     APPROVAL_PLACEHOLDER_CLASS,
     APPROVAL_PLACEHOLDER_TEXT,
+    INTERACTION_POLL_SECONDS,
     DEFERRED_APPROVAL_POLL_SECONDS,
     DEFERRED_APPROVAL_TIMEOUT_SECONDS,
+    build_approve_plan_action_request,
+    build_auto_approved_shell_message,
     build_interaction_widget_id,
     deadline_expired,
+    map_raw_approval_to_plan_decision,
     plan_interrupt_guard_disallowed_tools,
+    plan_todos_fingerprint,
+    pending_interaction_timeout_log,
+    pending_widget_deadline,
     resolve_auto_approved_shell_commands,
     should_cancel_detached_placeholder,
 )
 from invincat_cli.core.ask_user_types import AskUserWidgetResult, Question
+from invincat_cli.widgets.messages import AppMessage
 
 logger = logging.getLogger(__name__)
 _monotonic = time.monotonic
@@ -158,6 +170,148 @@ async def deferred_show_approval(
             app._approval_placeholder = None
             result_future.cancel()
         raise
+
+
+async def handle_plan_guard_auto_reject(
+    app: Any,  # noqa: ANN401
+    disallowed_tool_names: list[str],
+) -> None:
+    """Mount the `/plan` guard rejection notice and approval prompt."""
+    try:
+        await app._maybe_approve_current_planner_todos()
+    except Exception:
+        logger.debug(
+            "Failed to trigger immediate /plan approval before rejecting tool call",
+            exc_info=True,
+        )
+
+    denied = ", ".join(disallowed_tool_names)
+    try:
+        from invincat_cli.i18n import t
+
+        messages = app.query_one("#messages", Container)
+        await app._mount_before_queued(
+            messages,
+            AppMessage(t("plan.auto_reject_non_plan_tool").format(tools=denied)),
+        )
+    except Exception:  # noqa: BLE001  # best-effort status message
+        logger.debug(
+            "Failed to mount /plan auto-reject notice",
+            exc_info=True,
+        )
+
+
+async def mount_auto_approval_messages(
+    app: Any,  # noqa: ANN401
+    commands: list[str],
+) -> None:
+    """Mount system messages for shell commands approved by allow-list."""
+    try:
+        messages = app.query_one("#messages", Container)
+        for command in commands:
+            auto_msg = AppMessage(build_auto_approved_shell_message(command))
+            await app._mount_before_queued(messages, auto_msg)
+        with suppress(NoMatches, ScreenStackError):
+            app.query_one("#chat", VerticalScroll).anchor()
+    except Exception:  # noqa: BLE001  # Resilient auto-message display
+        logger.debug("Failed to display auto-approval message", exc_info=True)
+
+
+async def wait_for_pending_approval_widget(app: Any) -> None:  # noqa: ANN401
+    """Wait briefly for any active approval widget before showing another."""
+    if app._pending_approval_widget is None:
+        return
+
+    queue_deadline = pending_widget_deadline(now=_monotonic())
+    while app._pending_approval_widget is not None:  # noqa: ASYNC110
+        if deadline_expired(now=_monotonic(), deadline=queue_deadline):
+            logger.warning(pending_interaction_timeout_log(kind="approval"))
+            break
+        await asyncio.sleep(INTERACTION_POLL_SECONDS)
+
+
+async def mount_approval_widget(
+    app: Any,  # noqa: ANN401
+    menu: Any,  # noqa: ANN401
+    result_future: asyncio.Future[dict[str, str]],
+) -> None:
+    """Mount the approval menu widget inline in the messages area."""
+    try:
+        messages = app.query_one("#messages", Container)
+        await app._mount_before_queued(messages, menu)
+        app.call_after_refresh(menu.scroll_visible)
+        app.call_after_refresh(menu.focus)
+    except Exception as exc:
+        logger.exception(
+            "Failed to mount approval menu (id=%s) in messages container",
+            menu.id,
+        )
+        app._pending_approval_widget = None
+        if not result_future.done():
+            result_future.set_exception(exc)
+
+
+async def remove_approval_placeholder(
+    app: Any,  # noqa: ANN401
+    *,
+    context: str,
+) -> None:
+    """Remove any mounted deferred approval placeholder."""
+    placeholder = app._approval_placeholder
+    if placeholder is None:
+        return
+    app._approval_placeholder = None
+    if not placeholder.is_attached:
+        return
+    try:
+        await placeholder.remove()
+    except Exception:
+        logger.warning(
+            "Failed to remove approval placeholder during %s",
+            context,
+            exc_info=True,
+        )
+
+
+def enable_auto_approve(app: Any) -> None:  # noqa: ANN401
+    """Sync auto-approve enabled state across app, status bar, and session."""
+    app._auto_approve = True
+    if app._status_bar:
+        app._status_bar.set_auto_approve(enabled=True)
+    if app._session_state:
+        app._session_state.auto_approve = True
+
+
+async def request_approve_plan(
+    app: Any,  # noqa: ANN401
+    todos: list[dict[str, Any]],
+) -> asyncio.Future[dict[str, Any]]:
+    """Display plan approval using the standard approval menu."""
+    loop = asyncio.get_running_loop()
+    mapped_future: asyncio.Future[dict[str, Any]] = loop.create_future()
+
+    action_request = build_approve_plan_action_request(todos)
+    app._planner_prompted_todos_fingerprint = plan_todos_fingerprint(todos)
+
+    raw_future = await app._request_approval(
+        [action_request],
+        app._assistant_id,
+        bypass_plan_guard=True,
+        allow_auto_approve=False,
+    )
+
+    async def _map_plan_decision() -> None:
+        try:
+            raw = await raw_future
+            mapped = map_raw_approval_to_plan_decision(raw)
+            if not mapped_future.done():
+                mapped_future.set_result(mapped)
+        except Exception as exc:
+            if not mapped_future.done():
+                mapped_future.set_exception(exc)
+
+    app.run_worker(_map_plan_decision(), exclusive=False)
+    return mapped_future
 
 
 async def request_ask_user(
