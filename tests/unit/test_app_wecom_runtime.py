@@ -7,6 +7,8 @@ from invincat_cli.app_runtime.wecom import (
     WeComTurnContext,
     create_wecom_message_responder,
     load_wecom_bot_config,
+    resolve_wecom_bot_command_decision,
+    resolve_wecom_bridge_availability,
     should_clear_wecom_bridge,
     wecom_bot_already_running_message,
     wecom_bot_is_running,
@@ -80,6 +82,52 @@ def test_wecom_bot_messages() -> None:
     assert "WECOM_BOT_ID" in wecom_bot_missing_config_message()
 
 
+def test_resolve_wecom_bot_command_decision() -> None:
+    start = resolve_wecom_bot_command_decision(
+        action="start",
+        running=False,
+        auto_approve_enabled=False,
+    )
+    assert start.kind == "start"
+    assert start.should_enable_auto_approve is True
+    assert start.should_start_bridge is True
+    assert start.should_stop_bridge is False
+    assert "Auto-approve mode enabled" in start.message
+
+    already_running = resolve_wecom_bot_command_decision(
+        action="start",
+        running=True,
+        auto_approve_enabled=True,
+    )
+    assert already_running.kind == "status"
+    assert already_running.should_start_bridge is False
+    assert already_running.message == "WeCom bot is already running."
+
+    stop = resolve_wecom_bot_command_decision(
+        action="stop",
+        running=True,
+        auto_approve_enabled=True,
+    )
+    assert stop.kind == "stop"
+    assert stop.should_stop_bridge is True
+
+    status = resolve_wecom_bot_command_decision(
+        action="status",
+        running=False,
+        auto_approve_enabled=True,
+    )
+    assert status.kind == "status"
+    assert status.message.endswith("stopped")
+
+    usage = resolve_wecom_bot_command_decision(
+        action="bad",
+        running=False,
+        auto_approve_enabled=True,
+    )
+    assert usage.kind == "usage"
+    assert "/wecombot-start" in usage.message
+
+
 def test_wecom_bridge_state_helpers() -> None:
     bridge = object()
 
@@ -89,6 +137,16 @@ def test_wecom_bridge_state_helpers() -> None:
     assert should_clear_wecom_bridge(current_bridge=object(), bridge=bridge) is False
     assert str(wecom_bridge_offline_error()) == "WeCom connection is offline"
     assert wecom_bridge_offline_message() == "WeCom bridge is offline"
+
+
+def test_resolve_wecom_bridge_availability() -> None:
+    online = resolve_wecom_bridge_availability(object())
+    assert online.online is True
+    assert online.error_message is None
+
+    offline = resolve_wecom_bridge_availability(None)
+    assert offline.online is False
+    assert offline.error_message == "WeCom bridge is offline"
 
 
 def test_wecom_turn_is_busy() -> None:

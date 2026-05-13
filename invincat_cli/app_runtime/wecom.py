@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 from invincat_cli.wecom.session import WeComMessageResponder
 
 
 DEFAULT_WECOM_WS_URL = "wss://openws.work.weixin.qq.com"
+WeComBotCommandKind = Literal["start", "stop", "status", "usage"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +24,25 @@ class WeComBotConfig:
     @property
     def is_complete(self) -> bool:
         return bool(self.bot_id and self.secret)
+
+
+@dataclass(frozen=True, slots=True)
+class WeComBotCommandDecision:
+    """Decision for handling a `/wecombot-*` command."""
+
+    kind: WeComBotCommandKind
+    message: str
+    should_enable_auto_approve: bool = False
+    should_start_bridge: bool = False
+    should_stop_bridge: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class WeComBridgeAvailability:
+    """Bridge availability decision for outbound operations."""
+
+    online: bool
+    error_message: str | None = None
 
 
 def load_wecom_bot_config(environ: Mapping[str, str]) -> WeComBotConfig:
@@ -76,6 +96,41 @@ def wecom_bot_stopped_message() -> str:
     return "WeCom bot bridge stopped."
 
 
+def resolve_wecom_bot_command_decision(
+    *,
+    action: str,
+    running: bool,
+    auto_approve_enabled: bool,
+) -> WeComBotCommandDecision:
+    """Resolve side effects and message for a `/wecombot-*` command."""
+    if action == "start":
+        if running:
+            return WeComBotCommandDecision(
+                kind="status",
+                message=wecom_bot_already_running_message(),
+            )
+        return WeComBotCommandDecision(
+            kind="start",
+            message=wecom_bot_started_message(
+                auto_approve_was_enabled=auto_approve_enabled,
+            ),
+            should_enable_auto_approve=True,
+            should_start_bridge=True,
+        )
+    if action == "stop":
+        return WeComBotCommandDecision(
+            kind="stop",
+            message=wecom_bot_stopped_message(),
+            should_stop_bridge=True,
+        )
+    if action == "status":
+        return WeComBotCommandDecision(
+            kind="status",
+            message=wecom_bot_status_message(running=running),
+        )
+    return WeComBotCommandDecision(kind="usage", message=wecom_bot_usage_message())
+
+
 def wecom_bridge_is_online(bridge: object | None) -> bool:
     """Return whether a bridge object is currently available."""
     return bridge is not None
@@ -94,6 +149,16 @@ def wecom_bridge_offline_error() -> RuntimeError:
 def wecom_bridge_offline_message() -> str:
     """Build the standard WeCom bridge offline text."""
     return "WeCom bridge is offline"
+
+
+def resolve_wecom_bridge_availability(bridge: object | None) -> WeComBridgeAvailability:
+    """Resolve whether outbound WeCom operations can use the bridge."""
+    if wecom_bridge_is_online(bridge):
+        return WeComBridgeAvailability(online=True)
+    return WeComBridgeAvailability(
+        online=False,
+        error_message=wecom_bridge_offline_message(),
+    )
 
 
 def create_wecom_message_responder(

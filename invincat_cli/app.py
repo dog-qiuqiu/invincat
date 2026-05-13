@@ -239,14 +239,11 @@ from invincat_cli.app_runtime.wecom import (
     WeComTurnContext,
     create_wecom_message_responder,
     load_wecom_bot_config,
+    resolve_wecom_bot_command_decision,
+    resolve_wecom_bridge_availability,
     should_clear_wecom_bridge,
-    wecom_bot_already_running_message,
     wecom_bot_is_running,
     wecom_bot_missing_config_message,
-    wecom_bot_started_message,
-    wecom_bot_status_message,
-    wecom_bot_stopped_message,
-    wecom_bot_usage_message,
     wecom_bridge_is_online,
     wecom_bridge_offline_error,
     wecom_bridge_offline_message,
@@ -3843,23 +3840,16 @@ class DeepAgentsApp(App):
         """
         await self._mount_message(UserMessage(command))
 
-        if action == "start":
-            if wecom_bot_is_running(self._wecom_task):
-                await self._mount_message(AppMessage(wecom_bot_already_running_message()))
-                return
-            auto_approve_was_enabled = self._auto_approve
+        decision = resolve_wecom_bot_command_decision(
+            action=action,
+            running=wecom_bot_is_running(self._wecom_task),
+            auto_approve_enabled=self._auto_approve,
+        )
+
+        if decision.should_start_bridge:
             self._on_auto_approve_enabled()
             self._wecom_task = asyncio.create_task(self._run_wecombot_bridge())
-            await self._mount_message(
-                AppMessage(
-                    wecom_bot_started_message(
-                        auto_approve_was_enabled=auto_approve_was_enabled,
-                    )
-                )
-            )
-            return
-
-        if action == "stop":
+        elif decision.should_stop_bridge:
             if self._wecom_bridge is not None:
                 self._wecom_bridge.stop()
             if wecom_bot_is_running(self._wecom_task):
@@ -3868,20 +3858,8 @@ class DeepAgentsApp(App):
                     await self._wecom_task
             self._wecom_task = None
             self._wecom_bridge = None
-            await self._mount_message(AppMessage(wecom_bot_stopped_message()))
-            return
 
-        if action == "status":
-            await self._mount_message(
-                AppMessage(
-                    wecom_bot_status_message(
-                        running=wecom_bot_is_running(self._wecom_task)
-                    )
-                )
-            )
-            return
-
-        await self._mount_message(AppMessage(wecom_bot_usage_message()))
+        await self._mount_message(AppMessage(decision.message))
 
     async def _run_wecombot_bridge(self) -> None:
         """Run WeCom long-connection client and bridge to current session."""
@@ -3953,7 +3931,8 @@ class DeepAgentsApp(App):
         await responder.handle(frame)
 
     def _wecom_enqueue(self, payload: dict[str, Any]) -> None:
-        if not wecom_bridge_is_online(self._wecom_bridge):
+        availability = resolve_wecom_bridge_availability(self._wecom_bridge)
+        if not availability.online:
             logger.debug("Skipping WeCom enqueue while bridge is offline")
             return
         self._wecom_bridge.enqueue(payload)
@@ -3964,7 +3943,8 @@ class DeepAgentsApp(App):
         Returns False when no connection is available or sending failed; queued
         items are preserved and retried when the next connection is established.
         """
-        if not wecom_bridge_is_online(self._wecom_bridge):
+        availability = resolve_wecom_bridge_availability(self._wecom_bridge)
+        if not availability.online:
             return False
         return await self._wecom_bridge.flush_outbox()
 
@@ -3975,7 +3955,8 @@ class DeepAgentsApp(App):
         timeout: float = 30.0,
     ) -> dict[str, Any]:
         """Send a WeCom request frame and wait for its matching req_id response."""
-        if not wecom_bridge_is_online(self._wecom_bridge):
+        availability = resolve_wecom_bridge_availability(self._wecom_bridge)
+        if not availability.online:
             raise wecom_bridge_offline_error()
         return await self._wecom_bridge.send_request(payload, timeout=timeout)
 
