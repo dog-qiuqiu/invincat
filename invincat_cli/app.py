@@ -2524,76 +2524,27 @@ async def run_textual_app(
     model_kwargs: dict[str, Any] | None = None,
     defer_server_start: bool = False,
 ) -> AppResult:
-    """Run the Textual application.
+    """Run the Textual application and return its final result."""
+    from invincat_cli.app_runtime.runner import run_textual_app as run_app
 
-    When `server_kwargs` is provided (and `agent` is `None`), the app starts
-    immediately with a "Connecting..." banner and launches the server in the
-    background.  Server cleanup is handled automatically after the app exits.
-
-    Args:
-        agent: Pre-configured LangGraph agent (optional).
-        assistant_id: Agent identifier for memory storage.
-        backend: Backend for file operations.
-        auto_approve: Whether to start with auto-approve enabled.
-        cwd: Current working directory to display.
-        thread_id: Thread ID for the session.
-
-            `None` when `resume_thread` is provided (the TUI resolves the final
-            ID asynchronously).
-        resume_thread: Raw resume intent from `-r` flag. `'__MOST_RECENT__'` for
-            bare `-r`, a thread ID string for `-r <id>`, or `None` for new
-            sessions.
-
-            Resolved asynchronously during TUI startup.
-        initial_prompt: Optional prompt to auto-submit when session starts.
-        mcp_server_info: MCP server metadata for the `/mcp` viewer.
-        profile_override: Extra profile fields from `--profile-override`,
-            retained so later profile-aware behavior stays consistent with
-            the CLI override, including model selection details, offload
-            budget display, and on-demand `create_model()` calls such
-            as `/offload`.
-        server_proc: LangGraph server process for the interactive session.
-        server_kwargs: Kwargs for deferred `start_server_and_get_agent` call.
-        mcp_preload_kwargs: Kwargs for concurrent MCP metadata preload.
-        model_kwargs: Kwargs for deferred `create_model()` call.
-
-            When provided, model creation runs in a background worker after
-            first paint so the splash screen appears immediately.
-        defer_server_start: Keep server startup deferred until a primary model
-            is selected.
-
-    Returns:
-        An `AppResult` with the return code and final thread ID.
-    """
-    app = DeepAgentsApp(
-        agent=agent,
-        assistant_id=assistant_id,
-        backend=backend,
-        auto_approve=auto_approve,
-        cwd=cwd,
-        thread_id=thread_id,
-        resume_thread=resume_thread,
-        initial_prompt=initial_prompt,
-        mcp_server_info=mcp_server_info,
-        profile_override=profile_override,
-        server_proc=server_proc,
-        server_kwargs=server_kwargs,
-        mcp_preload_kwargs=mcp_preload_kwargs,
-        model_kwargs=model_kwargs,
-        defer_server_start=defer_server_start,
-    )
-    try:
-        await app.run_async()
-    finally:
-        # Guarantee server cleanup regardless of how the app exits.
-        # Covers both the pre-started server_proc path and the deferred
-        # server_kwargs path (where the background worker sets _server_proc).
-        if app._server_proc is not None:
-            app._server_proc.stop()
-
-    return AppResult(
-        return_code=app.return_code or 0,
-        thread_id=app._lc_thread_id,
-        session_stats=app._session_stats,
-        update_available=app._update_available,
+    return await run_app(
+        app_cls=DeepAgentsApp,
+        result_cls=AppResult,
+        app_kwargs={
+            "agent": agent,
+            "assistant_id": assistant_id,
+            "backend": backend,
+            "auto_approve": auto_approve,
+            "cwd": cwd,
+            "thread_id": thread_id,
+            "resume_thread": resume_thread,
+            "initial_prompt": initial_prompt,
+            "mcp_server_info": mcp_server_info,
+            "profile_override": profile_override,
+            "server_proc": server_proc,
+            "server_kwargs": server_kwargs,
+            "mcp_preload_kwargs": mcp_preload_kwargs,
+            "model_kwargs": model_kwargs,
+            "defer_server_start": defer_server_start,
+        },
     )
