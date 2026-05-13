@@ -97,6 +97,7 @@ from invincat_cli.app_runtime.approval import (
     should_cancel_detached_placeholder,
     user_is_typing,
 )
+from invincat_cli.app_runtime.command import route_slash_command
 from invincat_cli.app_runtime.plan import (
     build_plan_text,
     build_plan_handoff_prompt,
@@ -3196,177 +3197,64 @@ class DeepAgentsApp(App):
         Args:
             command: The slash command (including /)
         """
-        from invincat_cli.config import settings
         from invincat_cli.i18n import t
 
-        cmd = command.lower().strip()
+        route = route_slash_command(command)
+        cmd = route.normalized
 
-        if cmd in {"/quit", "/q"}:
+        if route.kind == "quit":
             self.exit()
-        elif cmd == "/help":
+        elif route.kind == "help":
             await self._mount_message(UserMessage(command))
             from invincat_cli.app_runtime.help import build_help_content
 
             await self._mount_message(AppMessage(build_help_content()))
 
-        elif cmd in {"/changelog", "/docs", "/feedback"}:
+        elif route.kind == "url":
             await self._open_url_command(command, cmd)
-        elif cmd == "/version":
+        elif route.kind == "version":
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(resolve_version_message()))
-        elif cmd == "/clear":
-            self._pending_messages.clear()
-            self._queued_widgets.clear()
-            await self._clear_messages()
-            self._context_tokens = 0
-            self._tokens_approximate = False
-            self._update_tokens(0)
-            # Clear status message (e.g., "Interrupted" from previous session)
-            self._update_status("")
-            # Reset thread to start fresh conversation
-            if self._session_state:
-                new_thread_id = self._session_state.reset_thread()
-                try:
-                    banner = self.query_one("#welcome-banner", WelcomeBanner)
-                    banner.update_thread_id(new_thread_id)
-                except NoMatches:
-                    pass
-                await self._mount_message(
-                    AppMessage(t("success.new_thread").format(thread_id=new_thread_id))
-                )
-        elif cmd == "/editor":
+        elif route.kind == "clear":
+            await self._handle_clear_command()
+        elif route.kind == "editor":
             await self.action_open_editor()
-        elif cmd in {"/offload", "/compact"}:
+        elif route.kind == "offload":
             await self._mount_message(UserMessage(command))
             await self._handle_offload()
-        elif cmd == "/plan":
+        elif route.kind == "plan":
             await self._handle_plan_task()
-        elif cmd == "/exit-plan":
+        elif route.kind == "exit_plan":
             await self._exit_plan_mode()
-        elif cmd == "/threads":
+        elif route.kind == "threads":
             await self._show_thread_selector()
-        elif cmd == "/trace":
+        elif route.kind == "trace":
             await self._handle_trace_command(command)
-        elif cmd == "/update":
+        elif route.kind == "update":
             await self._handle_update_command()
-        elif cmd == "/auto-update":
+        elif route.kind == "auto_update":
             await self._handle_auto_update_toggle()
-        elif cmd == "/tokens":
-            await self._mount_message(UserMessage(command))
-            conversation_tokens = (
-                await self._get_conversation_token_count()
-                if self._context_tokens > 0
-                else None
-            )
-            await self._mount_message(
-                AppMessage(
-                    build_tokens_message(
-                        context_tokens=self._context_tokens,
-                        model_name=settings.model_name,
-                        context_limit=settings.model_context_limit,
-                        conversation_tokens=conversation_tokens,
-                    )
-                )
-            )
-        elif cmd == "/skill-creator" or cmd.startswith("/skill-creator "):
-            # Convenience alias for /skill:skill-creator — shorter and
-            # discoverable before skill loading completes.
-            args = command.strip()[len("/skill-creator") :].strip()
-            rewritten = (
-                f"/skill:skill-creator {args}" if args else "/skill:skill-creator"
-            )
-            await self._handle_skill_command(rewritten)
-        elif cmd == "/mcp":
+        elif route.kind == "tokens":
+            await self._handle_tokens_command(command)
+        elif route.kind == "skill_creator" and route.rewritten_command:
+            await self._handle_skill_command(route.rewritten_command)
+        elif route.kind == "mcp":
             await self._show_mcp_viewer()
-        elif cmd == "/memory":
+        elif route.kind == "memory":
             await self._show_memory_viewer()
-        elif cmd == "/wecombot-start":
-            await self._handle_wecombot_command(command, action="start")
-        elif cmd == "/wecombot-status":
-            await self._handle_wecombot_command(command, action="status")
-        elif cmd == "/wecombot-stop":
-            await self._handle_wecombot_command(command, action="stop")
-        elif cmd == "/schedule" or cmd.startswith("/schedule "):
+        elif route.kind == "wecom" and route.wecom_action:
+            await self._handle_wecombot_command(command, action=route.wecom_action)
+        elif route.kind == "schedule":
             await self._handle_schedule_command(command)
-        elif cmd == "/theme":
+        elif route.kind == "theme":
             await self._show_theme_selector()
-        elif cmd == "/language":
+        elif route.kind == "language":
             await self._show_language_selector()
-        elif cmd == "/model" or cmd.startswith("/model "):
-            action = parse_model_command(command)
-            if action.kind == "error":
-                await self._mount_message(UserMessage(command))
-                await self._mount_message(ErrorMessage(action.error or ""))
-                return
-            if action.kind == "usage":
-                await self._mount_message(UserMessage(command))
-                await self._mount_message(AppMessage(MODEL_DEFAULT_USAGE))
-            elif action.kind == "clear_default":
-                await self._mount_message(UserMessage(command))
-                await self._clear_default_model(target=action.target)
-            elif action.kind == "set_default" and action.model_arg:
-                await self._mount_message(UserMessage(command))
-                await self._set_default_model(
-                    action.model_arg,
-                    target=action.target,
-                    apply_to_session=(action.target == "memory"),
-                )
-            elif action.kind == "switch" and action.model_arg:
-                await self._mount_message(UserMessage(command))
-                await self._switch_model(
-                    action.model_arg,
-                    target=action.target,
-                    extra_kwargs=action.extra_kwargs,
-                )
-            else:
-                await self._show_model_selector(
-                    target=action.target,
-                    extra_kwargs=action.extra_kwargs,
-                )
-        elif cmd == "/reload":
-            await self._mount_message(UserMessage(command))
-            try:
-                changes = settings.reload_from_environment()
-
-                from invincat_cli.model_config import clear_caches
-
-                clear_caches()
-            except (OSError, ValueError):
-                logger.exception("Failed to reload configuration")
-                await self._mount_message(
-                    AppMessage(
-                        "Failed to reload configuration. Check your .env "
-                        "file and environment variables for syntax errors, "
-                        "then try again."
-                    )
-                )
-                return
-
-            # Reload user themes from config.toml and re-register with Textual
-            theme_reload_ok = True
-            try:
-                theme.reload_registry()
-                self._register_custom_themes()
-            except Exception:
-                theme_reload_ok = False
-                logger.warning("Failed to reload user themes", exc_info=True)
-
-            await self._mount_message(
-                AppMessage(
-                    build_reload_report(
-                        changes,
-                        theme_reload_ok=theme_reload_ok,
-                    )
-                )
-            )
-
-            # Re-discover skills so autocomplete reflects any new/removed skills
-            self.run_worker(
-                self._discover_skills(),
-                exclusive=True,
-                group="startup-skill-discovery",
-            )
-        elif cmd.startswith("/skill:"):
+        elif route.kind == "model":
+            await self._handle_model_command(command)
+        elif route.kind == "reload":
+            await self._handle_reload_command(command)
+        elif route.kind == "skill":
             await self._handle_skill_command(command)
         else:
             await self._mount_message(UserMessage(command))
@@ -3377,6 +3265,127 @@ class DeepAgentsApp(App):
         # Anchor to bottom so command output stays visible
         with suppress(NoMatches, ScreenStackError):
             self.query_one("#chat", VerticalScroll).anchor()
+
+    async def _handle_clear_command(self) -> None:
+        """Clear chat state and start a new thread."""
+        from invincat_cli.i18n import t
+
+        self._pending_messages.clear()
+        self._queued_widgets.clear()
+        await self._clear_messages()
+        self._context_tokens = 0
+        self._tokens_approximate = False
+        self._update_tokens(0)
+        self._update_status("")
+        if self._session_state:
+            new_thread_id = self._session_state.reset_thread()
+            try:
+                banner = self.query_one("#welcome-banner", WelcomeBanner)
+                banner.update_thread_id(new_thread_id)
+            except NoMatches:
+                pass
+            await self._mount_message(
+                AppMessage(t("success.new_thread").format(thread_id=new_thread_id))
+            )
+
+    async def _handle_tokens_command(self, command: str) -> None:
+        """Show current context token usage."""
+        from invincat_cli.config import settings
+
+        await self._mount_message(UserMessage(command))
+        conversation_tokens = (
+            await self._get_conversation_token_count()
+            if self._context_tokens > 0
+            else None
+        )
+        await self._mount_message(
+            AppMessage(
+                build_tokens_message(
+                    context_tokens=self._context_tokens,
+                    model_name=settings.model_name,
+                    context_limit=settings.model_context_limit,
+                    conversation_tokens=conversation_tokens,
+                )
+            )
+        )
+
+    async def _handle_model_command(self, command: str) -> None:
+        """Parse and execute a `/model` command."""
+        action = parse_model_command(command)
+        if action.kind == "error":
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(ErrorMessage(action.error or ""))
+            return
+        if action.kind == "usage":
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(AppMessage(MODEL_DEFAULT_USAGE))
+        elif action.kind == "clear_default":
+            await self._mount_message(UserMessage(command))
+            await self._clear_default_model(target=action.target)
+        elif action.kind == "set_default" and action.model_arg:
+            await self._mount_message(UserMessage(command))
+            await self._set_default_model(
+                action.model_arg,
+                target=action.target,
+                apply_to_session=(action.target == "memory"),
+            )
+        elif action.kind == "switch" and action.model_arg:
+            await self._mount_message(UserMessage(command))
+            await self._switch_model(
+                action.model_arg,
+                target=action.target,
+                extra_kwargs=action.extra_kwargs,
+            )
+        else:
+            await self._show_model_selector(
+                target=action.target,
+                extra_kwargs=action.extra_kwargs,
+            )
+
+    async def _handle_reload_command(self, command: str) -> None:
+        """Reload config, model caches, themes, and skill discovery."""
+        from invincat_cli.config import settings
+
+        await self._mount_message(UserMessage(command))
+        try:
+            changes = settings.reload_from_environment()
+
+            from invincat_cli.model_config import clear_caches
+
+            clear_caches()
+        except (OSError, ValueError):
+            logger.exception("Failed to reload configuration")
+            await self._mount_message(
+                AppMessage(
+                    "Failed to reload configuration. Check your .env "
+                    "file and environment variables for syntax errors, "
+                    "then try again."
+                )
+            )
+            return
+
+        theme_reload_ok = True
+        try:
+            theme.reload_registry()
+            self._register_custom_themes()
+        except Exception:
+            theme_reload_ok = False
+            logger.warning("Failed to reload user themes", exc_info=True)
+
+        await self._mount_message(
+            AppMessage(
+                build_reload_report(
+                    changes,
+                    theme_reload_ok=theme_reload_ok,
+                )
+            )
+        )
+
+        self.run_worker(
+            self._discover_skills(),
+            exclusive=True,
+            group="startup-skill-discovery",
+        )
 
     # ------------------------------------------------------------------
     # Scheduler integration
