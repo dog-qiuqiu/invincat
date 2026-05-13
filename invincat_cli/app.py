@@ -2240,29 +2240,6 @@ class DeepAgentsApp(App):
 
         await show_thread_selector(self)
 
-    def _update_welcome_banner(
-        self,
-        thread_id: str,
-        *,
-        missing_message: str,
-        warn_if_missing: bool,
-    ) -> None:
-        """Update the welcome banner thread ID when the banner is mounted.
-
-        Args:
-            thread_id: Thread ID to display on the banner.
-            missing_message: Log message template when banner is missing.
-            warn_if_missing: Whether to log missing-banner cases at warning level.
-        """
-        from invincat_cli.app_runtime.ui_handlers import update_welcome_banner
-
-        update_welcome_banner(
-            self,
-            thread_id,
-            missing_message=missing_message,
-            warn_if_missing=warn_if_missing,
-        )
-
     async def _reset_thread_conversation_view(self) -> None:
         """Clear visible conversation state before loading another thread."""
         from invincat_cli.app_runtime.thread_handlers import (

@@ -33,6 +33,7 @@ from invincat_cli.app_runtime.thread_runtime import (
     thread_switch_rollback_banner_update,
     thread_switch_rollback_restore_failure_log,
 )
+from invincat_cli.app_runtime.ui_handlers import update_welcome_banner
 from invincat_cli.i18n import t
 from invincat_cli.widgets.messages import AppMessage, AssistantMessage
 
@@ -270,7 +271,8 @@ def apply_thread_switch_ids(app: Any, thread_id: str) -> None:  # noqa: ANN401
     app._session_state.thread_id = thread_id
     app._lc_thread_id = thread_id
     banner_update = thread_switch_banner_update(thread_id)
-    app._update_welcome_banner(
+    update_welcome_banner(
+        app,
         banner_update.thread_id,
         missing_message=banner_update.missing_message,
         warn_if_missing=banner_update.warn_if_missing,
@@ -289,7 +291,8 @@ def rollback_thread_switch_ids(
     banner_update = thread_switch_rollback_banner_update(
         snapshot.session_thread_id,
     )
-    app._update_welcome_banner(
+    update_welcome_banner(
+        app,
         banner_update.thread_id,
         missing_message=banner_update.missing_message,
         warn_if_missing=banner_update.warn_if_missing,
