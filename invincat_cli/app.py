@@ -125,6 +125,7 @@ from invincat_cli.app_runtime.model_args import (
 )
 from invincat_cli.app_runtime.model_command import MODEL_DEFAULT_USAGE, parse_model_command
 from invincat_cli.app_runtime.model_runtime import (
+    ResolvedModelSpec,
     already_using_model_display,
     can_start_deferred_server_for_model_switch,
     choose_default_model_clear_fn,
@@ -6246,6 +6247,112 @@ class DeepAgentsApp(App):
             return False
         return True
 
+    def _start_server_after_primary_model_switch(
+        self,
+        *,
+        resolved: ResolvedModelSpec,
+        target_kwargs: dict[str, Any] | None,
+    ) -> None:
+        """Update deferred server kwargs and start the background server."""
+        assert self._server_kwargs is not None
+
+        self._server_kwargs["model_name"] = resolved.display
+        self._server_kwargs["model_params"] = target_kwargs
+        self._model_kwargs = None
+        self._defer_server_start = False
+        self._connecting = True
+        with suppress(NoMatches):
+            banner = self.query_one("#welcome-banner", WelcomeBanner)
+            banner.set_connecting()
+        self.run_worker(
+            self._start_server_background,
+            exclusive=True,
+            group="server-startup",
+        )
+
+    def _apply_primary_model_status(self, *, model_result: Any) -> None:
+        """Update status-bar labels after switching the primary model."""
+        if not self._status_bar:
+            return
+
+        status_model = model_status_fields(
+            provider=model_result.provider,
+            model_name=model_result.model_name,
+        )
+        self._status_bar.set_model(
+            provider=status_model.provider,
+            model=status_model.model,
+        )
+        if should_primary_switch_update_memory_status(
+            memory_model_override=self._memory_model_override,
+        ):
+            self._status_bar.set_memory_model(
+                provider=status_model.provider,
+                model=status_model.model,
+                follow_primary=True,
+            )
+
+    async def _apply_primary_model_switch(
+        self,
+        *,
+        resolved: ResolvedModelSpec,
+        model_result: Any,
+        target_kwargs: dict[str, Any] | None,
+        remote_agent: RemoteAgent | None,
+        save_recent_model: Callable[[str], bool],
+    ) -> None:
+        """Apply primary model switch side effects."""
+        model_result.apply_to_settings()
+        self._model_override = resolved.display
+        self._model_params_override = target_kwargs
+        self._invalidate_planner_agent_cache()
+        if remote_agent is None:
+            self._model = model_result.model
+
+        self._apply_primary_model_status(model_result=model_result)
+
+        if should_start_server_after_primary_model_switch(
+            has_remote_agent=remote_agent is not None,
+            has_server_kwargs=self._server_kwargs is not None,
+        ):
+            self._start_server_after_primary_model_switch(
+                resolved=resolved,
+                target_kwargs=target_kwargs,
+            )
+
+        if not await asyncio.to_thread(save_recent_model, resolved.display):
+            await self._mount_message(ErrorMessage(t("model.preference_save_failed")))
+        else:
+            await self._mount_message(
+                AppMessage(t("model.switched_to").format(model=resolved.display))
+            )
+        logger.info("Primary model switched to %s", resolved.display)
+
+    async def _apply_memory_model_switch(
+        self,
+        *,
+        resolved: ResolvedModelSpec,
+        model_result: Any,
+        target_kwargs: dict[str, Any] | None,
+    ) -> None:
+        """Apply memory model switch side effects."""
+        self._memory_model_override = resolved.display
+        self._memory_model_params_override = target_kwargs
+        status_model = model_status_fields(
+            provider=model_result.provider,
+            model_name=model_result.model_name,
+        )
+        if self._status_bar:
+            self._status_bar.set_memory_model(
+                provider=status_model.provider,
+                model=status_model.model,
+                follow_primary=False,
+            )
+        await self._mount_message(
+            AppMessage(t("model.memory_switched_to").format(model=resolved.display))
+        )
+        logger.info("Memory model switched to %s", resolved.display)
+
     async def _resume_thread(self, thread_id: str) -> None:
         """Resume a previously saved thread.
 
@@ -6461,82 +6568,19 @@ class DeepAgentsApp(App):
                 return
 
             if target == "primary":
-                model_result.apply_to_settings()
-                self._model_override = resolved.display
-                self._model_params_override = target_kwargs
-                self._invalidate_planner_agent_cache()
-                if remote_agent is None:
-                    self._model = model_result.model
-
-                status_model = model_status_fields(
-                    provider=model_result.provider,
-                    model_name=model_result.model_name,
+                await self._apply_primary_model_switch(
+                    resolved=resolved,
+                    model_result=model_result,
+                    target_kwargs=target_kwargs,
+                    remote_agent=remote_agent,
+                    save_recent_model=save_recent_model,
                 )
-                if self._status_bar:
-                    self._status_bar.set_model(
-                        provider=status_model.provider,
-                        model=status_model.model,
-                    )
-                    if should_primary_switch_update_memory_status(
-                        memory_model_override=self._memory_model_override,
-                    ):
-                        self._status_bar.set_memory_model(
-                            provider=status_model.provider,
-                            model=status_model.model,
-                            follow_primary=True,
-                        )
-
-                if should_start_server_after_primary_model_switch(
-                    has_remote_agent=remote_agent is not None,
-                    has_server_kwargs=self._server_kwargs is not None,
-                ):
-                    assert self._server_kwargs is not None
-                    self._server_kwargs["model_name"] = resolved.display
-                    self._server_kwargs["model_params"] = target_kwargs
-                    self._model_kwargs = None
-                    self._defer_server_start = False
-                    self._connecting = True
-                    with suppress(NoMatches):
-                        banner = self.query_one("#welcome-banner", WelcomeBanner)
-                        banner.set_connecting()
-                    self.run_worker(
-                        self._start_server_background,
-                        exclusive=True,
-                        group="server-startup",
-                    )
-
-                if not await asyncio.to_thread(save_recent_model, resolved.display):
-                    await self._mount_message(
-                        ErrorMessage(
-                            t("model.preference_save_failed")
-                        )
-                    )
-                else:
-                    await self._mount_message(
-                        AppMessage(
-                            t("model.switched_to").format(model=resolved.display)
-                        )
-                    )
-                logger.info("Primary model switched to %s", resolved.display)
             else:
-                self._memory_model_override = resolved.display
-                self._memory_model_params_override = target_kwargs
-                status_model = model_status_fields(
-                    provider=model_result.provider,
-                    model_name=model_result.model_name,
+                await self._apply_memory_model_switch(
+                    resolved=resolved,
+                    model_result=model_result,
+                    target_kwargs=target_kwargs,
                 )
-                if self._status_bar:
-                    self._status_bar.set_memory_model(
-                        provider=status_model.provider,
-                        model=status_model.model,
-                        follow_primary=False,
-                    )
-                await self._mount_message(
-                    AppMessage(
-                        t("model.memory_switched_to").format(model=resolved.display)
-                    )
-                )
-                logger.info("Memory model switched to %s", resolved.display)
 
             if persist_as_default:
                 await self._set_default_model(
