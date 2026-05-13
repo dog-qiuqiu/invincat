@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import logging
+from contextlib import suppress
 from typing import Any
 
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 
 from invincat_cli.i18n import t
+from invincat_cli.widgets.messages import SkillMessage, ToolCallMessage
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +105,42 @@ def quit_app(app: Any) -> None:  # noqa: ANN401
         app._arm_quit_pending("Ctrl+D")
         return
     app.exit()
+
+
+def toggle_auto_approve(app: Any) -> None:  # noqa: ANN401
+    """Toggle auto-approve mode or route shift-tab inside active overlays."""
+    from invincat_cli.widgets.thread_selector import ThreadSelectorScreen
+
+    if isinstance(app.screen, ThreadSelectorScreen):
+        app.screen.action_focus_previous_filter()
+        return
+    if isinstance(app.screen, ModalScreen):
+        return
+    if app._pending_ask_user_widget is not None:
+        app._pending_ask_user_widget.action_previous_question()
+        return
+    app._auto_approve = not app._auto_approve
+    if app._status_bar:
+        app._status_bar.set_auto_approve(enabled=app._auto_approve)
+    if app._session_state:
+        app._session_state.auto_approve = app._auto_approve
+
+
+def toggle_tool_output(app: Any) -> None:  # noqa: ANN401
+    """Toggle expand/collapse of the most recent tool output or skill body."""
+    with suppress(NoMatches):
+        skill_messages = list(app.query(SkillMessage))
+        for skill_msg in reversed(skill_messages):
+            if skill_msg._stripped_body.strip():
+                skill_msg.toggle_body()
+                return
+
+    with suppress(NoMatches):
+        tool_messages = list(app.query(ToolCallMessage))
+        for tool_msg in reversed(tool_messages):
+            if tool_msg.has_output:
+                tool_msg.toggle_output()
+                return
 
 
 async def open_editor(app: Any) -> None:  # noqa: ANN401

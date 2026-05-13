@@ -2370,41 +2370,15 @@ class DeepAgentsApp(App):
         web search, URL fetch) run without prompting. Updates the status
         bar indicator and session state.
         """
-        from invincat_cli.widgets.thread_selector import ThreadSelectorScreen
+        from invincat_cli.app_runtime.action_handlers import toggle_auto_approve
 
-        if isinstance(self.screen, ThreadSelectorScreen):
-            self.screen.action_focus_previous_filter()
-            return
-        # shift+tab is reused for navigation inside modal screens (e.g.
-        # ModelSelectorScreen); skip the toggle so it doesn't fire through.
-        if isinstance(self.screen, ModalScreen):
-            return
-        # Delegate shift+tab to ask_user navigation when interview is active.
-        if self._pending_ask_user_widget is not None:
-            self._pending_ask_user_widget.action_previous_question()
-            return
-        self._auto_approve = not self._auto_approve
-        if self._status_bar:
-            self._status_bar.set_auto_approve(enabled=self._auto_approve)
-        if self._session_state:
-            self._session_state.auto_approve = self._auto_approve
+        toggle_auto_approve(self)
 
     def action_toggle_tool_output(self) -> None:
         """Toggle expand/collapse of the most recent tool output or skill body."""
-        # Try skill messages first (most recent collapsible content)
-        with suppress(NoMatches):
-            skill_messages = list(self.query(SkillMessage))
-            for skill_msg in reversed(skill_messages):
-                if skill_msg._stripped_body.strip():
-                    skill_msg.toggle_body()
-                    return
-        # Fall back to tool messages with output
-        with suppress(NoMatches):
-            tool_messages = list(self.query(ToolCallMessage))
-            for tool_msg in reversed(tool_messages):
-                if tool_msg.has_output:
-                    tool_msg.toggle_output()
-                    return
+        from invincat_cli.app_runtime.action_handlers import toggle_tool_output
+
+        toggle_tool_output(self)
 
     # Approval menu action handlers (delegated from App-level bindings)
     # NOTE: These only activate when approval widget is pending
