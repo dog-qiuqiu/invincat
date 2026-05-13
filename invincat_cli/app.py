@@ -107,17 +107,6 @@ from invincat_cli.app_runtime.plan import (
     planner_turn_approve_plan_decision,
     planner_turn_has_write_todos,
 )
-from invincat_cli.app_runtime.memory import (
-    AUTO_OFFLOAD_COOLDOWN_SECONDS,
-    AUTO_OFFLOAD_THRESHOLD,
-    build_auto_offload_message,
-    build_offload_budget_cache_key,
-    build_offload_success_message,
-    build_offload_threshold_not_met_message,
-    format_memory_update_success,
-    resolve_auto_offload_decision,
-    resolve_memory_update_notification,
-)
 from invincat_cli.app_runtime.model_args import (
     split_model_spec,
 )
@@ -3237,26 +3226,11 @@ class DeepAgentsApp(App):
         Returns:
             Token count as an integer, or `None` if state is unavailable.
         """
-        if not self._agent:
-            return None
-        try:
-            from langchain_core.messages.utils import (
-                count_tokens_approximately,
-            )
+        from invincat_cli.app_runtime.memory_handlers import (
+            get_conversation_token_count,
+        )
 
-            config: RunnableConfig = {
-                "configurable": {"thread_id": self._lc_thread_id},
-            }
-            state = await self._agent.aget_state(config)
-            if not state or not state.values:
-                return None
-            messages = state.values.get("messages", [])
-            if not messages:
-                return None
-            return count_tokens_approximately(messages)
-        except Exception:  # best-effort for /tokens display
-            logger.debug("Failed to retrieve conversation token count", exc_info=True)
-            return None
+        return await get_conversation_token_count(self)
 
     async def _maybe_auto_offload(self) -> None:
         """Trigger offload automatically when the context window is nearly full.
@@ -3274,26 +3248,9 @@ class DeepAgentsApp(App):
         Skips when the token count is stale (approximate flag set by an
         interrupted generation) to avoid acting on unreliable data.
         """
-        from invincat_cli.config import settings
+        from invincat_cli.app_runtime.memory_handlers import maybe_auto_offload
 
-        decision = resolve_auto_offload_decision(
-            tokens_approximate=self._tokens_approximate,
-            now=_monotonic(),
-            cooldown_until=self._auto_offload_cooldown_until,
-            context_tokens=self._context_tokens,
-            context_limit=settings.model_context_limit,
-            threshold=AUTO_OFFLOAD_THRESHOLD,
-            cooldown_seconds=AUTO_OFFLOAD_COOLDOWN_SECONDS,
-        )
-        if decision is None:
-            return
-
-        await self._mount_message(
-            AppMessage(build_auto_offload_message(decision))
-        )
-        await self._handle_offload()
-        # Set cooldown regardless of outcome so we don't re-trigger next turn.
-        self._auto_offload_cooldown_until = decision.cooldown_until
+        await maybe_auto_offload(self)
 
     async def _maybe_notify_memory_update(self) -> None:
         """Show a status bar notification when memory files were updated this turn.
@@ -3301,43 +3258,23 @@ class DeepAgentsApp(App):
         Shows "记忆整理中..." immediately, then transitions to the success message
         after a brief pause so the user sees the two-phase notification.
         """
-        try:
-            state_values = await self._get_thread_state_values(self._lc_thread_id)
-            updated_paths = state_values.get("_auto_memory_updated_paths")
-            notification = resolve_memory_update_notification(
-                updated_paths,
-                home=Path.home(),
-            )
-            if notification is None:
-                return
-            success_msg = format_memory_update_success(
-                notification,
-                single_template=t("status.memory_updated"),
-                multiple_template=t("status.memory_updated_n"),
-            )
+        from invincat_cli.app_runtime.memory_handlers import (
+            maybe_notify_memory_update,
+        )
 
-            # Phase 1: show "记忆整理中..."
-            self._update_status(t("status.memory_updating"))
-            if self._memory_status_clear_timer is not None:
-                self._memory_status_clear_timer.stop()
-            # Phase 2: transition to success message after a short delay
-            self._memory_status_clear_timer = self.set_timer(
-                0.8, lambda msg=success_msg: self._on_memory_update_done(msg)
-            )
-        except Exception:
-            logger.debug("Failed to check memory update state", exc_info=True)
+        await maybe_notify_memory_update(self)
 
     def _on_memory_update_done(self, msg: str) -> None:
         """Transition from '记忆整理中...' to the success message."""
-        self._update_status(msg)
-        if self._memory_status_clear_timer is not None:
-            self._memory_status_clear_timer.stop()
-        self._memory_status_clear_timer = self.set_timer(4.0, self._clear_memory_status)
+        from invincat_cli.app_runtime.memory_handlers import on_memory_update_done
+
+        on_memory_update_done(self, msg)
 
     def _clear_memory_status(self) -> None:
         """Clear the memory-update status bar message."""
-        self._memory_status_clear_timer = None
-        self._update_status("")
+        from invincat_cli.app_runtime.memory_handlers import clear_memory_status
+
+        clear_memory_status(self)
 
     def _resolve_offload_budget_str(self) -> str | None:
         """Resolve the offload retention budget as a human-readable string.
@@ -3351,177 +3288,17 @@ class DeepAgentsApp(App):
             A string like `"20.0K (10% of 200.0K)"` or
             `"last 6 messages"`, or `None` if the budget cannot be determined.
         """
-        from invincat_cli.config import create_model, settings
-
-        cache_key = build_offload_budget_cache_key(
-            model_provider=settings.model_provider,
-            model_name=settings.model_name,
-            model_context_limit=settings.model_context_limit,
-            profile_override=self._profile_override,
+        from invincat_cli.app_runtime.memory_handlers import (
+            resolve_offload_budget_str,
         )
-        if self._offload_budget_cache is not None:
-            cached_key, cached_val = self._offload_budget_cache
-            if cached_key == cache_key:
-                return cached_val
 
-        val: str | None = None
-        try:
-            from deepagents.middleware.summarization import (
-                compute_summarization_defaults,
-            )
-
-            model_spec = f"{settings.model_provider}:{settings.model_name}"
-            result = create_model(
-                model_spec,
-                profile_overrides=self._profile_override,
-            )
-            defaults = compute_summarization_defaults(result.model)
-            from invincat_cli.offload import format_offload_limit
-
-            val = format_offload_limit(
-                defaults["keep"],
-                settings.model_context_limit,
-            )
-        except Exception:  # best-effort for /tokens display
-            logger.debug("Failed to compute offload budget string", exc_info=True)
-
-        self._offload_budget_cache = (cache_key, val)
-        return val
+        return resolve_offload_budget_str(self)
 
     async def _handle_offload(self) -> None:
         """Offload older messages to free context window space."""
-        from invincat_cli.config import settings
-        from invincat_cli.offload import (
-            OffloadModelError,
-            OffloadThresholdNotMet,
-            perform_offload,
-        )
+        from invincat_cli.app_runtime.memory_handlers import handle_offload
 
-        if not self._agent or not self._lc_thread_id:
-            await self._mount_message(
-                AppMessage(t("offload.nothing_to_offload"))
-            )
-            return
-
-        if self._agent_running:
-            await self._mount_message(
-                AppMessage(t("offload.cannot_while_running"))
-            )
-            return
-
-        config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
-
-        try:
-            state_values = await self._get_thread_state_values(self._lc_thread_id)
-        except Exception as exc:  # noqa: BLE001
-            await self._mount_message(
-                ErrorMessage(t("offload.failed_read_state").format(error=str(exc)))
-            )
-            return
-
-        if not state_values:
-            await self._mount_message(
-                AppMessage(t("offload.nothing_to_offload"))
-            )
-            return
-
-        # Prevent concurrent user input while offload modifies state
-        self._agent_running = True
-        try:
-            from invincat_cli.hooks import dispatch_hook
-
-            await dispatch_hook("context.offload", {})
-            # Keep old hook name for backward compatibility
-            await dispatch_hook("context.compact", {})
-            await self._set_spinner(t("status.offloading"))
-
-            from langchain_core.messages.utils import convert_to_messages
-
-            raw_messages = state_values.get("messages", [])
-            # Checkpointer may return messages as plain dicts (e.g. after a
-            # server restart or when reading from SQLite directly). Convert
-            # to LangChain message objects so SummarizationMiddleware can
-            # process them — same pattern used in _fetch_thread_history_data.
-            if raw_messages and isinstance(raw_messages[0], dict):
-                raw_messages = convert_to_messages(raw_messages)
-
-            prior_event = state_values.get("_summarization_event")
-            # The summary_message inside prior_event also arrives as a plain
-            # dict from the checkpointer. Convert it to a LangChain message
-            # object so SummarizationMiddleware can process it.
-            if isinstance(prior_event, dict):
-                summary_msg_raw = prior_event.get("summary_message")
-                if isinstance(summary_msg_raw, dict):
-                    converted = convert_to_messages([summary_msg_raw])
-                    if converted:
-                        prior_event = {**prior_event, "summary_message": converted[0]}
-
-            result = await perform_offload(
-                messages=raw_messages,
-                prior_event=prior_event,
-                thread_id=self._lc_thread_id,
-                model_spec=(f"{settings.model_provider}:{settings.model_name}"),
-                profile_overrides=self._profile_override,
-                context_limit=settings.model_context_limit,
-                total_context_tokens=self._context_tokens,
-                backend=self._backend,
-            )
-
-            if isinstance(result, OffloadThresholdNotMet):
-                await self._mount_message(
-                    AppMessage(
-                        build_offload_threshold_not_met_message(
-                            conversation_tokens=result.conversation_tokens,
-                            total_context_tokens=result.total_context_tokens,
-                            context_limit=result.context_limit,
-                            budget_str=result.budget_str,
-                        )
-                    )
-                )
-                return
-
-            # OffloadResult — success
-            if result.offload_warning:
-                await self._mount_message(ErrorMessage(result.offload_warning))
-
-            if remote := self._remote_agent():
-                await remote.aensure_thread(config)  # ty: ignore[invalid-argument-type]
-
-            await self._agent.aupdate_state(
-                config, {"_summarization_event": result.new_event}
-            )
-
-            await self._mount_message(
-                AppMessage(
-                    build_offload_success_message(
-                        messages_offloaded=result.messages_offloaded,
-                        tokens_before=result.tokens_before,
-                        tokens_after=result.tokens_after,
-                        pct_decrease=result.pct_decrease,
-                        messages_kept=result.messages_kept,
-                    )
-                )
-            )
-
-            self._on_tokens_update(result.tokens_after)
-            from invincat_cli.textual_adapter import _persist_context_tokens
-
-            await _persist_context_tokens(self._agent, config, result.tokens_after)
-
-        except OffloadModelError as exc:
-            logger.warning("Offload model creation failed: %s", exc, exc_info=True)
-            await self._mount_message(ErrorMessage(str(exc)))
-        except Exception as exc:  # surface offload errors to user
-            logger.exception("Offload failed")
-            await self._mount_message(
-                ErrorMessage(t("offload.failed").format(error=str(exc)))
-            )
-        finally:
-            self._agent_running = False
-            try:
-                await self._set_spinner(None)
-            except Exception:  # best-effort spinner cleanup
-                logger.exception("Failed to dismiss spinner after offload")
+        await handle_offload(self)
 
     async def _handle_user_message(
         self,
