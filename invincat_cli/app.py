@@ -206,12 +206,19 @@ from invincat_cli.app_runtime.thread_runtime import (
 from invincat_cli.app_runtime.version import resolve_version_message
 from invincat_cli.app_runtime.wecom import (
     WeComTurnContext,
+    create_wecom_message_responder,
     load_wecom_bot_config,
+    should_clear_wecom_bridge,
+    wecom_bot_already_running_message,
     wecom_bot_is_running,
     wecom_bot_missing_config_message,
     wecom_bot_started_message,
     wecom_bot_status_message,
+    wecom_bot_stopped_message,
     wecom_bot_usage_message,
+    wecom_bridge_is_online,
+    wecom_bridge_offline_error,
+    wecom_bridge_offline_message,
     wecom_turn_is_busy,
 )
 from invincat_cli.core.debug import configure_debug_logging
@@ -250,7 +257,6 @@ from invincat_cli.wecom.media import (
 )
 from invincat_cli.wecom.session import (
     WECOM_AGENT_TIMEOUT,
-    WeComMessageResponder,
 )
 from invincat_cli.wecom.turn import WeComTurnRunner
 
@@ -3477,11 +3483,11 @@ class DeepAgentsApp(App):
         )
 
         try:
-            if self._wecom_bridge is None:
+            if not wecom_bridge_is_online(self._wecom_bridge):
                 self._scheduler_store.update_run_delivery(
                     run_id,
                     status="failed",
-                    error="WeCom bridge is offline",
+                    error=wecom_bridge_offline_message(),
                 )
                 await self._mount_message(
                     ErrorMessage("Scheduled task WeCom delivery failed: WeCom bridge is offline.")
@@ -3508,7 +3514,7 @@ class DeepAgentsApp(App):
                     delivered_at=datetime.now(timezone.utc).isoformat(),
                 )
             if status == "success" and report_path:
-                if self._wecom_bridge is None:
+                if not wecom_bridge_is_online(self._wecom_bridge):
                     await self._mount_message(
                         ErrorMessage(
                             "Scheduled task WeCom file delivery skipped: WeCom bridge is offline."
@@ -3551,8 +3557,8 @@ class DeepAgentsApp(App):
         chatid = self._active_scheduled_wecom_chat_id()
         if not chatid:
             raise RuntimeError("Scheduled task has no WeCom delivery target")
-        if self._wecom_bridge is None:
-            raise RuntimeError("WeCom bridge is offline")
+        if not wecom_bridge_is_online(self._wecom_bridge):
+            raise RuntimeError(wecom_bridge_offline_message())
 
         path = resolve_scheduled_wecom_file_path(
             payload.get("path"),
@@ -3750,7 +3756,7 @@ class DeepAgentsApp(App):
 
         if action == "start":
             if wecom_bot_is_running(self._wecom_task):
-                await self._mount_message(AppMessage("WeCom bot is already running."))
+                await self._mount_message(AppMessage(wecom_bot_already_running_message()))
                 return
             auto_approve_was_enabled = self._auto_approve
             self._on_auto_approve_enabled()
@@ -3773,7 +3779,7 @@ class DeepAgentsApp(App):
                     await self._wecom_task
             self._wecom_task = None
             self._wecom_bridge = None
-            await self._mount_message(AppMessage("WeCom bot bridge stopped."))
+            await self._mount_message(AppMessage(wecom_bot_stopped_message()))
             return
 
         if action == "status":
@@ -3818,7 +3824,10 @@ class DeepAgentsApp(App):
                 ws_url=config.ws_url,
             )
         finally:
-            if self._wecom_bridge is bridge:
+            if should_clear_wecom_bridge(
+                current_bridge=self._wecom_bridge,
+                bridge=bridge,
+            ):
                 self._wecom_bridge = None
 
     async def _wecom_handle_inbound_message(
@@ -3845,7 +3854,7 @@ class DeepAgentsApp(App):
                 on_content=on_content,
             )
 
-        responder = WeComMessageResponder(
+        responder = create_wecom_message_responder(
             enqueue=self._wecom_enqueue,
             flush=self._wecom_flush_outbox,
             build_agent_input=_build_agent_input,
@@ -3855,7 +3864,7 @@ class DeepAgentsApp(App):
         await responder.handle(frame)
 
     def _wecom_enqueue(self, payload: dict[str, Any]) -> None:
-        if self._wecom_bridge is None:
+        if not wecom_bridge_is_online(self._wecom_bridge):
             logger.debug("Skipping WeCom enqueue while bridge is offline")
             return
         self._wecom_bridge.enqueue(payload)
@@ -3866,7 +3875,7 @@ class DeepAgentsApp(App):
         Returns False when no connection is available or sending failed; queued
         items are preserved and retried when the next connection is established.
         """
-        if self._wecom_bridge is None:
+        if not wecom_bridge_is_online(self._wecom_bridge):
             return False
         return await self._wecom_bridge.flush_outbox()
 
@@ -3877,8 +3886,8 @@ class DeepAgentsApp(App):
         timeout: float = 30.0,
     ) -> dict[str, Any]:
         """Send a WeCom request frame and wait for its matching req_id response."""
-        if self._wecom_bridge is None:
-            raise RuntimeError("WeCom connection is offline")
+        if not wecom_bridge_is_online(self._wecom_bridge):
+            raise wecom_bridge_offline_error()
         return await self._wecom_bridge.send_request(payload, timeout=timeout)
 
     async def _process_wecom_message_via_cli(

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Mapping
+
+from invincat_cli.wecom.session import WeComMessageResponder
 
 
 DEFAULT_WECOM_WS_URL = "wss://openws.work.weixin.qq.com"
@@ -62,6 +64,57 @@ def wecom_bot_usage_message() -> str:
 def wecom_bot_missing_config_message() -> str:
     """Build the missing environment variables message."""
     return "WECOM_BOT_ID / WECOM_BOT_SECRET not set; cannot start /wecombot-start."
+
+
+def wecom_bot_already_running_message() -> str:
+    """Build the `/wecombot-start` already-running message."""
+    return "WeCom bot is already running."
+
+
+def wecom_bot_stopped_message() -> str:
+    """Build the `/wecombot-stop` success message."""
+    return "WeCom bot bridge stopped."
+
+
+def wecom_bridge_is_online(bridge: object | None) -> bool:
+    """Return whether a bridge object is currently available."""
+    return bridge is not None
+
+
+def should_clear_wecom_bridge(*, current_bridge: object | None, bridge: object) -> bool:
+    """Return whether bridge shutdown should clear the active bridge pointer."""
+    return current_bridge is bridge
+
+
+def wecom_bridge_offline_error() -> RuntimeError:
+    """Build the standard WeCom bridge offline exception."""
+    return RuntimeError("WeCom connection is offline")
+
+
+def wecom_bridge_offline_message() -> str:
+    """Build the standard WeCom bridge offline text."""
+    return "WeCom bridge is offline"
+
+
+def create_wecom_message_responder(
+    *,
+    enqueue: Callable[[dict[str, Any]], None],
+    flush: Callable[[], Awaitable[bool]],
+    build_agent_input: Callable[[dict[str, Any]], Awaitable[str]],
+    run_turn: Callable[
+        [str, dict[str, Any], Callable[[str], Awaitable[None]]],
+        Awaitable[str],
+    ],
+    report_error: Callable[[str], Awaitable[None]],
+) -> WeComMessageResponder:
+    """Create the responder used for one inbound WeCom message."""
+    return WeComMessageResponder(
+        enqueue=enqueue,
+        flush=flush,
+        build_agent_input=build_agent_input,
+        run_turn=run_turn,
+        report_error=report_error,
+    )
 
 
 def wecom_turn_is_busy(
