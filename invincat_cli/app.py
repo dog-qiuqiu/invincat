@@ -174,12 +174,6 @@ from invincat_cli.app_runtime.theme_prefs import (
     load_theme_preference,
     save_theme_preference,
 )
-from invincat_cli.app_runtime.thread_history import (
-    build_resume_summary,
-    merge_thread_state_with_fallback,
-    thread_history_payload_from_state_values,
-)
-from invincat_cli.app_runtime.thread_links import build_thread_message
 from invincat_cli.app_runtime.thread_runtime import (
     ThreadSwitchSnapshot,
     capture_thread_switch_snapshot,
@@ -3778,28 +3772,11 @@ class DeepAgentsApp(App):
             Thread state values keyed by channel name. Returns an empty dict
                 when no checkpointed values are available.
         """
-        if not self._agent:
-            return {}
-
-        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
-        state = await self._agent.aget_state(config)
-
-        values: dict[str, Any] = {}
-        if state and state.values:
-            values = dict(state.values)
-
-        messages = values.get("messages")
-        if isinstance(messages, list) and messages:
-            return values
-        if not self._remote_agent():
-            return values
-
-        logger.debug(
-            "Remote state empty for thread %s; falling back to local checkpointer",
-            thread_id,
+        from invincat_cli.app_runtime.thread_handlers import (
+            get_thread_state_values,
         )
-        fallback_values = await self._read_channel_values_from_checkpointer(thread_id)
-        return merge_thread_state_with_fallback(values, fallback_values)
+
+        return await get_thread_state_values(self, thread_id)
 
     async def _fetch_thread_history_data(self, thread_id: str) -> ThreadHistoryPayload:
         """Fetch and convert stored messages for a thread.
@@ -3816,11 +3793,11 @@ class DeepAgentsApp(App):
             Payload containing converted message data and the persisted
             context-token count.
         """
-        state_values = await self._get_thread_state_values(thread_id)
-        return await asyncio.to_thread(
-            thread_history_payload_from_state_values,
-            state_values,
+        from invincat_cli.app_runtime.thread_handlers import (
+            fetch_thread_history_data,
         )
+
+        return await fetch_thread_history_data(self, thread_id)
 
     @staticmethod
     async def _read_channel_values_from_checkpointer(thread_id: str) -> dict[str, Any]:
@@ -3833,32 +3810,11 @@ class DeepAgentsApp(App):
             Channel values from the latest checkpoint, or an empty dict on
                 failure.
         """
-        try:
-            from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+        from invincat_cli.app_runtime.thread_handlers import (
+            read_channel_values_from_checkpointer,
+        )
 
-            from invincat_cli.sessions import get_db_path
-
-            db_path = str(get_db_path())
-            config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
-            async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
-                tup = await saver.aget_tuple(config)
-                if tup and tup.checkpoint:
-                    channel_values = tup.checkpoint.get("channel_values", {})
-                    if isinstance(channel_values, dict):
-                        return dict(channel_values)
-        except (ImportError, OSError) as exc:
-            logger.warning(
-                "Failed to read checkpointer directly for %s: %s",
-                thread_id,
-                exc,
-            )
-        except Exception:
-            logger.warning(
-                "Unexpected error reading checkpointer for %s",
-                thread_id,
-                exc_info=True,
-            )
-        return {}
+        return await read_channel_values_from_checkpointer(thread_id)
 
     async def _upgrade_thread_message_link(
         self,
@@ -3874,29 +3830,11 @@ class DeepAgentsApp(App):
             prefix: Text prefix before thread ID.
             thread_id: Thread ID to resolve.
         """
-        try:
-            thread_msg = await build_thread_message(prefix, thread_id)
-            if not isinstance(thread_msg, Content):
-                logger.debug(
-                    "Skipping thread link upgrade for %s: URL did not resolve",
-                    thread_id,
-                )
-                return
-            if widget.parent is None:
-                logger.debug(
-                    "Skipping thread link upgrade for %s: widget no longer mounted",
-                    thread_id,
-                )
-                return
-            # Keep serialized content in sync with the rendered content.
-            widget._content = thread_msg
-            widget.update(thread_msg)
-        except Exception:
-            logger.warning(
-                "Failed to upgrade thread message link for %s",
-                thread_id,
-                exc_info=True,
-            )
+        from invincat_cli.app_runtime.thread_handlers import (
+            upgrade_thread_message_link,
+        )
+
+        await upgrade_thread_message_link(widget, prefix=prefix, thread_id=thread_id)
 
     def _schedule_thread_message_link(
         self,
@@ -3912,14 +3850,11 @@ class DeepAgentsApp(App):
             prefix: Text prefix before thread ID.
             thread_id: Thread ID to resolve.
         """
-        self.run_worker(
-            self._upgrade_thread_message_link(
-                widget,
-                prefix=prefix,
-                thread_id=thread_id,
-            ),
-            exclusive=False,
+        from invincat_cli.app_runtime.thread_handlers import (
+            schedule_thread_message_link,
         )
+
+        schedule_thread_message_link(self, widget, prefix=prefix, thread_id=thread_id)
 
     async def _load_thread_history(
         self,
@@ -3943,99 +3878,13 @@ class DeepAgentsApp(App):
             preloaded_payload: Optional pre-fetched history payload for the
                 thread.
         """
-        history_thread_id = thread_id or self._lc_thread_id
-        if not history_thread_id:
-            logger.debug("Skipping history load: no thread ID available")
-            return
-        if preloaded_payload is None and not self._agent:
-            logger.debug(
-                "Skipping history load for %s: no active agent and no preloaded data",
-                history_thread_id,
-            )
-            return
+        from invincat_cli.app_runtime.thread_handlers import load_thread_history
 
-        try:
-            # Fetch + convert, or reuse preloaded payload on thread switch.
-            payload = (
-                preloaded_payload
-                if preloaded_payload is not None
-                else await self._fetch_thread_history_data(history_thread_id)
-            )
-            if not payload.messages:
-                return
-
-            # Seed token cache from persisted state
-            if payload.context_tokens > 0:
-                self._on_tokens_update(payload.context_tokens)
-
-            # 3. Bulk load into store (sets visible window)
-            _archived, visible = self._message_store.bulk_load(payload.messages)
-
-            # Update message count display
-            if self._status_bar:
-                self._status_bar.set_message_count(self._message_store.total_count)
-
-            # 5. Cache container ref (single query)
-            try:
-                messages_container = self.query_one("#messages", Container)
-            except NoMatches:
-                return
-
-            # 6-7. Create and mount only visible widgets (max WINDOW_SIZE)
-            widgets = [msg_data.to_widget() for msg_data in visible]
-            if widgets:
-                await messages_container.mount(*widgets)
-
-            # 8. Render content for AssistantMessage after mount
-            assistant_updates = [
-                widget.set_content(msg_data.content)
-                for widget, msg_data in zip(widgets, visible, strict=False)
-                if isinstance(widget, AssistantMessage) and msg_data.content
-            ]
-            if assistant_updates:
-                assistant_results = await asyncio.gather(
-                    *assistant_updates,
-                    return_exceptions=True,
-                )
-                for error in assistant_results:
-                    if isinstance(error, Exception):
-                        logger.warning(
-                            "Failed to render assistant history message for %s: %s",
-                            history_thread_id,
-                            error,
-                        )
-
-            # 9. Show a brief summary of prior session activity, then the footer.
-            summary = build_resume_summary(payload.messages, payload.context_tokens)
-            if summary:
-                await self._mount_message(AppMessage(summary))
-
-            thread_msg_widget = AppMessage(
-                t("thread.resumed").format(thread_id=history_thread_id)
-            )
-            await self._mount_message(thread_msg_widget)
-            self._schedule_thread_message_link(
-                thread_msg_widget,
-                prefix="Resumed thread",
-                thread_id=history_thread_id,
-            )
-
-            # 10. Scroll once to bottom after history loads
-            def scroll_to_end() -> None:
-                with suppress(NoMatches):
-                    chat = self.query_one("#chat", VerticalScroll)
-                    chat.scroll_end(animate=False, immediate=True)
-
-            self.set_timer(0.1, scroll_to_end)
-
-        except Exception as e:  # Resilient history loading
-            logger.exception(
-                "Failed to load thread history for %s",
-                history_thread_id,
-            )
-            await self._mount_message(
-                AppMessage(t("thread.history_load_failed").format(error=str(e)))
-            )
+        await load_thread_history(
+            self,
+            thread_id=thread_id,
+            preloaded_payload=preloaded_payload,
+        )
 
     async def _mount_message(
         self, widget: Static | AssistantMessage | ToolCallMessage | SkillMessage
