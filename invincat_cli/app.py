@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 
 
@@ -79,9 +78,8 @@ from invincat_cli.app_runtime.services import AppServices
 from invincat_cli.app_runtime.startup import (
     create_startup_session_state,
 )
-from invincat_cli.app_runtime.thread_runtime import (
-    ThreadSwitchSnapshot,
-)
+from invincat_cli.app_runtime.terminal import disable_cursor_guide, restore_cursor_guide
+from invincat_cli.app_runtime.thread_runtime import ThreadSwitchSnapshot
 from invincat_cli.core.debug import configure_debug_logging
 from invincat_cli.core.session_stats import (
     SpinnerStatus,
@@ -125,66 +123,7 @@ if TYPE_CHECKING:
     from invincat_cli.widgets.approval import ApprovalMenu
     from invincat_cli.widgets.ask_user import AskUserMenu
 
-# iTerm2 Cursor Guide Workaround
-# ===============================
-# iTerm2's cursor guide (highlight cursor line) causes visual artifacts when
-# Textual takes over the terminal in alternate screen mode. We disable it at
-# module load and restore on exit. Both atexit and exit() override are used
-# for defense-in-depth: atexit catches abnormal termination (SIGTERM, unhandled
-# exceptions), while exit() ensures restoration before Textual's cleanup.
-
-# Detection: check env vars AND that stderr is a TTY (avoids false positives
-# when env vars are inherited but running in non-TTY context like CI)
-_IS_ITERM = (
-    (
-        os.environ.get("LC_TERMINAL", "") == "iTerm2"
-        or os.environ.get("TERM_PROGRAM", "") == "iTerm.app"
-    )
-    and hasattr(os, "isatty")
-    and os.isatty(2)
-)
-
-# iTerm2 cursor guide escape sequences (OSC 1337)
-# Format: OSC 1337 ; HighlightCursorLine=<yes|no> ST
-# Where OSC = ESC ] (0x1b 0x5d) and ST = ESC \ (0x1b 0x5c)
-_ITERM_CURSOR_GUIDE_OFF = "\x1b]1337;HighlightCursorLine=no\x1b\\"
-_ITERM_CURSOR_GUIDE_ON = "\x1b]1337;HighlightCursorLine=yes\x1b\\"
-
-
-def _write_iterm_escape(sequence: str) -> None:
-    """Write an iTerm2 escape sequence to stderr.
-
-    Silently fails if the terminal is unavailable (redirected, closed, broken
-    pipe). This is a cosmetic feature, so failures should never crash the app.
-    """
-    if not _IS_ITERM:
-        return
-    try:
-        import sys
-
-        if sys.__stderr__ is not None:
-            sys.__stderr__.write(sequence)
-            sys.__stderr__.flush()
-    except OSError:
-        # Terminal may be unavailable (redirected, closed, broken pipe)
-        pass
-
-
-# Disable cursor guide at module load (before Textual takes over)
-_write_iterm_escape(_ITERM_CURSOR_GUIDE_OFF)
-
-if _IS_ITERM:
-    import atexit
-
-    def _restore_cursor_guide() -> None:
-        """Restore iTerm2 cursor guide on exit.
-
-        Registered with atexit to ensure the cursor guide is re-enabled
-        when the CLI exits, regardless of how the exit occurs.
-        """
-        _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
-
-    atexit.register(_restore_cursor_guide)
+disable_cursor_guide()
 
 
 class DeepAgentsApp(App):
@@ -2156,7 +2095,7 @@ class DeepAgentsApp(App):
 
         prepare_exit(
             self,
-            restore_cursor_guide=lambda: _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON),
+            restore_cursor_guide=restore_cursor_guide,
         )
         super().exit(result=result, return_code=return_code, message=message)
 
