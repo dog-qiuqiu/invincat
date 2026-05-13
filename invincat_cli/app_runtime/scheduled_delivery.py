@@ -40,7 +40,12 @@ def start_scheduler(app: Any) -> None:  # noqa: ANN401
 
     app._scheduler_runner = SchedulerRunner(
         runner_store,
-        inject_message=app._inject_scheduled_message,
+        inject_message=lambda task_id, run_id, prompt: inject_scheduled_message(
+            app,
+            task_id,
+            run_id,
+            prompt,
+        ),
         notify=lambda msg: app.notify(msg, timeout=6),
         is_busy=lambda: app._agent_running or app._shell_running,
         on_timeout=app._handle_scheduled_timeout,

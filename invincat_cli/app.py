@@ -1198,64 +1198,6 @@ class DeepAgentsApp(App):
 
         cancel_timed_out_scheduled_turn(self, run_id, task_id)
 
-    async def _send_scheduled_wecom_text(
-        self,
-        *,
-        chatid: str,
-        content: str,
-        run_id: str,
-    ) -> bool:
-        """Send scheduled WeCom text and update delivery status."""
-        from invincat_cli.app_runtime.scheduled_delivery import (
-            send_scheduled_wecom_text,
-        )
-
-        return await send_scheduled_wecom_text(
-            self,
-            chatid=chatid,
-            content=content,
-            run_id=run_id,
-        )
-
-    async def _send_scheduled_wecom_report_file(
-        self,
-        *,
-        chatid: str,
-        report_path: str | None,
-    ) -> None:
-        """Send the scheduled report file to WeCom when available."""
-        from invincat_cli.app_runtime.scheduled_delivery import (
-            send_scheduled_wecom_report_file,
-        )
-
-        await send_scheduled_wecom_report_file(
-            self,
-            chatid=chatid,
-            report_path=report_path,
-        )
-
-    def _active_scheduled_wecom_chat_id(self) -> str | None:
-        """Return the WeCom chat id for the active scheduled run, if any."""
-        from invincat_cli.app_runtime.scheduled_delivery import (
-            active_scheduled_wecom_chat_id,
-        )
-
-        return active_scheduled_wecom_chat_id(self)
-
-    async def _send_scheduled_wecom_file_request(self, payload: dict[str, Any]) -> None:
-        """Send a file requested by send_wecom_file during a scheduled WeCom run."""
-        from invincat_cli.app_runtime.scheduled_delivery import (
-            send_scheduled_wecom_file_request,
-        )
-
-        await send_scheduled_wecom_file_request(self, payload)
-
-    async def _inject_scheduled_message(self, task_id: str, run_id: str, prompt: str) -> None:
-        """Inject a scheduled task prompt into the TUI message queue."""
-        from invincat_cli.app_runtime.scheduled_delivery import inject_scheduled_message
-
-        await inject_scheduled_message(self, task_id, run_id, prompt)
-
     async def _handle_schedule_tool_payload(self, payload: dict) -> None:
         """Handle a structured schedule tool payload from the agent."""
         from invincat_cli.app_runtime.schedule_handlers import (

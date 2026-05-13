@@ -1930,6 +1930,9 @@ def test_app_complete_active_scheduled_run_skips_finished_delivery() -> None:
 
 def test_app_resolves_active_scheduled_wecom_chat_id(tmp_path: Path) -> None:
     from invincat_cli.app import DeepAgentsApp
+    from invincat_cli.app_runtime.scheduled_delivery import (
+        active_scheduled_wecom_chat_id,
+    )
 
     store = _make_store(tmp_path)
     task = _make_task(task_id="task-1")
@@ -1940,7 +1943,7 @@ def test_app_resolves_active_scheduled_wecom_chat_id(tmp_path: Path) -> None:
     app._active_scheduled_run = ("run-1", "task-1")
     app._scheduler_store = store
 
-    assert app._active_scheduled_wecom_chat_id() == "chat-1"
+    assert active_scheduled_wecom_chat_id(app) == "chat-1"
 
 
 def test_app_schedule_payload_rejects_invalid_create_options() -> None:
@@ -1985,6 +1988,9 @@ def test_scheduled_wecom_file_request_sends_to_task_chat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from invincat_cli.app import DeepAgentsApp
+    from invincat_cli.app_runtime.scheduled_delivery import (
+        send_scheduled_wecom_file_request,
+    )
 
     store = _make_store(tmp_path)
     task = _make_task(task_id="task-1")
@@ -2017,8 +2023,9 @@ def test_scheduled_wecom_file_request_sends_to_task_chat(
     app._wecom_send_request = fake_send_request
 
     asyncio.run(
-        app._send_scheduled_wecom_file_request(
-            {"path": str(report), "filename": "report.md"}
+        send_scheduled_wecom_file_request(
+            app,
+            {"path": str(report), "filename": "report.md"},
         )
     )
 

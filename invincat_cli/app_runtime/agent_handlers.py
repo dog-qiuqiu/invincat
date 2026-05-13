@@ -25,7 +25,11 @@ from invincat_cli.app_runtime.agent import (
     should_clear_scheduled_run_before_send,
     should_continue_after_deferred_actions,
 )
-from invincat_cli.app_runtime.scheduled_delivery import complete_active_scheduled_run
+from invincat_cli.app_runtime.scheduled_delivery import (
+    active_scheduled_wecom_chat_id,
+    complete_active_scheduled_run,
+    send_scheduled_wecom_file_request,
+)
 from invincat_cli.core.session_stats import SessionStats
 from invincat_cli.i18n import t
 from invincat_cli.widgets.messages import AppMessage, ErrorMessage
@@ -159,8 +163,11 @@ async def run_agent_task(app: Any, request: AgentTurnRequest) -> None:  # noqa: 
     retry_after_exc: BaseException | None = None
     effective_wecom_file_request = resolve_wecom_file_request_handler(
         explicit_handler=request.on_wecom_file_request,
-        active_scheduled_wecom_chat_id=app._active_scheduled_wecom_chat_id(),
-        scheduled_handler=app._send_scheduled_wecom_file_request,
+        active_scheduled_wecom_chat_id=active_scheduled_wecom_chat_id(app),
+        scheduled_handler=lambda payload: send_scheduled_wecom_file_request(
+            app,
+            payload,
+        ),
     )
     try:
         thread_context.enter()
