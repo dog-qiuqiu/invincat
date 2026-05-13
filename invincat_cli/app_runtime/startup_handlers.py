@@ -5,13 +5,202 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
+from textual.containers import VerticalScroll
+
+from invincat_cli.app_runtime.startup import (
+    build_startup_slash_commands,
+    resolve_memory_status_model,
+    resolve_startup_followup,
+    resolve_startup_model_overrides,
+)
 from invincat_cli.app_runtime.skill import discover_skills_and_roots as discover_roots
+from invincat_cli.config import is_ascii_mode
 from invincat_cli.i18n import t
+from invincat_cli.app_runtime.model_args import split_model_spec
 from invincat_cli.skills.load import ExtendedSkillMetadata
+from invincat_cli.widgets.chat_input import ChatInput
+from invincat_cli.widgets.status import StatusBar
 
 logger = logging.getLogger(__name__)
+
+
+async def handle_mount(app: Any) -> None:  # noqa: ANN401
+    """Initialize components after Textual mount."""
+    import gc
+
+    gc.freeze()
+
+    chat = app.query_one("#chat", VerticalScroll)
+    chat.anchor()
+    if is_ascii_mode():
+        chat.styles.scrollbar_size_vertical = 0
+
+    from invincat_cli.config import _get_default_memory_model_spec, settings
+    from invincat_cli.model_config import get_target_model_params
+
+    def _get_target_model_params(
+        target: str,
+        model_spec: str,
+    ) -> dict[str, Any]:
+        return get_target_model_params(
+            cast(Literal["primary", "memory"], target),
+            model_spec,
+        )
+
+    startup_overrides = resolve_startup_model_overrides(
+        memory_model_override=app._memory_model_override,
+        memory_model_params_override=app._memory_model_params_override,
+        model_params_override=app._model_params_override,
+        model_provider=settings.model_provider,
+        model_name=settings.model_name,
+        get_default_memory_model_spec=_get_default_memory_model_spec,
+        get_target_model_params=_get_target_model_params,
+    )
+    app._memory_model_override = startup_overrides.memory_model
+    app._model_params_override = startup_overrides.primary_params
+    app._memory_model_params_override = startup_overrides.memory_params
+
+    app._status_bar = app.query_one("#status-bar", StatusBar)
+    app._chat_input = app.query_one("#input-area", ChatInput)
+    if app._status_bar:
+        memory_status_model = resolve_memory_status_model(
+            memory_model_override=app._memory_model_override,
+            model_provider=settings.model_provider,
+            model_name=settings.model_name,
+            split_model_spec=split_model_spec,
+        )
+        app._status_bar.set_memory_model(
+            provider=memory_status_model.provider,
+            model=memory_status_model.model,
+            follow_primary=memory_status_model.follow_primary,
+        )
+
+    from invincat_cli.command_registry import COMMANDS, build_skill_commands
+
+    app._chat_input.update_slash_commands(
+        build_startup_slash_commands(
+            commands=COMMANDS,
+            discovered_skills=app._discovered_skills,
+            build_skill_commands=build_skill_commands,
+        )
+    )
+
+    if app._auto_approve:
+        app._status_bar.set_auto_approve(enabled=True)
+
+    app._chat_input.focus_input()
+
+    app.run_worker(
+        asyncio.to_thread(app._prewarm_deferred_imports),
+        exclusive=True,
+        group="startup-import-prewarm",
+    )
+
+    app._startup_task = asyncio.create_task(app._resolve_git_branch_and_continue())
+
+
+async def resolve_git_branch_and_continue(app: Any) -> None:  # noqa: ANN401
+    """Resolve git branch, then schedule remaining init workers."""
+    try:
+        import subprocess  # noqa: S404  # stdlib invocation for local git metadata
+
+        def _get_branch() -> str:
+            try:
+                result = subprocess.run(
+                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    check=False,
+                )
+                if result.returncode == 0:
+                    return result.stdout.strip()
+            except FileNotFoundError:
+                pass
+            except subprocess.TimeoutExpired:
+                logger.debug("Git branch detection timed out")
+            except OSError:
+                logger.debug("Git branch detection failed", exc_info=True)
+            return ""
+
+        branch = await asyncio.to_thread(_get_branch)
+        if app._status_bar:
+            app._status_bar.branch = branch
+    except Exception:
+        logger.warning("Git branch resolution failed", exc_info=True)
+    finally:
+        app.call_after_refresh(app._post_paint_init)
+
+
+async def post_paint_init(app: Any) -> None:  # noqa: ANN401
+    """Fire background workers for remaining startup work."""
+    from invincat_cli.textual_adapter import TextualUIAdapter
+
+    app._ui_adapter = TextualUIAdapter(
+        mount_message=app._mount_message,
+        update_status=app._update_status,
+        request_approval=app._request_approval,
+        on_auto_approve_enabled=app._on_auto_approve_enabled,
+        set_spinner=app._set_spinner,
+        set_active_message=app._set_active_message,
+        sync_message_content=app._sync_message_content,
+        request_ask_user=app._request_ask_user,
+        request_approve_plan=app._request_approve_plan,
+    )
+    app._ui_adapter._on_tokens_update = app._on_tokens_update
+    app._ui_adapter._on_tokens_hide = app._hide_tokens
+    app._ui_adapter._on_tokens_show = app._show_tokens
+    app._ui_adapter.set_message_store(app._message_store)
+
+    app.run_worker(
+        app._discover_skills(),
+        exclusive=True,
+        group="startup-skill-discovery",
+    )
+
+    app.run_worker(app._init_session_state, exclusive=True, group="session-init")
+
+    if app._server_kwargs is not None and not app._defer_server_start:
+        app.run_worker(
+            app._start_server_background,
+            exclusive=True,
+            group="server-startup",
+        )
+
+    app.run_worker(
+        app._prewarm_model_caches,
+        exclusive=True,
+        group="startup-model-prewarm",
+    )
+
+    app.run_worker(
+        app._prewarm_threads_cache,
+        exclusive=True,
+        group="startup-thread-prewarm",
+    )
+
+    app.run_worker(
+        app._check_optional_tools_background,
+        exclusive=True,
+        group="startup-tool-check",
+    )
+
+    app._start_scheduler()
+
+    followup = resolve_startup_followup(
+        connecting=app._connecting,
+        initial_prompt=app._initial_prompt,
+        thread_id=app._lc_thread_id,
+        agent=app._agent,
+    )
+    if followup and followup.kind == "submit_prompt" and followup.prompt is not None:
+        app.call_after_refresh(
+            lambda: asyncio.create_task(app._handle_user_message(followup.prompt))
+        )
+    elif followup and followup.kind == "load_history":
+        app.call_after_refresh(lambda: asyncio.create_task(app._load_thread_history()))
 
 
 async def check_optional_tools_background(app: Any) -> None:  # noqa: ANN401

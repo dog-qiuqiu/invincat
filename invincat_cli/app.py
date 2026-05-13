@@ -75,9 +75,6 @@ from invincat_cli.app_runtime.approval import (
     TYPING_IDLE_THRESHOLD_SECONDS,
     user_is_typing,
 )
-from invincat_cli.app_runtime.model_args import (
-    split_model_spec,
-)
 from invincat_cli.app_runtime.model_runtime import ResolvedModelSpec
 from invincat_cli.app_runtime.queueing import can_bypass_busy_queue
 from invincat_cli.app_runtime.scheduler import (
@@ -86,11 +83,7 @@ from invincat_cli.app_runtime.scheduler import (
 from invincat_cli.app_runtime.agent import AgentTurnRequest, should_route_message_to_planner
 from invincat_cli.app_runtime.services import AppServices
 from invincat_cli.app_runtime.startup import (
-    build_startup_slash_commands,
     create_startup_session_state,
-    resolve_memory_status_model,
-    resolve_startup_followup,
-    resolve_startup_model_overrides,
 )
 from invincat_cli.app_runtime.theme_prefs import (
     load_theme_preference,
@@ -105,11 +98,6 @@ from invincat_cli.core.session_stats import (
 )
 from invincat_cli.i18n import t
 
-# Only is_ascii_mode is needed before first paint (on_mount scrollbar config).
-# All other config imports — settings, create_model, detect_provider, etc. — are
-# deferred to local imports at their call sites since they are only accessed
-# after user interaction begins.
-from invincat_cli.config import is_ascii_mode
 from invincat_cli.widgets.chat_input import ChatInput
 from invincat_cli.widgets.loading import LoadingWidget
 from invincat_cli.widgets.message_store import MessageStore
@@ -648,82 +636,9 @@ class DeepAgentsApp(App):
         would delay the first rendered frame (subprocess calls, heavy
         imports) is deferred to `_post_paint_init` via `call_after_refresh`.
         """
-        # Move all objects allocated during import/compose into the permanent
-        # generation so the cyclic GC skips them during first-paint rendering.
-        import gc
+        from invincat_cli.app_runtime.startup_handlers import handle_mount
 
-        gc.freeze()
-
-        chat = self.query_one("#chat", VerticalScroll)
-        chat.anchor()
-        if is_ascii_mode():
-            chat.styles.scrollbar_size_vertical = 0
-
-        from invincat_cli.config import _get_default_memory_model_spec, settings
-        from invincat_cli.model_config import get_target_model_params
-
-        startup_overrides = resolve_startup_model_overrides(
-            memory_model_override=self._memory_model_override,
-            memory_model_params_override=self._memory_model_params_override,
-            model_params_override=self._model_params_override,
-            model_provider=settings.model_provider,
-            model_name=settings.model_name,
-            get_default_memory_model_spec=_get_default_memory_model_spec,
-            get_target_model_params=get_target_model_params,
-        )
-        self._memory_model_override = startup_overrides.memory_model
-        self._model_params_override = startup_overrides.primary_params
-        self._memory_model_params_override = startup_overrides.memory_params
-
-        self._status_bar = self.query_one("#status-bar", StatusBar)
-        self._chat_input = self.query_one("#input-area", ChatInput)
-        if self._status_bar:
-            memory_status_model = resolve_memory_status_model(
-                memory_model_override=self._memory_model_override,
-                model_provider=settings.model_provider,
-                model_name=settings.model_name,
-                split_model_spec=split_model_spec,
-            )
-            self._status_bar.set_memory_model(
-                provider=memory_status_model.provider,
-                model=memory_status_model.model,
-                follow_primary=memory_status_model.follow_primary,
-            )
-
-        # Apply slash commands with current language
-        from invincat_cli.command_registry import COMMANDS, build_skill_commands
-
-        self._chat_input.update_slash_commands(
-            build_startup_slash_commands(
-                commands=COMMANDS,
-                discovered_skills=self._discovered_skills,
-                build_skill_commands=build_skill_commands,
-            )
-        )
-
-        # Set initial auto-approve state
-        if self._auto_approve:
-            self._status_bar.set_auto_approve(enabled=True)
-
-        # Focus the input immediately so the cursor is visible on first paint
-        self._chat_input.focus_input()
-
-        # Prewarm heavy imports in a thread while the first frame renders.
-        # The user can't type yet, so GIL contention is harmless.  By the
-        # time _post_paint_init fires its inline imports are dict lookups.
-        self.run_worker(
-            asyncio.to_thread(self._prewarm_deferred_imports),
-            exclusive=True,
-            group="startup-import-prewarm",
-        )
-
-        # Start branch resolution immediately — the thread launches now
-        # (during on_mount) so by the time the first frame finishes painting
-        # the subprocess is already done. _post_paint_init fires the heavier
-        # workers (server, model creation) afterward.
-        self._startup_task = asyncio.create_task(
-            self._resolve_git_branch_and_continue()
-        )
+        await handle_mount(self)
 
     async def _resolve_git_branch_and_continue(self) -> None:
         """Resolve git branch, then schedule remaining init workers.
@@ -733,37 +648,11 @@ class DeepAgentsApp(App):
         scheduled via `call_after_refresh` regardless of whether branch
         resolution succeeds.
         """
-        try:
-            import subprocess  # noqa: S404  # stdlib, already loaded
+        from invincat_cli.app_runtime.startup_handlers import (
+            resolve_git_branch_and_continue,
+        )
 
-            def _get_branch() -> str:
-                try:
-                    result = subprocess.run(
-                        ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
-                        capture_output=True,
-                        text=True,
-                        timeout=2,
-                        check=False,
-                    )
-                    if result.returncode == 0:
-                        return result.stdout.strip()
-                except FileNotFoundError:
-                    pass  # git not installed
-                except subprocess.TimeoutExpired:
-                    logger.debug("Git branch detection timed out")
-                except OSError:
-                    logger.debug("Git branch detection failed", exc_info=True)
-                return ""
-
-            branch = await asyncio.to_thread(_get_branch)
-            if self._status_bar:
-                self._status_bar.branch = branch
-        except Exception:
-            logger.warning("Git branch resolution failed", exc_info=True)
-        finally:
-            # Always schedule post-paint init — even if branch resolution
-            # fails, the app must still start the server, session, etc.
-            self.call_after_refresh(self._post_paint_init)
+        await resolve_git_branch_and_continue(self)
 
     async def _post_paint_init(self) -> None:
         """Fire background workers for remaining startup work.
@@ -771,108 +660,9 @@ class DeepAgentsApp(App):
         Everything here is non-blocking: workers and thread-offloaded calls
         so the UI stays responsive.
         """
-        # Create UI adapter unconditionally — it only holds UI callbacks and
-        # doesn't depend on the agent. The agent is injected later at
-        # execute_task_textual() call time.
-        from invincat_cli.textual_adapter import TextualUIAdapter
+        from invincat_cli.app_runtime.startup_handlers import post_paint_init
 
-        self._ui_adapter = TextualUIAdapter(
-            mount_message=self._mount_message,
-            update_status=self._update_status,
-            request_approval=self._request_approval,
-            on_auto_approve_enabled=self._on_auto_approve_enabled,
-            set_spinner=self._set_spinner,
-            set_active_message=self._set_active_message,
-            sync_message_content=self._sync_message_content,
-            request_ask_user=self._request_ask_user,
-            request_approve_plan=self._request_approve_plan,
-        )
-        # Wire token display callbacks
-        self._ui_adapter._on_tokens_update = self._on_tokens_update
-        self._ui_adapter._on_tokens_hide = self._hide_tokens
-        self._ui_adapter._on_tokens_show = self._show_tokens
-        # Wire message store for updating tool messages after pruning
-        self._ui_adapter.set_message_store(self._message_store)
-
-        # Fire-and-forget workers — none of these block the event loop.
-
-        # Discover skills first so /skill: autocomplete is ready as early
-        # as possible. The heavy filesystem scan runs in a thread.
-        self.run_worker(
-            self._discover_skills(),
-            exclusive=True,
-            group="startup-skill-discovery",
-        )
-
-        self.run_worker(self._init_session_state, exclusive=True, group="session-init")
-
-        # Server startup (model creation + server process)
-        if self._server_kwargs is not None and not self._defer_server_start:
-            self.run_worker(
-                self._start_server_background,
-                exclusive=True,
-                group="server-startup",
-            )
-
-        # Background update check and what's-new banner
-        # (opt-out via env var or config.toml [update].check)
-        # 暂时屏蔽自动更新机制
-        # if is_update_check_enabled():
-        #     self.run_worker(
-        #         self._check_for_updates,
-        #         exclusive=True,
-        #         group="startup-update-check",
-        #     )
-        #     self.run_worker(
-        #         self._show_whats_new,
-        #         exclusive=True,
-        #         group="startup-whats-new",
-        #     )
-
-        # Prewarm model discovery and profile caches unconditionally so
-        # /model opens instantly even before the agent/server is ready.
-        self.run_worker(
-            self._prewarm_model_caches,
-            exclusive=True,
-            group="startup-model-prewarm",
-        )
-
-        # Prewarm thread message counts so /threads opens instantly.
-        self.run_worker(
-            self._prewarm_threads_cache,
-            exclusive=True,
-            group="startup-thread-prewarm",
-        )
-
-        # Optional tool warnings in a thread (shutil.which is sync I/O)
-        self.run_worker(
-            self._check_optional_tools_background,
-            exclusive=True,
-            group="startup-tool-check",
-        )
-
-        # Start scheduler runner — checks for due tasks every 60 seconds.
-        self._start_scheduler()
-
-        # Auto-submit initial prompt if provided via -m flag.
-        # This check must come first because _lc_thread_id and _agent are
-        # always set (even for brand-new sessions), so an elif after the
-        # thread-history branch would never execute.
-        # When connecting, defer until on_deep_agents_app_server_ready fires.
-        followup = resolve_startup_followup(
-            connecting=self._connecting,
-            initial_prompt=self._initial_prompt,
-            thread_id=self._lc_thread_id,
-            agent=self._agent,
-        )
-        if followup and followup.kind == "submit_prompt" and followup.prompt is not None:
-            self.call_after_refresh(
-                lambda: asyncio.create_task(self._handle_user_message(followup.prompt))
-            )
-        elif followup and followup.kind == "load_history":
-            self.call_after_refresh(
-                lambda: asyncio.create_task(self._load_thread_history())
-            )
+        await post_paint_init(self)
 
     async def _init_session_state(self) -> None:
         """Create session state in a thread (imports deepagents_cli.sessions)."""
