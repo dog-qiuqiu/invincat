@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from invincat_cli.model_config import ModelSpec, ModelTarget
 
@@ -103,6 +104,53 @@ def is_target_already_using(
         current_model_name,
     )
     return resolved.display == current_memory
+
+
+def model_switch_target_kwargs(
+    *,
+    extra_kwargs: dict[str, Any] | None,
+    saved_kwargs: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Choose explicit model kwargs, falling back to saved target defaults."""
+    if extra_kwargs is not None:
+        return extra_kwargs
+    return saved_kwargs or None
+
+
+def can_start_deferred_server_for_model_switch(
+    *,
+    target: ModelTarget,
+    has_server_kwargs: bool,
+    connecting: bool,
+) -> bool:
+    """Return whether a primary model switch may start a deferred server."""
+    return target == "primary" and has_server_kwargs and not connecting
+
+
+def model_switch_requires_server_error(
+    *,
+    has_remote_agent: bool,
+    can_start_deferred_server: bool,
+) -> bool:
+    """Return whether model switching should fail due to missing server state."""
+    return not has_remote_agent and not can_start_deferred_server
+
+
+def already_using_model_display(
+    *,
+    target: ModelTarget,
+    resolved: ResolvedModelSpec,
+    current_provider: str | None,
+    current_model_name: str | None,
+) -> str:
+    """Return display text for an already-selected model."""
+    if target == "primary":
+        return (
+            current_model_display(current_provider, current_model_name)
+            or current_model_name
+            or resolved.display
+        )
+    return resolved.display
 
 
 def model_target_translation_key(target: ModelTarget) -> str:

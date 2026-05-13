@@ -124,10 +124,14 @@ from invincat_cli.app_runtime.model_args import (
 )
 from invincat_cli.app_runtime.model_command import MODEL_DEFAULT_USAGE, parse_model_command
 from invincat_cli.app_runtime.model_runtime import (
+    already_using_model_display,
+    can_start_deferred_server_for_model_switch,
     choose_default_model_clear_fn,
     choose_default_model_save_fn,
     is_target_already_using,
     missing_credentials_detail,
+    model_switch_requires_server_error,
+    model_switch_target_kwargs,
     model_target_translation_key,
     normalize_default_model_spec,
     resolve_model_spec,
@@ -202,6 +206,13 @@ from invincat_cli.app_runtime.thread_runtime import (
     thread_resume_block_message_key,
     thread_resume_block_reason,
     thread_switch_failed_message,
+)
+from invincat_cli.app_runtime.ui_actions import (
+    capture_chat_scroll_state,
+    resolve_memory_store_paths,
+    resolve_model_selector_state,
+    restore_chat_scroll_state,
+    should_defer_modal_action,
 )
 from invincat_cli.app_runtime.version import resolve_version_message
 from invincat_cli.app_runtime.wecom import (
@@ -5858,33 +5869,23 @@ class DeepAgentsApp(App):
         from functools import partial
 
         from invincat_cli.config import settings
-        from invincat_cli.model_config import ModelSpec
         from invincat_cli.widgets.model_selector import ModelSelectorScreen
 
-        current_primary_spec = None
-        if settings.model_provider and settings.model_name:
-            current_primary_spec = f"{settings.model_provider}:{settings.model_name}"
-
-        current_memory_spec = self._memory_model_override
-        if current_memory_spec is None:
-            current_memory_spec = current_primary_spec
-
-        def _parse_spec(spec: str | None) -> tuple[str | None, str | None]:
-            if not spec:
-                return None, None
-            parsed = ModelSpec.try_parse(spec)
-            if parsed:
-                return parsed.provider, parsed.model
-            return None, spec
-
-        current_provider, current_model = _parse_spec(current_primary_spec)
-        memory_provider, memory_model = _parse_spec(current_memory_spec)
+        selector_state = resolve_model_selector_state(
+            settings_model_provider=settings.model_provider,
+            settings_model_name=settings.model_name,
+            memory_model_override=self._memory_model_override,
+        )
 
         def handle_result(result: tuple[str, str, ModelTarget] | None) -> None:
             """Handle the model selector result."""
             if result is not None:
                 model_spec, _, selected_target = result
-                if self._agent_running or self._shell_running or self._connecting:
+                if should_defer_modal_action(
+                    agent_running=self._agent_running,
+                    shell_running=self._shell_running,
+                    connecting=self._connecting,
+                ):
                     self._defer_action(
                         DeferredAction(
                             kind=f"model_switch_{selected_target}",
@@ -5915,10 +5916,10 @@ class DeepAgentsApp(App):
                 self._chat_input.focus_input()
 
         screen = ModelSelectorScreen(
-            current_model=current_model,
-            current_provider=current_provider,
-            current_memory_model=memory_model,
-            current_memory_provider=memory_provider,
+            current_model=selector_state.current_model,
+            current_provider=selector_state.current_provider,
+            current_memory_model=selector_state.memory_model,
+            current_memory_provider=selector_state.memory_provider,
             initial_target=target,
             cli_profile_override=self._profile_override,
         )
@@ -5965,9 +5966,7 @@ class DeepAgentsApp(App):
         # offset and release the anchor to prevent further drift while the
         # modal is open.
         chat = self.query_one("#chat", VerticalScroll)
-        saved_y = chat.scroll_y
-        was_anchored = chat.is_anchored
-        chat.release_anchor()
+        scroll_snapshot = capture_chat_scroll_state(chat)
 
         def handle_result(result: str | None) -> None:
             """Handle the theme selector result."""
@@ -5999,9 +5998,7 @@ class DeepAgentsApp(App):
 
                 self.call_later(_persist)
             # Restore scroll position, then re-anchor if it was anchored.
-            chat.scroll_to(y=saved_y, animate=False)
-            if was_anchored:
-                chat.anchor()
+            restore_chat_scroll_state(chat, scroll_snapshot)
             if self._chat_input:
                 self._chat_input.focus_input()
 
@@ -6014,9 +6011,7 @@ class DeepAgentsApp(App):
         from invincat_cli.widgets.language_selector import LanguageSelectorScreen
 
         chat = self.query_one("#chat", VerticalScroll)
-        saved_y = chat.scroll_y
-        was_anchored = chat.is_anchored
-        chat.release_anchor()
+        scroll_snapshot = capture_chat_scroll_state(chat)
 
         def handle_result(result: Language | None) -> None:
             """Handle the language selector result."""
@@ -6029,9 +6024,7 @@ class DeepAgentsApp(App):
                     timeout=3,
                 )
                 self._refresh_all_ui_text()
-            chat.scroll_to(y=saved_y, animate=False)
-            if was_anchored:
-                chat.anchor()
+            restore_chat_scroll_state(chat, scroll_snapshot)
             if self._chat_input:
                 self._chat_input.focus_input()
 
@@ -6057,15 +6050,13 @@ class DeepAgentsApp(App):
 
         try:
             if self._chat_input:
-                slash_commands = [
-                    (cmd.name, cmd.description, cmd.hidden_keywords) for cmd in COMMANDS
-                ]
-                if self._discovered_skills:
-                    cmds = build_skill_commands(self._discovered_skills)
-                    merged = slash_commands + cmds
-                else:
-                    merged = slash_commands
-                self._chat_input.update_slash_commands(merged)
+                self._chat_input.update_slash_commands(
+                    build_startup_slash_commands(
+                        commands=COMMANDS,
+                        discovered_skills=self._discovered_skills,
+                        build_skill_commands=build_skill_commands,
+                    )
+                )
         except Exception:
             pass
 
@@ -6085,22 +6076,11 @@ class DeepAgentsApp(App):
         """Resolve user/project memory store paths for the current session."""
         from invincat_cli.config import settings
 
-        assistant_id = self._assistant_id or "agent"
-        user_store = settings.get_agent_dir(assistant_id) / "memory_user.json"
-
-        store_paths: dict[str, str] = {"user": str(user_store.expanduser().resolve())}
-        from invincat_cli.project_utils import find_project_root
-
-        cwd = Path(self._cwd).expanduser().resolve()
-        project_root = find_project_root(cwd)
-        if project_root is not None:
-            project_store_dir = project_root / ".invincat"
-        else:
-            project_store_dir = cwd / ".invincat"
-        store_paths["project"] = str(
-            (project_store_dir / "memory_project.json").expanduser().resolve()
+        return resolve_memory_store_paths(
+            cwd=self._cwd,
+            assistant_id=self._assistant_id,
+            get_agent_dir=settings.get_agent_dir,
         )
-        return store_paths
 
     async def _show_memory_viewer(self) -> None:
         """Show memory manager modal with live store state."""
@@ -6131,7 +6111,11 @@ class DeepAgentsApp(App):
         def handle_result(result: str | None) -> None:
             """Handle the thread selector result."""
             if result is not None:
-                if self._agent_running or self._shell_running or self._connecting:
+                if should_defer_modal_action(
+                    agent_running=self._agent_running,
+                    shell_running=self._shell_running,
+                    connecting=self._connecting,
+                ):
                     self._defer_action(
                         DeferredAction(
                             kind="thread_switch",
@@ -6369,18 +6353,21 @@ class DeepAgentsApp(App):
                     resolved.provider,
                 )
 
-            target_kwargs = extra_kwargs
-            if target_kwargs is None:
-                saved_target_kwargs = get_target_model_params(target, resolved.display)
-                target_kwargs = saved_target_kwargs or None
+            target_kwargs = model_switch_target_kwargs(
+                extra_kwargs=extra_kwargs,
+                saved_kwargs=get_target_model_params(target, resolved.display),
+            )
 
             remote_agent = self._remote_agent()
-            can_start_deferred_server = (
-                target == "primary"
-                and self._server_kwargs is not None
-                and not self._connecting
+            can_start_deferred_server = can_start_deferred_server_for_model_switch(
+                target=target,
+                has_server_kwargs=self._server_kwargs is not None,
+                connecting=self._connecting,
             )
-            if remote_agent is None and not can_start_deferred_server:
+            if model_switch_requires_server_error(
+                has_remote_agent=remote_agent is not None,
+                can_start_deferred_server=can_start_deferred_server,
+            ):
                 await self._mount_message(
                     ErrorMessage(t("model.switch_requires_server"))
                 )
@@ -6393,10 +6380,11 @@ class DeepAgentsApp(App):
                 current_model_name=current_model_name,
                 memory_model_override=self._memory_model_override,
             ):
-                current = (
-                    f"{current_model_provider}:{current_model_name}"
-                    if target == "primary"
-                    else resolved.display
+                current = already_using_model_display(
+                    target=target,
+                    resolved=resolved,
+                    current_provider=current_model_provider,
+                    current_model_name=current_model_name,
                 )
                 await self._mount_message(
                     AppMessage(t("model.already_using").format(model=current))

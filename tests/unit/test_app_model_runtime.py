@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from invincat_cli.app_runtime.model_runtime import (
+    already_using_model_display,
+    can_start_deferred_server_for_model_switch,
     choose_default_model_clear_fn,
     choose_default_model_save_fn,
     current_model_display,
     is_target_already_using,
     missing_credentials_detail,
+    model_switch_requires_server_error,
+    model_switch_target_kwargs,
     model_target_translation_key,
     normalize_default_model_spec,
     resolve_model_spec,
@@ -113,6 +117,92 @@ def test_is_target_already_using_memory() -> None:
         current_provider="anthropic",
         current_model_name="claude-test",
         memory_model_override=None,
+    )
+
+
+def test_model_switch_target_kwargs_prefers_explicit_values() -> None:
+    assert model_switch_target_kwargs(
+        extra_kwargs={"temperature": 0.2},
+        saved_kwargs={"temperature": 0.8},
+    ) == {"temperature": 0.2}
+    assert model_switch_target_kwargs(
+        extra_kwargs=None,
+        saved_kwargs={"temperature": 0.8},
+    ) == {"temperature": 0.8}
+    assert model_switch_target_kwargs(extra_kwargs=None, saved_kwargs={}) is None
+    assert model_switch_target_kwargs(extra_kwargs=None, saved_kwargs=None) is None
+
+
+def test_can_start_deferred_server_for_model_switch() -> None:
+    assert can_start_deferred_server_for_model_switch(
+        target="primary",
+        has_server_kwargs=True,
+        connecting=False,
+    )
+    assert not can_start_deferred_server_for_model_switch(
+        target="memory",
+        has_server_kwargs=True,
+        connecting=False,
+    )
+    assert not can_start_deferred_server_for_model_switch(
+        target="primary",
+        has_server_kwargs=False,
+        connecting=False,
+    )
+    assert not can_start_deferred_server_for_model_switch(
+        target="primary",
+        has_server_kwargs=True,
+        connecting=True,
+    )
+
+
+def test_model_switch_requires_server_error() -> None:
+    assert model_switch_requires_server_error(
+        has_remote_agent=False,
+        can_start_deferred_server=False,
+    )
+    assert not model_switch_requires_server_error(
+        has_remote_agent=True,
+        can_start_deferred_server=False,
+    )
+    assert not model_switch_requires_server_error(
+        has_remote_agent=False,
+        can_start_deferred_server=True,
+    )
+
+
+def test_already_using_model_display() -> None:
+    resolved = resolve_model_spec(
+        "gpt-test",
+        detect_provider=lambda _spec: None,
+    )
+
+    assert (
+        already_using_model_display(
+            target="primary",
+            resolved=resolved,
+            current_provider="openai",
+            current_model_name="gpt-test",
+        )
+        == "openai:gpt-test"
+    )
+    assert (
+        already_using_model_display(
+            target="primary",
+            resolved=resolved,
+            current_provider=None,
+            current_model_name="gpt-test",
+        )
+        == "gpt-test"
+    )
+    assert (
+        already_using_model_display(
+            target="memory",
+            resolved=resolved,
+            current_provider="openai",
+            current_model_name="gpt-test",
+        )
+        == "gpt-test"
     )
 
 
