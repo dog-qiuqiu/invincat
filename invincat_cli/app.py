@@ -3631,39 +3631,9 @@ class DeepAgentsApp(App):
         4. If double press (quit_pending), quit
         5. Otherwise show quit hint
         """
-        # If shell command is running, cancel the worker
-        if self._shell_running and self._shell_worker:
-            self._cancel_worker(self._shell_worker)
-            self._quit_pending = False
-            return
+        from invincat_cli.app_runtime.action_handlers import quit_or_interrupt
 
-        # If approval menu is active, reject it before cancelling the agent worker.
-        # During HITL the agent worker remains active while awaiting approval,
-        # so this must be checked before the worker cancellation branch to
-        # avoid leaving a stale approval widget interactive after interruption.
-        if self._pending_approval_widget:
-            self._pending_approval_widget.action_select_reject()
-            self._quit_pending = False
-            return
-
-        # If ask_user menu is active, cancel it before cancelling the agent
-        # worker, following the same pattern as the approval widget above.
-        if self._pending_ask_user_widget:
-            self._pending_ask_user_widget.action_cancel()
-            self._quit_pending = False
-            return
-
-        # If agent is running, interrupt it and discard queued messages
-        if self._agent_running and self._agent_worker:
-            self._cancel_worker(self._agent_worker)
-            self._quit_pending = False
-            return
-
-        # Double Ctrl+C to quit
-        if self._quit_pending:
-            self.exit()
-        else:
-            self._arm_quit_pending("Ctrl+C")
+        quit_or_interrupt(self)
 
     def _arm_quit_pending(self, shortcut: str) -> None:
         """Set the pending-quit flag and show a matching hint.
@@ -3691,81 +3661,15 @@ class DeepAgentsApp(App):
         7. If queued messages exist, pop the last one (LIFO)
         8. If agent is running, interrupt it
         """
-        from invincat_cli.widgets.thread_selector import ThreadSelectorScreen
+        from invincat_cli.app_runtime.action_handlers import interrupt
 
-        if (
-            isinstance(self.screen, ThreadSelectorScreen)
-            and self.screen.is_delete_confirmation_open
-        ):
-            self.screen.action_cancel()
-            return
-
-        # If a modal screen is active, let it cancel itself (so it can
-        # restore state, e.g. the theme selector reverts the previewed theme).
-        # Fall back to a plain dismiss for modals without action_cancel.
-        if isinstance(self.screen, ModalScreen):
-            cancel = getattr(self.screen, "action_cancel", None)
-            if cancel is not None:
-                cancel()
-            else:
-                self.screen.dismiss(None)
-            return
-
-        # Close completion popup or exit slash/shell command mode
-        if self._chat_input:
-            if self._chat_input.dismiss_completion():
-                return
-            if self._chat_input.exit_mode():
-                return
-
-        # If shell command is running, cancel the worker
-        if self._shell_running and self._shell_worker:
-            self._cancel_worker(self._shell_worker)
-            return
-
-        # If approval menu is active, reject it before cancelling the agent worker.
-        # During HITL the agent worker remains active while awaiting approval,
-        # so this must be checked before the worker cancellation branch to
-        # avoid leaving a stale approval widget interactive after interruption.
-        if self._pending_approval_widget:
-            self._pending_approval_widget.action_select_reject()
-            return
-
-        # If ask_user menu is active, cancel it before cancelling the agent
-        # worker, following the same pattern as the approval widget above.
-        if self._pending_ask_user_widget:
-            self._pending_ask_user_widget.action_cancel()
-            return
-
-        # If queued messages exist, pop the last one (LIFO) instead of
-        # interrupting the agent.  This lets the user retract queued messages
-        # one at a time; once the queue is empty the next ESC will interrupt.
-        if self._pending_messages:
-            self._pop_last_queued_message()
-            return
-
-        # If agent is running, interrupt it and discard queued messages
-        if self._agent_running and self._agent_worker:
-            self._cancel_worker(self._agent_worker)
-            return
+        interrupt(self)
 
     def action_quit_app(self) -> None:
         """Handle quit action (Ctrl+D)."""
-        from invincat_cli.widgets.thread_selector import (
-            DeleteThreadConfirmScreen,
-            ThreadSelectorScreen,
-        )
+        from invincat_cli.app_runtime.action_handlers import quit_app
 
-        if isinstance(self.screen, ThreadSelectorScreen):
-            self.screen.action_delete_thread()
-            return
-        if isinstance(self.screen, DeleteThreadConfirmScreen):
-            if self._quit_pending:
-                self.exit()
-                return
-            self._arm_quit_pending("Ctrl+D")
-            return
-        self.exit()
+        quit_app(self)
 
     def exit(
         self,
@@ -3929,33 +3833,9 @@ class DeepAgentsApp(App):
 
     async def action_open_editor(self) -> None:
         """Open the current prompt text in an external editor ($VISUAL/$EDITOR)."""
-        from invincat_cli.io.editor import open_in_editor
+        from invincat_cli.app_runtime.action_handlers import open_editor
 
-        chat_input = self._chat_input
-        if not chat_input or not chat_input._text_area:
-            return
-
-        current_text = chat_input._text_area.text or ""
-
-        edited: str | None = None
-        try:
-            with self.suspend():
-                edited = open_in_editor(current_text)
-        except Exception:
-            logger.warning("External editor failed", exc_info=True)
-            self.notify(
-                t("app.external_editor_failed"),
-                severity="error",
-                timeout=5,
-            )
-            chat_input.focus_input()
-            return
-
-        if edited is not None:
-            chat_input._text_area.text = edited
-            lines = edited.split("\n")
-            chat_input._text_area.move_cursor((len(lines) - 1, len(lines[-1])))
-        chat_input.focus_input()
+        await open_editor(self)
 
     def on_paste(self, event: Paste) -> None:
         """Route unfocused paste events to chat input for drag/drop reliability."""
