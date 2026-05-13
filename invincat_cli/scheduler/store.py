@@ -10,7 +10,10 @@ import sqlite3
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from invincat_cli.scheduler.models import ScheduledTask, TaskRun
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +97,16 @@ _TASK_COLUMN_MIGRATIONS = {
 
 def _connect(path: Path | None = None) -> sqlite3.Connection:
     db_path = path or get_scheduler_db_path()
-    conn = sqlite3.connect(str(db_path))
+    try:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        msg = f"unable to create scheduler database directory for {db_path}: {exc}"
+        raise sqlite3.OperationalError(msg) from exc
+    try:
+        conn = sqlite3.connect(str(db_path))
+    except sqlite3.OperationalError as exc:
+        msg = f"unable to open scheduler database at {db_path}: {exc}"
+        raise sqlite3.OperationalError(msg) from exc
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_DDL)

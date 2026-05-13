@@ -13,8 +13,6 @@ from textual.screen import ModalScreen
 from textual.widgets import Static
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from textual.app import ComposeResult
     from textual.events import Click
 
@@ -58,7 +56,6 @@ class TaskRow(Static):
         from invincat_cli.scheduler.parser import describe_schedule
 
         task = self._task
-        glyphs = get_glyphs()
 
         enabled_icon = "●" if task.enabled else "○"
         status_map = {
@@ -81,7 +78,7 @@ class TaskRow(Static):
                 title=task.title,
                 schedule=schedule_desc,
                 next_run=next_run,
-                status=task.last_status,
+                status=status_icon or task.last_status,
                 short_id=short_id,
             )
         else:
@@ -92,7 +89,7 @@ class TaskRow(Static):
                 title=task.title,
                 schedule=schedule_desc,
                 next_run=next_run,
-                status=task.last_status,
+                status=status_icon or task.last_status,
                 short_id=short_id,
             )
         self.update(label)

@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from invincat_cli.scheduler.models import ScheduledTask
+    from invincat_cli.scheduler.models import ScheduledTask, TaskStatus
     from invincat_cli.scheduler.store import SchedulerStore
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ class _PendingRun:
 def compute_next_run(cron: str, after: datetime, tz_name: str) -> datetime | None:
     """Return the next fire time for *cron* after *after* in *tz_name*."""
     try:
-        from croniter import croniter
+        from croniter import croniter  # type: ignore[import-untyped]
         import zoneinfo
 
         tz = zoneinfo.ZoneInfo(tz_name)
@@ -85,10 +85,10 @@ def _build_scheduled_prompt(task: "ScheduledTask", scheduled_for: datetime) -> s
         )
     else:
         requirements = (
-            f"Requirements:\n"
-            f"1. Execute the task and reply with a concise result for notification.\n"
-            f"2. Do not create a report file unless the task explicitly asks for one.\n"
-            f"3. Do not create new scheduled tasks."
+            "Requirements:\n"
+            "1. Execute the task and reply with a concise result for notification.\n"
+            "2. Do not create a report file unless the task explicitly asks for one.\n"
+            "3. Do not create new scheduled tasks."
         )
 
     return (
@@ -380,7 +380,7 @@ class SchedulerRunner:
         run_id: str,
         task_id: str,
         *,
-        status: str,
+        status: "TaskStatus",
         report_path: str | None = None,
         error: str | None = None,
         thread_id: str | None = None,
@@ -400,7 +400,7 @@ class SchedulerRunner:
         run_id: str,
         task_id: str,
         *,
-        status: str,
+        status: "TaskStatus",
         report_path: str | None = None,
         error: str | None = None,
         thread_id: str | None = None,

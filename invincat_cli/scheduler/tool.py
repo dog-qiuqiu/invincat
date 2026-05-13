@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import ToolMessage
@@ -15,7 +14,10 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
+    from langgraph.types import Command
     from langgraph.prebuilt.tool_node import ToolCallRequest
+
+    from invincat_cli.scheduler.store import SchedulerStore
 
 SCHEDULE_CONTEXT_FLAG = "scheduled_run"
 """Set to True in agent runtime context during an automated scheduled run."""
@@ -91,19 +93,33 @@ def validate_schedule_create_options(
     report_format: Any,
     misfire_policy: Any,
     timeout_seconds: Any,
-) -> tuple[str, str, str, int]:
+) -> tuple[
+    Literal["message", "report"],
+    Literal["markdown", "text"],
+    Literal["run_once", "skip"],
+    int,
+]:
     """Validate shared create-task options from tool or payload boundaries."""
     output_mode_s = str(output_mode or "message")
     if output_mode_s not in {"message", "report"}:
         raise ValueError("output_mode must be 'message' or 'report'")
+    output_mode_v: Literal["message", "report"] = (
+        "report" if output_mode_s == "report" else "message"
+    )
 
     report_format_s = str(report_format or "markdown")
     if report_format_s not in {"markdown", "text"}:
         raise ValueError("report_format must be 'markdown' or 'text'")
+    report_format_v: Literal["markdown", "text"] = (
+        "text" if report_format_s == "text" else "markdown"
+    )
 
     misfire_policy_s = str(misfire_policy or "run_once")
     if misfire_policy_s not in {"run_once", "skip"}:
         raise ValueError("misfire_policy must be 'run_once' or 'skip'")
+    misfire_policy_v: Literal["run_once", "skip"] = (
+        "skip" if misfire_policy_s == "skip" else "run_once"
+    )
 
     try:
         timeout_seconds_i = int(timeout_seconds if timeout_seconds is not None else 600)
@@ -112,7 +128,7 @@ def validate_schedule_create_options(
     if timeout_seconds_i < 0:
         raise ValueError("timeout_seconds must be >= 0")
 
-    return output_mode_s, report_format_s, misfire_policy_s, timeout_seconds_i
+    return output_mode_v, report_format_v, misfire_policy_v, timeout_seconds_i
 
 
 def _is_once_schedule_marker(schedule: str) -> bool:
@@ -173,8 +189,6 @@ class ScheduleMiddleware(AgentMiddleware):
     # ------------------------------------------------------------------
 
     def _make_create_tool(self):  # noqa: ANN202
-        store = self._store
-
         @tool
         def create_scheduled_task(
             title: str,
@@ -529,8 +543,8 @@ class ScheduleMiddleware(AgentMiddleware):
     def wrap_tool_call(
         self,
         request: "ToolCallRequest",
-        handler: "Callable[[ToolCallRequest], ToolMessage]",
-    ) -> ToolMessage:
+        handler: "Callable[[ToolCallRequest], ToolMessage | Command[Any]]",
+    ) -> "ToolMessage | Command[Any]":
         if (rejection := self._reject_management_tool_during_scheduled_run(request)) is not None:
             return rejection
         return handler(request)
@@ -538,8 +552,8 @@ class ScheduleMiddleware(AgentMiddleware):
     async def awrap_tool_call(
         self,
         request: "ToolCallRequest",
-        handler: "Callable[[ToolCallRequest], Awaitable[ToolMessage]]",
-    ) -> ToolMessage:
+        handler: "Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]]",
+    ) -> "ToolMessage | Command[Any]":
         if (rejection := self._reject_management_tool_during_scheduled_run(request)) is not None:
             return rejection
         return await handler(request)

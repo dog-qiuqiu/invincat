@@ -7,9 +7,8 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypedDict
 
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical
-from textual.content import Content
 from textual.message import Message
-from textual.widgets import Markdown, Static
+from textual.widgets import Static
 
 if TYPE_CHECKING:
     import asyncio
@@ -17,8 +16,7 @@ if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
 
-from invincat_cli import theme
-from invincat_cli.config import get_glyphs, is_ascii_mode
+from invincat_cli.config import get_glyphs
 from invincat_cli.i18n import t
 
 logger = logging.getLogger(__name__)

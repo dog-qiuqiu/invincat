@@ -39,7 +39,7 @@ This will display the plan to the user and wait for their confirmation.
   feedback, then regenerate the todo list and call `approve_plan` again.
 """
 
-PLANNER_SYSTEM_PROMPT: str = f"""You are a task planning agent. Your ONLY job is to create structured task plans.
+PLANNER_SYSTEM_PROMPT: str = """You are a task planning agent. Your ONLY job is to create structured task plans.
 
 ## Task boundary
 
@@ -85,9 +85,9 @@ The runtime will interrupt immediately on `approve_plan`.
 
 ```
 write_todos([
-    {{"content": "First task description", "status": "in_progress"}},
-    {{"content": "Second task description", "status": "pending"}},
-    {{"content": "Third task description", "status": "pending"}}
+    {"content": "First task description", "status": "in_progress"},
+    {"content": "Second task description", "status": "pending"},
+    {"content": "Third task description", "status": "pending"}
 ])
 ```
 

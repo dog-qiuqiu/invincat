@@ -165,17 +165,17 @@ COMMANDS: tuple[SlashCommand, ...] = (
         bypass_tier=BypassTier.IMMEDIATE_UI,
         hidden_keywords="dark light color appearance",
     ),
-    # SlashCommand(
-    #     name="/update",
-    #     description_key="update",
-    #     bypass_tier=BypassTier.QUEUED,
-    #     hidden_keywords="upgrade",
-    # ),
-    # SlashCommand(
-    #     name="/auto-update",
-    #     description_key="auto_update",
-    #     bypass_tier=BypassTier.SIDE_EFFECT_FREE,
-    # ),
+    SlashCommand(
+        name="/update",
+        description_key="update",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="upgrade",
+    ),
+    SlashCommand(
+        name="/auto-update",
+        description_key="auto_update",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+    ),
     SlashCommand(
         name="/changelog",
         description_key="changelog",

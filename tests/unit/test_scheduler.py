@@ -27,10 +27,14 @@ from invincat_cli.scheduler.delivery import (
     save_fallback_report,
 )
 from invincat_cli.scheduler.parser import describe_schedule, parse_schedule
+from invincat_cli.scheduler.payloads import (
+    apply_schedule_update_payload,
+    build_schedule_create_payload_result,
+    format_schedule_list_item,
+)
 from invincat_cli.scheduler.runner import (
     SchedulerRunner,
     _build_scheduled_prompt,
-    _parse_dt,
     compute_next_run,
     task_next_run,
 )
@@ -209,6 +213,15 @@ def test_next_run_tomorrow_when_after_fire_time() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_store_creates_parent_directory_for_explicit_db_path(tmp_path: Path) -> None:
+    db_path = tmp_path / "nested" / "scheduler.db"
+
+    store = SchedulerStore(db_path=db_path)
+
+    assert db_path.exists()
+    store.list_tasks()
+
+
 def test_store_save_and_load(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     task = _make_task()
@@ -217,6 +230,80 @@ def test_store_save_and_load(tmp_path: Path) -> None:
     assert loaded is not None
     assert loaded.title == "Test Task"
     assert loaded.cron == "0 8 * * *"
+
+
+def test_build_schedule_create_payload_result(tmp_path: Path) -> None:
+    now = datetime(2026, 5, 13, 0, 0, tzinfo=timezone.utc)
+
+    result = build_schedule_create_payload_result(
+        {
+            "type": SCHEDULE_CREATE_TYPE,
+            "task_id": "task-1",
+            "title": "Daily Report",
+            "cron": "0 8 * * *",
+            "timezone": "Asia/Shanghai",
+            "prompt": "summarize",
+            "output_mode": "report",
+            "report_format": "markdown",
+        },
+        cwd=tmp_path,
+        now=now,
+    )
+
+    assert result.task.id == "task-1"
+    assert result.task.cwd == str(tmp_path)
+    assert result.task.report.filename_template == "daily-report-{date}.md"
+    assert result.report_path_display == "reports/daily-report-{date}.md"
+    assert result.schedule_description == "daily 08:00"
+
+
+def test_format_schedule_list_item_uses_payload_display_time() -> None:
+    line = format_schedule_list_item(
+        {
+            "id": "abcdef123456",
+            "title": "Daily Report",
+            "enabled": True,
+            "cron": "0 8 * * *",
+            "timezone": "Asia/Shanghai",
+            "schedule_type": "recurring",
+            "next_run_display": "2026-05-14 08:00 +08:00",
+        }
+    )
+
+    assert "✓ Daily Report" in line
+    assert "daily 08:00" in line
+    assert "2026-05-14 08:00 +08:00" in line
+    assert "[id: abcdef12]" in line
+
+
+def test_apply_schedule_update_payload_recomputes_next_run() -> None:
+    now = datetime(2026, 5, 13, 0, 0, tzinfo=timezone.utc)
+    task = _make_task(cron="0 8 * * *", tz="Asia/Shanghai")
+
+    updated = apply_schedule_update_payload(
+        task,
+        {
+            "title": "Updated",
+            "cron": "30 9 * * *",
+            "timezone": "Asia/Shanghai",
+            "enabled": False,
+        },
+        now=now,
+    )
+
+    assert updated is task
+    assert task.title == "Updated"
+    assert task.cron == "30 9 * * *"
+    assert task.enabled is False
+    assert task.next_run_at == "2026-05-13T01:30:00+00:00"
+    assert task.updated_at == now.isoformat()
+
+
+def test_apply_schedule_update_payload_rejects_invalid_timezone() -> None:
+    task = _make_task()
+
+    with pytest.raises(ValueError):
+        apply_schedule_update_payload(task, {"timezone": "Not/AZone"})
 
 
 def test_store_migrates_timeout_seconds_column(tmp_path: Path) -> None:
@@ -1022,29 +1109,29 @@ def test_schedule_middleware_rejects_once_at_with_recurring_schedule(tmp_path: P
 
 
 def test_schedule_create_display_uses_once_for_one_shot_placeholder_cron() -> None:
-    from invincat_cli.app import _describe_schedule_for_display
+    from invincat_cli.scheduler.display import describe_schedule_for_display
 
     assert (
-        _describe_schedule_for_display("0 0 * * *", "Asia/Shanghai", "once")
+        describe_schedule_for_display("0 0 * * *", "Asia/Shanghai", "once")
         == "once"
     )
     assert (
-        _describe_schedule_for_display("0 0 * * *", "Asia/Shanghai", "recurring")
+        describe_schedule_for_display("0 0 * * *", "Asia/Shanghai", "recurring")
         == "daily 00:00"
     )
 
 
 def test_schedule_time_display_uses_explicit_offset() -> None:
-    from invincat_cli.app import _format_schedule_time_for_display
+    from invincat_cli.scheduler.display import format_schedule_time_for_display
 
     value = datetime(2026, 5, 17, 14, 9, tzinfo=timezone.utc)
 
     assert (
-        _format_schedule_time_for_display(value, "Asia/Shanghai")
+        format_schedule_time_for_display(value, "Asia/Shanghai")
         == "2026-05-17T22:09+08:00"
     )
     assert (
-        _format_schedule_time_for_display(
+        format_schedule_time_for_display(
             "2026-05-17T14:09:00+00:00",
             "Asia/Shanghai",
         )
@@ -1725,6 +1812,119 @@ def test_app_scheduled_timeout_removes_pending_message() -> None:
     app._cancel_timed_out_scheduled_turn("run-1", "task-1")
 
     assert [msg.text for msg in app._pending_messages] == ["keep"]
+
+
+def test_app_finish_active_scheduled_run_as_failed() -> None:
+    from invincat_cli.app import DeepAgentsApp
+
+    finishes: list[tuple[str, str, str, str | None]] = []
+
+    class Runner:
+        def finish_run(
+            self,
+            run_id: str,
+            task_id: str,
+            *,
+            status: str,
+            error: str | None = None,
+        ) -> None:
+            finishes.append((run_id, task_id, status, error))
+
+    app = DeepAgentsApp.__new__(DeepAgentsApp)
+    app._active_scheduled_run = ("run-1", "task-1")
+    app._scheduler_runner = Runner()
+
+    app._finish_active_scheduled_run_as_failed("boom")
+
+    assert app._active_scheduled_run is None
+    assert finishes == [("run-1", "task-1", "failed", "boom")]
+
+
+def test_app_complete_active_scheduled_run_delivers_and_finishes() -> None:
+    from invincat_cli.app import DeepAgentsApp
+
+    delivered: list[tuple[str, str, str, str | None]] = []
+    finishes: list[tuple[str, str, str, str | None]] = []
+
+    class Store:
+        def load_run(self, _run_id: str):
+            return SimpleNamespace(finished_at=None)
+
+    class Runner:
+        def finish_run(
+            self,
+            run_id: str,
+            task_id: str,
+            *,
+            status: str,
+            error: str | None = None,
+        ) -> None:
+            finishes.append((run_id, task_id, status, error))
+
+    async def deliver(
+        *,
+        task_id: str,
+        run_id: str,
+        status: str,
+        error: str | None,
+    ) -> None:
+        delivered.append((run_id, task_id, status, error))
+
+    app = DeepAgentsApp.__new__(DeepAgentsApp)
+    app._active_scheduled_run = ("run-1", "task-1")
+    app._scheduled_turn_status = "failed"
+    app._scheduled_turn_error = "boom"
+    app._scheduled_turn_retry_used = True
+    app._scheduler_store = Store()
+    app._scheduler_runner = Runner()
+    app._deliver_scheduled_result_to_wecom = deliver
+
+    asyncio.run(app._complete_active_scheduled_run())
+
+    assert app._active_scheduled_run is None
+    assert app._scheduled_turn_error is None
+    assert app._scheduled_turn_retry_used is False
+    assert delivered == [("run-1", "task-1", "failed", "boom")]
+    assert finishes == [("run-1", "task-1", "failed", "boom")]
+
+
+def test_app_complete_active_scheduled_run_skips_finished_delivery() -> None:
+    from invincat_cli.app import DeepAgentsApp
+
+    delivered: list[str] = []
+    finishes: list[tuple[str, str, str, str | None]] = []
+
+    class Store:
+        def load_run(self, _run_id: str):
+            return SimpleNamespace(finished_at="2026-05-13T00:00:00+00:00")
+
+    class Runner:
+        def finish_run(
+            self,
+            run_id: str,
+            task_id: str,
+            *,
+            status: str,
+            error: str | None = None,
+        ) -> None:
+            finishes.append((run_id, task_id, status, error))
+
+    async def deliver(**_kwargs) -> None:  # noqa: ANN003
+        delivered.append("called")
+
+    app = DeepAgentsApp.__new__(DeepAgentsApp)
+    app._active_scheduled_run = ("run-1", "task-1")
+    app._scheduled_turn_status = "success"
+    app._scheduled_turn_error = None
+    app._scheduled_turn_retry_used = False
+    app._scheduler_store = Store()
+    app._scheduler_runner = Runner()
+    app._deliver_scheduled_result_to_wecom = deliver
+
+    asyncio.run(app._complete_active_scheduled_run())
+
+    assert delivered == []
+    assert finishes == [("run-1", "task-1", "success", None)]
 
 
 def test_app_resolves_active_scheduled_wecom_chat_id(tmp_path: Path) -> None:

@@ -44,7 +44,6 @@ def test_env() -> Generator[dict, None, None]:
 def mock_settings():
     """Mock settings for tests."""
     from unittest.mock import Mock
-    from invincat_cli.config import settings as actual_settings
     
     # Create mock settings
     mock_settings = Mock()

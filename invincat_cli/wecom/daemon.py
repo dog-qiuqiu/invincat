@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import datetime
-import errno
 import fcntl
 import json
 import logging

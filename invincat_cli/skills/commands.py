@@ -154,7 +154,7 @@ def _list(
     from rich.markup import escape as escape_markup
 
     from invincat_cli.config import Settings, console, get_glyphs
-    from invincat_cli.skills.load import list_skills, load_skill_content
+    from invincat_cli.skills.load import list_skills
 
     settings = Settings.from_environment()
     user_skills_dir = settings.get_user_skills_dir(agent)
@@ -543,7 +543,7 @@ def _info(
     from rich.markup import escape as escape_markup
 
     from invincat_cli.config import Settings, console
-    from invincat_cli.skills.load import list_skills
+    from invincat_cli.skills.load import list_skills, load_skill_content
 
     settings = Settings.from_environment()
     user_skills_dir = settings.get_user_skills_dir(agent)

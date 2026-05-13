@@ -14,9 +14,6 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from langchain.agents.middleware.types import ToolCallRequest
-    from langchain_core.runnables import RunnableConfig
-
-    from invincat_cli.widgets.approve import ApproveResult
 
 
 APPROVE_PLAN_SYSTEM_PROMPT: str = """

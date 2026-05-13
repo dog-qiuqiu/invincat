@@ -137,7 +137,7 @@ def parse_schedule(expr: str) -> str:
 def _validate_cron(expr: str) -> None:
     """Raise ValueError if croniter rejects the expression."""
     try:
-        from croniter import croniter
+        from croniter import croniter  # type: ignore[import-untyped]
 
         if not croniter.is_valid(expr):
             msg = f"Invalid cron expression: {expr!r}"

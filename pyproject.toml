@@ -105,12 +105,45 @@ target-version = "py311"
 line-length = 88
 
 [tool.ruff.lint]
-select = ["E"] # pycodestyle errors
+select = ["E", "F"] # pycodestyle + pyflakes correctness checks
 ignore = ["E501"] # line too long, handled by black
 
 [tool.ruff.lint.per-file-ignores]
 "invincat_cli/app.py" = ["E402"]
 "invincat_cli/widgets/autocomplete.py" = ["E402"]
+
+[tool.mypy]
+python_version = "3.11"
+files = [
+    "invincat_cli/scheduler",
+    "invincat_cli/app_approval_runtime.py",
+    "invincat_cli/app_agent_runtime.py",
+    "invincat_cli/app_plan_runtime.py",
+    "invincat_cli/app_memory_runtime.py",
+    "invincat_cli/app_help.py",
+    "invincat_cli/app_services.py",
+    "invincat_cli/app_state.py",
+    "invincat_cli/app_thread_history.py",
+    "invincat_cli/app_thread_links.py",
+    "invincat_cli/app_thread_runtime.py",
+    "invincat_cli/app_model_args.py",
+    "invincat_cli/app_model_command.py",
+    "invincat_cli/app_model_runtime.py",
+    "invincat_cli/app_queueing.py",
+    "invincat_cli/app_reload.py",
+    "invincat_cli/app_scheduler_runtime.py",
+    "invincat_cli/app_server_runtime.py",
+    "invincat_cli/app_shell.py",
+    "invincat_cli/app_skill_runtime.py",
+    "invincat_cli/app_startup_runtime.py",
+    "invincat_cli/app_errors.py",
+    "invincat_cli/app_theme_prefs.py",
+    "invincat_cli/app_tokens.py",
+    "invincat_cli/app_version.py",
+    "invincat_cli/app_wecom_runtime.py",
+    "invincat_cli/wecom/protocol.py",
+    "invincat_cli/project_utils.py",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
