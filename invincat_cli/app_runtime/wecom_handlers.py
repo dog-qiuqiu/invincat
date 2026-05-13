@@ -23,6 +23,7 @@ from invincat_cli.app_runtime.wecom import (
 )
 from invincat_cli.wecom.media import build_wecom_agent_input_with_media_downloads
 from invincat_cli.wecom.bridge import WeComBridge
+from invincat_cli.wecom.session import WECOM_AGENT_TIMEOUT
 from invincat_cli.wecom.turn import WeComTurnRunner
 from invincat_cli.widgets.messages import AppMessage, ErrorMessage, UserMessage
 
@@ -203,9 +204,26 @@ async def process_wecom_message_via_cli(
         get_messages=app._message_store.get_all_messages,
         handle_user_message=_handle_user_message,
         send_request=app._wecom_send_request,
-        cancel_timed_out_turn=app._cancel_wecom_timed_out_turn,
+        cancel_timed_out_turn=lambda: cancel_timed_out_turn(app),
         on_content=on_content,
         enter_turn_context=turn_context.enter,
         exit_turn_context=turn_context.exit,
     )
     return await runner.run(text, inbound_frame=inbound_frame)
+
+
+def cancel_timed_out_turn(app: Any) -> None:  # noqa: ANN401
+    """Cancel a WeCom-injected turn after its bridge timeout."""
+    if app._shell_worker is not None:
+        app._shell_worker.cancel()
+    if app._agent_worker is not None:
+        app._agent_worker.cancel()
+    app._shell_running = False
+    app._shell_worker = None
+    app._agent_running = False
+    app._agent_worker = None
+    app._active_turn_is_planner = False
+    logger.warning(
+        "wecom turn timed out after %.1fs; cancelled active agent/shell worker",
+        WECOM_AGENT_TIMEOUT,
+    )

@@ -91,9 +91,6 @@ from invincat_cli.widgets.messages import (
     SkillMessage,
     ToolCallMessage,
 )
-from invincat_cli.wecom.session import (
-    WECOM_AGENT_TIMEOUT,
-)
 
 logger = logging.getLogger(__name__)
 configure_debug_logging(logger)
@@ -1919,28 +1916,6 @@ class DeepAgentsApp(App):
         self._agent_running = False
         self._agent_worker = None
         self._active_turn_is_planner = False
-
-    def _cancel_wecom_timed_out_turn(self) -> None:
-        """Cancel a WeCom-injected turn after its bridge timeout.
-
-        Unlike user-triggered cancellation, this must not discard locally queued
-        messages. The remote user has already received a timeout, so continuing
-        the worker in the background risks later file sends or state writes
-        leaking into subsequent WeCom turns.
-        """
-        if self._shell_worker is not None:
-            self._shell_worker.cancel()
-        if self._agent_worker is not None:
-            self._agent_worker.cancel()
-        self._shell_running = False
-        self._shell_worker = None
-        self._agent_running = False
-        self._agent_worker = None
-        self._active_turn_is_planner = False
-        logger.warning(
-            "wecom turn timed out after %.1fs; cancelled active agent/shell worker",
-            WECOM_AGENT_TIMEOUT,
-        )
 
     def action_quit_or_interrupt(self) -> None:
         """Handle Ctrl+C - interrupt agent, reject approval, or quit on double press.
