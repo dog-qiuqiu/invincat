@@ -142,12 +142,7 @@ from invincat_cli.app_runtime.model_runtime import (
 )
 from invincat_cli.app_runtime.queueing import can_bypass_busy_queue
 from invincat_cli.app_runtime.scheduler import (
-    active_scheduled_task_id,
-    remove_scheduled_messages,
-    resolve_scheduled_wecom_file_path,
-    scheduled_run_matches,
     should_deliver_scheduled_result,
-    wecom_daemon_claims_scheduled_task,
 )
 from invincat_cli.app_runtime.agent import (
     AgentThreadOverrideContext,
@@ -237,9 +232,7 @@ from invincat_cli.app_runtime.wecom import (
     should_clear_wecom_bridge,
     wecom_bot_is_running,
     wecom_bot_missing_config_message,
-    wecom_bridge_is_online,
     wecom_bridge_offline_error,
-    wecom_bridge_offline_message,
     wecom_turn_is_busy,
 )
 from invincat_cli.core.debug import configure_debug_logging
@@ -3187,80 +3180,29 @@ class DeepAgentsApp(App):
 
     def _start_scheduler(self) -> None:
         """Create SchedulerRunner and start the 60-second tick interval."""
-        from invincat_cli.scheduler.runner import SchedulerRunner
-        from invincat_cli.scheduler.store import FilteredSchedulerStore
+        from invincat_cli.app_runtime.scheduled_delivery import start_scheduler
 
-        runner_store = FilteredSchedulerStore(
-            db_path=getattr(self._scheduler_store, "_db_path", None),
-            exclude_task=lambda task: wecom_daemon_claims_scheduled_task(
-                task, self._cwd
-            ),
-        )
-
-        self._scheduler_runner = SchedulerRunner(
-            runner_store,
-            inject_message=self._inject_scheduled_message,
-            notify=lambda msg: self.notify(msg, timeout=6),
-            is_busy=lambda: self._agent_running or self._shell_running,
-            on_timeout=self._handle_scheduled_timeout,
-            cwd=self._cwd,
-        )
-        self._scheduler_interval_handle = self.set_interval(
-            60, self._scheduler_tick, pause=False
-        )
-        # Fire once immediately (after a short delay) for misfire recovery.
-        self.set_timer(3, self._scheduler_tick)
+        start_scheduler(self)
 
     async def _scheduler_tick(self) -> None:
-        if self._scheduler_runner is not None:
-            await self._scheduler_runner.tick()
+        from invincat_cli.app_runtime.scheduled_delivery import scheduler_tick
+
+        await scheduler_tick(self)
 
     async def _handle_scheduled_timeout(self, run_id: str, task_id: str) -> None:
-        self._cancel_timed_out_scheduled_turn(run_id, task_id)
-        await self._deliver_scheduled_result_to_wecom(
-            task_id=task_id,
-            run_id=run_id,
-            status="timeout",
-            error="Scheduled task timed out",
+        from invincat_cli.app_runtime.scheduled_delivery import (
+            handle_scheduled_timeout,
         )
+
+        await handle_scheduled_timeout(self, run_id, task_id)
 
     def _cancel_timed_out_scheduled_turn(self, run_id: str, task_id: str) -> None:
         """Cancel or dequeue a scheduled turn after SchedulerRunner timeout."""
-        self._pending_messages = remove_scheduled_messages(
-            self._pending_messages,
-            run_id=run_id,
-            task_id=task_id,
+        from invincat_cli.app_runtime.scheduled_delivery import (
+            cancel_timed_out_scheduled_turn,
         )
-        if not scheduled_run_matches(
-            self._active_scheduled_run,
-            run_id=run_id,
-            task_id=task_id,
-        ):
-            return
 
-        if self._pending_approval_widget is not None:
-            with suppress(Exception):
-                self._pending_approval_widget.action_select_reject()
-        if self._pending_ask_user_widget is not None:
-            with suppress(Exception):
-                self._pending_ask_user_widget.action_cancel()
-        if self._shell_worker is not None:
-            self._shell_worker.cancel()
-        if self._agent_worker is not None:
-            self._agent_worker.cancel()
-        self._shell_running = False
-        self._shell_worker = None
-        self._agent_running = False
-        self._agent_worker = None
-        self._active_turn_is_planner = False
-        self._active_scheduled_run = None
-        self._scheduled_turn_status = "timeout"
-        self._scheduled_turn_error = "Scheduled task timed out"
-        logger.warning(
-            "scheduled run timed out; cancelled active worker run_id=%s task_id=%s",
-            run_id,
-            task_id,
-        )
+        cancel_timed_out_scheduled_turn(self, run_id, task_id)
 
     async def _deliver_scheduled_result_to_wecom(
         self,
@@ -3271,77 +3213,17 @@ class DeepAgentsApp(App):
         error: str | None,
     ) -> None:
         """Best-effort active WeCom delivery for a completed scheduled run."""
-        from invincat_cli.scheduler.wecom_delivery import (
-            build_scheduled_wecom_text,
-            latest_assistant_summary,
-            scheduled_report_path_for_wecom,
-            scheduled_wecom_delivery_target,
-            should_send_scheduled_report_file,
+        from invincat_cli.app_runtime.scheduled_delivery import (
+            deliver_scheduled_result_to_wecom,
         )
 
-        task = self._scheduler_store.load_task(task_id)
-        run = self._scheduler_store.load_run(run_id)
-        if task is None or run is None:
-            return
-
-        has_wecom_channel, chatid = scheduled_wecom_delivery_target(task)
-        if not has_wecom_channel:
-            self._scheduler_store.update_run_delivery(
-                run_id,
-                status="none",
-                error=None,
-                attempts_delta=0,
-            )
-            return
-        if chatid is None:
-            self._scheduler_store.update_run_delivery(
-                run_id,
-                status="failed",
-                error="missing chatid",
-            )
-            await self._mount_message(
-                ErrorMessage("Scheduled task WeCom delivery skipped: missing chatid.")
-            )
-            return
-
-        report_path = scheduled_report_path_for_wecom(task, run)
-
-        all_messages = self._message_store.get_all_messages()
-        run_messages = all_messages[self._scheduled_run_message_offset:]
-        content = build_scheduled_wecom_text(
-            title=task.title,
+        await deliver_scheduled_result_to_wecom(
+            self,
+            task_id=task_id,
+            run_id=run_id,
             status=status,
-            summary=latest_assistant_summary(run_messages),
-            report_path=report_path,
             error=error,
         )
-
-        try:
-            text_sent = await self._send_scheduled_wecom_text(
-                chatid=chatid,
-                content=content,
-                run_id=run_id,
-            )
-            if not text_sent:
-                return
-            if should_send_scheduled_report_file(
-                status=status,
-                report_path=report_path,
-            ):
-                await self._send_scheduled_wecom_report_file(
-                    chatid=chatid,
-                    report_path=report_path,
-                )
-        except Exception as exc:
-            self._scheduler_store.update_run_delivery(
-                run_id,
-                status="failed",
-                error=str(exc),
-            )
-            logger.warning("Scheduled task WeCom delivery failed: %s", exc, exc_info=True)
-            await self._mount_message(
-                ErrorMessage(f"Scheduled task WeCom delivery failed: {exc}")
-            )
 
     async def _send_scheduled_wecom_text(
         self,
@@ -3351,44 +3233,16 @@ class DeepAgentsApp(App):
         run_id: str,
     ) -> bool:
         """Send scheduled WeCom text and update delivery status."""
-        from datetime import datetime, timezone
-
-        from invincat_cli.wecom.protocol import build_wecom_text_frame
-
-        if not wecom_bridge_is_online(self._wecom_bridge):
-            self._scheduler_store.update_run_delivery(
-                run_id,
-                status="failed",
-                error=wecom_bridge_offline_message(),
-            )
-            await self._mount_message(
-                ErrorMessage(
-                    "Scheduled task WeCom delivery failed: WeCom bridge is offline."
-                )
-            )
-            return False
-        self._wecom_enqueue(build_wecom_text_frame(chatid, content))
-        flushed = await self._wecom_flush_outbox()
-        if not flushed:
-            self._scheduler_store.update_run_delivery(
-                run_id,
-                status="queued",
-                error="waiting for bridge reconnect",
-            )
-            await self._mount_message(
-                AppMessage(
-                    "Scheduled task WeCom delivery queued; waiting for bridge reconnect."
-                )
-            )
-            return False
-
-        self._scheduler_store.update_run_delivery(
-            run_id,
-            status="success",
-            error=None,
-            delivered_at=datetime.now(timezone.utc).isoformat(),
+        from invincat_cli.app_runtime.scheduled_delivery import (
+            send_scheduled_wecom_text,
         )
-        return True
+
+        return await send_scheduled_wecom_text(
+            self,
+            chatid=chatid,
+            content=content,
+            run_id=run_id,
+        )
 
     async def _send_scheduled_wecom_report_file(
         self,
@@ -3397,75 +3251,37 @@ class DeepAgentsApp(App):
         report_path: str | None,
     ) -> None:
         """Send the scheduled report file to WeCom when available."""
-        from pathlib import Path
-
-        from invincat_cli.wecom.media import upload_wecom_outbound_media
-        from invincat_cli.wecom.protocol import build_wecom_file_frame_for_chat
-
-        if report_path is None:
-            return
-        if not wecom_bridge_is_online(self._wecom_bridge):
-            await self._mount_message(
-                ErrorMessage(
-                    "Scheduled task WeCom file delivery skipped: WeCom bridge is offline."
-                )
-            )
-            return
-        media_id = await upload_wecom_outbound_media(
-            Path(report_path),
-            send_request=self._wecom_send_request,
+        from invincat_cli.app_runtime.scheduled_delivery import (
+            send_scheduled_wecom_report_file,
         )
-        await self._wecom_send_request(build_wecom_file_frame_for_chat(chatid, media_id))
+
+        await send_scheduled_wecom_report_file(
+            self,
+            chatid=chatid,
+            report_path=report_path,
+        )
 
     def _active_scheduled_wecom_chat_id(self) -> str | None:
         """Return the WeCom chat id for the active scheduled run, if any."""
-        task_id = active_scheduled_task_id(self._active_scheduled_run)
-        if task_id is None:
-            return None
-        task = self._scheduler_store.load_task(task_id)
-        if task is None:
-            return None
-        from invincat_cli.scheduler.wecom_delivery import scheduled_wecom_chat_id
+        from invincat_cli.app_runtime.scheduled_delivery import (
+            active_scheduled_wecom_chat_id,
+        )
 
-        return scheduled_wecom_chat_id(task)
+        return active_scheduled_wecom_chat_id(self)
 
     async def _send_scheduled_wecom_file_request(self, payload: dict[str, Any]) -> None:
         """Send a file requested by send_wecom_file during a scheduled WeCom run."""
-        from invincat_cli.wecom.media import upload_wecom_outbound_media
-        from invincat_cli.wecom.protocol import build_wecom_file_frame_for_chat
-
-        chatid = self._active_scheduled_wecom_chat_id()
-        if not chatid:
-            raise RuntimeError("Scheduled task has no WeCom delivery target")
-        if not wecom_bridge_is_online(self._wecom_bridge):
-            raise RuntimeError(wecom_bridge_offline_message())
-
-        path = resolve_scheduled_wecom_file_path(
-            payload.get("path"),
-            cwd=self._cwd,
+        from invincat_cli.app_runtime.scheduled_delivery import (
+            send_scheduled_wecom_file_request,
         )
 
-        media_id = await upload_wecom_outbound_media(
-            path,
-            send_request=self._wecom_send_request,
-        )
-        await self._wecom_send_request(build_wecom_file_frame_for_chat(chatid, media_id))
+        await send_scheduled_wecom_file_request(self, payload)
 
     async def _inject_scheduled_message(self, task_id: str, run_id: str, prompt: str) -> None:
         """Inject a scheduled task prompt into the TUI message queue."""
-        from invincat_cli.i18n import t
+        from invincat_cli.app_runtime.scheduled_delivery import inject_scheduled_message
 
-        task = self._scheduler_store.load_task(task_id)
-        title = task.title if task else task_id
-        await self._mount_message(AppMessage(t("schedule.running").format(title=title)))
-        self._pending_messages.append(QueuedMessage(
-            text=prompt,
-            mode="normal",
-            scheduled_run_id=run_id,
-            scheduled_task_id=task_id,
-        ))
-        if not (self._agent_running or self._shell_running):
-            await self._process_next_from_queue()
+        await inject_scheduled_message(self, task_id, run_id, prompt)
 
     async def _handle_schedule_tool_payload(self, payload: dict) -> None:
         """Handle a structured schedule tool payload from the agent."""
