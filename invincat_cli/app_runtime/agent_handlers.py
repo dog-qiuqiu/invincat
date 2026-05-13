@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from contextlib import suppress
 from typing import Any
 
@@ -11,15 +13,19 @@ from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
 
 from invincat_cli.app_runtime.agent import (
+    AgentThreadOverrideContext,
     AgentTurnRequest,
+    build_agent_cli_context,
     build_agent_error_detail,
     can_start_agent_turn,
     next_agent_turn_start_state,
     resolve_agent_cleanup_start_state,
     resolve_agent_task_exception_decision,
+    resolve_wecom_file_request_handler,
     should_clear_scheduled_run_before_send,
     should_continue_after_deferred_actions,
 )
+from invincat_cli.core.session_stats import SessionStats
 from invincat_cli.i18n import t
 from invincat_cli.widgets.messages import AppMessage, ErrorMessage
 
@@ -129,6 +135,73 @@ async def handle_agent_task_exception(app: Any, exc: BaseException) -> bool:  # 
                 exc_info=True,
             )
     return decision.retry
+
+
+async def run_agent_task(app: Any, request: AgentTurnRequest) -> None:  # noqa: ANN401
+    """Run the agent task in a background worker."""
+    if app._ui_adapter is None:
+        return
+    from invincat_cli.textual_adapter import execute_task_textual
+
+    target_agent = request.agent_override or app._agent
+    if target_agent is None or app._session_state is None:
+        return
+    session_state = app._session_state
+
+    turn_stats = SessionStats()
+    app._inflight_turn_stats = turn_stats
+    app._inflight_turn_start = time.monotonic()
+    thread_context = AgentThreadOverrideContext(
+        session_state,
+        request.thread_id_override,
+    )
+    retry_after_exc: BaseException | None = None
+    effective_wecom_file_request = resolve_wecom_file_request_handler(
+        explicit_handler=request.on_wecom_file_request,
+        active_scheduled_wecom_chat_id=app._active_scheduled_wecom_chat_id(),
+        scheduled_handler=app._send_scheduled_wecom_file_request,
+    )
+    try:
+        thread_context.enter()
+        await execute_task_textual(
+            user_input=request.message,
+            agent=target_agent,
+            assistant_id=app._assistant_id,
+            session_state=session_state,
+            adapter=app._ui_adapter,
+            backend=app._backend,
+            image_tracker=app._image_tracker,
+            sandbox_type=app._sandbox_type,
+            is_planner_turn=app._active_turn_is_planner,
+            message_kwargs=request.message_kwargs,
+            context=build_agent_cli_context(
+                model=app._model_override,
+                model_params=app._model_params_override,
+                memory_model=app._memory_model_override,
+                memory_model_params=app._memory_model_params_override,
+                wecom_enabled=effective_wecom_file_request is not None,
+                scheduled_run=app._active_scheduled_run is not None,
+            ),
+            turn_stats=turn_stats,
+            on_text_delta=request.on_text_delta,
+            on_wecom_file_request=effective_wecom_file_request,
+            on_schedule_payload=app._handle_schedule_tool_payload,
+        )
+        if request.post_turn_hook is not None:
+            await request.post_turn_hook()
+    except Exception as exc:  # Resilient tool rendering
+        if await app._handle_agent_task_exception(exc):
+            retry_after_exc = exc
+    finally:
+        thread_context.exit()
+        if app._inflight_turn_stats is not None:
+            app._session_stats.merge(turn_stats)
+            app._inflight_turn_stats = None
+        if retry_after_exc is not None:
+            await asyncio.sleep(SCHEDULED_TRANSIENT_RETRY_DELAY_SECONDS)
+            await app._run_agent_task(request)
+            return
+        await app._cleanup_agent_task(generation=request.generation)
 
 
 def agent_error_detail_with_server_log(app: Any, exc: BaseException) -> str:  # noqa: ANN401

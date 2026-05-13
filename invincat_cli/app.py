@@ -96,13 +96,7 @@ from invincat_cli.app_runtime.queueing import can_bypass_busy_queue
 from invincat_cli.app_runtime.scheduler import (
     should_deliver_scheduled_result,
 )
-from invincat_cli.app_runtime.agent import (
-    AgentThreadOverrideContext,
-    AgentTurnRequest,
-    build_agent_cli_context,
-    resolve_wecom_file_request_handler,
-    should_route_message_to_planner,
-)
+from invincat_cli.app_runtime.agent import AgentTurnRequest, should_route_message_to_planner
 from invincat_cli.app_runtime.services import AppServices
 from invincat_cli.app_runtime.startup import (
     build_startup_slash_commands,
@@ -151,9 +145,6 @@ from invincat_cli.wecom.session import (
 logger = logging.getLogger(__name__)
 configure_debug_logging(logger)
 _monotonic = time.monotonic
-
-_SCHEDULED_TRANSIENT_RETRY_DELAY_SECONDS = 3.0
-
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -2419,77 +2410,9 @@ class DeepAgentsApp(App):
         This runs in a Textual worker so the main event loop stays responsive.
         """
         # Caller ensures _ui_adapter is set (checked in _handle_user_message)
-        if self._ui_adapter is None:
-            return
-        from invincat_cli.textual_adapter import execute_task_textual
+        from invincat_cli.app_runtime.agent_handlers import run_agent_task
 
-        target_agent = request.agent_override or self._agent
-        if target_agent is None or self._session_state is None:
-            return
-        session_state = self._session_state
-
-        # Create the stats object up-front and store on the app so
-        # exit() can merge it synchronously if the worker is cancelled
-        # before this method can return (e.g. Ctrl+D during HITL).
-        turn_stats = SessionStats()
-        self._inflight_turn_stats = turn_stats
-        self._inflight_turn_start = time.monotonic()
-        thread_context = AgentThreadOverrideContext(
-            session_state,
-            request.thread_id_override,
-        )
-        retry_after_exc: BaseException | None = None
-        effective_wecom_file_request = resolve_wecom_file_request_handler(
-            explicit_handler=request.on_wecom_file_request,
-            active_scheduled_wecom_chat_id=self._active_scheduled_wecom_chat_id(),
-            scheduled_handler=self._send_scheduled_wecom_file_request,
-        )
-        try:
-            thread_context.enter()
-            await execute_task_textual(
-                user_input=request.message,
-                agent=target_agent,
-                assistant_id=self._assistant_id,
-                session_state=session_state,
-                adapter=self._ui_adapter,
-                backend=self._backend,
-                image_tracker=self._image_tracker,
-                sandbox_type=self._sandbox_type,
-                is_planner_turn=self._active_turn_is_planner,
-                message_kwargs=request.message_kwargs,
-                context=build_agent_cli_context(
-                    model=self._model_override,
-                    model_params=self._model_params_override,
-                    memory_model=self._memory_model_override,
-                    memory_model_params=self._memory_model_params_override,
-                    wecom_enabled=effective_wecom_file_request is not None,
-                    scheduled_run=self._active_scheduled_run is not None,
-                ),
-                turn_stats=turn_stats,
-                on_text_delta=request.on_text_delta,
-                on_wecom_file_request=effective_wecom_file_request,
-                on_schedule_payload=self._handle_schedule_tool_payload,
-            )
-            if request.post_turn_hook is not None:
-                await request.post_turn_hook()
-        except Exception as e:  # Resilient tool rendering
-            if await self._handle_agent_task_exception(e):
-                retry_after_exc = e
-        finally:
-            thread_context.exit()
-            # Merge turn stats before cleanup — _cleanup_agent_task may raise
-            # during teardown (widget removal on a torn-down DOM), and stats
-            # should ideally be captured regardless.
-            # exit() clears _inflight_turn_stats when it merges, so
-            # checking for None prevents double-counting.
-            if self._inflight_turn_stats is not None:
-                self._session_stats.merge(turn_stats)
-                self._inflight_turn_stats = None
-            if retry_after_exc is not None:
-                await asyncio.sleep(_SCHEDULED_TRANSIENT_RETRY_DELAY_SECONDS)
-                await self._run_agent_task(request)
-                return
-            await self._cleanup_agent_task(generation=request.generation)
+        await run_agent_task(self, request)
 
     async def _handle_agent_task_exception(self, exc: BaseException) -> bool:
         """Handle a failed agent turn and return whether it should retry."""
