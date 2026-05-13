@@ -74,7 +74,7 @@ from invincat_cli.app_runtime.model_runtime import ResolvedModelSpec
 from invincat_cli.app_runtime.scheduler import (
     should_deliver_scheduled_result,
 )
-from invincat_cli.app_runtime.agent import AgentTurnRequest, should_route_message_to_planner
+from invincat_cli.app_runtime.agent import AgentTurnRequest
 from invincat_cli.app_runtime.services import AppServices
 from invincat_cli.app_runtime.startup import (
     create_startup_session_state,
@@ -1607,16 +1607,10 @@ class DeepAgentsApp(App):
             on_text_delta: Optional callback for each real assistant text chunk.
             on_wecom_file_request: Optional callback for WeCom file-send requests.
         """
-        if should_route_message_to_planner(self._session_state):
-            await self._mount_message(UserMessage(message))
-            planner_started = await self._run_planner(message)
-            if not planner_started:
-                self._reset_plan_mode_state()
-            return
+        from invincat_cli.app_runtime.input_handlers import handle_user_message
 
-        # Mount the user message
-        await self._mount_message(UserMessage(message))
-        await self._send_to_agent(
+        await handle_user_message(
+            self,
             message,
             on_text_delta=on_text_delta,
             on_wecom_file_request=on_wecom_file_request,

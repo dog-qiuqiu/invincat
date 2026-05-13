@@ -6,9 +6,10 @@ import logging
 from typing import Any
 
 from invincat_cli.app_runtime.queueing import can_bypass_busy_queue
+from invincat_cli.app_runtime.agent import should_route_message_to_planner
 from invincat_cli.app_runtime.state import InputMode, QueuedMessage
 from invincat_cli.i18n import t
-from invincat_cli.widgets.messages import QueuedUserMessage
+from invincat_cli.widgets.messages import QueuedUserMessage, UserMessage
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,29 @@ async def process_message(app: Any, value: str, mode: InputMode) -> None:  # noq
     else:
         logger.warning("Unrecognized input mode %r, treating as normal", mode)
         await app._handle_user_message(value)
+
+
+async def handle_user_message(
+    app: Any,  # noqa: ANN401
+    message: str,
+    *,
+    on_text_delta: Any | None = None,
+    on_wecom_file_request: Any | None = None,
+) -> None:
+    """Mount a user message and route it to the planner or main agent."""
+    if should_route_message_to_planner(app._session_state):
+        await app._mount_message(UserMessage(message))
+        planner_started = await app._run_planner(message)
+        if not planner_started:
+            app._reset_plan_mode_state()
+        return
+
+    await app._mount_message(UserMessage(message))
+    await app._send_to_agent(
+        message,
+        on_text_delta=on_text_delta,
+        on_wecom_file_request=on_wecom_file_request,
+    )
 
 
 def can_bypass_queue(app: Any, value: str) -> bool:  # noqa: ANN401
