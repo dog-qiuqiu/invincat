@@ -215,6 +215,23 @@ def agent_error_detail_with_server_log(app: Any, exc: BaseException) -> str:  # 
     return build_agent_error_detail(exc, server_log_tail=server_log_tail)
 
 
+def finish_active_scheduled_run_as_failed(app: Any, error: str) -> None:  # noqa: ANN401
+    """Finish the active scheduled run as failed, if one is active."""
+    if app._active_scheduled_run is None:
+        return
+
+    run_id, task_id = app._active_scheduled_run
+    app._active_scheduled_run = None
+    if app._scheduler_runner is not None:
+        with suppress(Exception):
+            app._scheduler_runner.finish_run(
+                run_id,
+                task_id,
+                status="failed",
+                error=error,
+            )
+
+
 async def cleanup_agent_task(app: Any, *, generation: int = 0) -> None:  # noqa: ANN401
     """Clean up after agent task completes or is cancelled."""
     cleanup_state = resolve_agent_cleanup_start_state(

@@ -1552,19 +1552,11 @@ class DeepAgentsApp(App):
 
     def _finish_active_scheduled_run_as_failed(self, error: str) -> None:
         """Finish the active scheduled run as failed, if one is active."""
-        if self._active_scheduled_run is None:
-            return
+        from invincat_cli.app_runtime.agent_handlers import (
+            finish_active_scheduled_run_as_failed,
+        )
 
-        run_id, task_id = self._active_scheduled_run
-        self._active_scheduled_run = None
-        if self._scheduler_runner is not None:
-            with suppress(Exception):
-                self._scheduler_runner.finish_run(
-                    run_id,
-                    task_id,
-                    status="failed",
-                    error=error,
-                )
+        finish_active_scheduled_run_as_failed(self, error)
 
     async def _run_agent_task(
         self,
