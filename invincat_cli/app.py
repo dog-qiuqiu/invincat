@@ -110,23 +110,7 @@ from invincat_cli.app_runtime.plan import (
 from invincat_cli.app_runtime.model_args import (
     split_model_spec,
 )
-from invincat_cli.app_runtime.model_runtime import (
-    ResolvedModelSpec,
-    already_using_model_display,
-    can_start_deferred_server_for_model_switch,
-    choose_default_model_clear_fn,
-    choose_default_model_save_fn,
-    is_target_already_using,
-    missing_credentials_detail,
-    model_switch_requires_server_error,
-    model_switch_target_kwargs,
-    model_status_fields,
-    model_target_translation_key,
-    normalize_default_model_spec,
-    resolve_model_spec,
-    should_primary_switch_update_memory_status,
-    should_start_server_after_primary_model_switch,
-)
+from invincat_cli.app_runtime.model_runtime import ResolvedModelSpec
 from invincat_cli.app_runtime.queueing import can_bypass_busy_queue
 from invincat_cli.app_runtime.scheduler import (
     should_deliver_scheduled_result,
@@ -180,7 +164,6 @@ from invincat_cli.app_runtime.thread_runtime import (
 from invincat_cli.app_runtime.ui_actions import (
     capture_chat_scroll_state,
     resolve_memory_store_paths,
-    resolve_model_selector_state,
     restore_chat_scroll_state,
     should_defer_modal_action,
 )
@@ -4467,64 +4450,13 @@ class DeepAgentsApp(App):
             target: Selection target (`'primary'` or `'memory'`).
             extra_kwargs: Extra constructor kwargs from `--model-params`.
         """
-        from functools import partial
+        from invincat_cli.app_runtime.model_handlers import show_model_selector
 
-        from invincat_cli.config import settings
-        from invincat_cli.widgets.model_selector import ModelSelectorScreen
-
-        selector_state = resolve_model_selector_state(
-            settings_model_provider=settings.model_provider,
-            settings_model_name=settings.model_name,
-            memory_model_override=self._memory_model_override,
+        await show_model_selector(
+            self,
+            target=target,
+            extra_kwargs=extra_kwargs,
         )
-
-        def handle_result(result: tuple[str, str, ModelTarget] | None) -> None:
-            """Handle the model selector result."""
-            if result is not None:
-                model_spec, _, selected_target = result
-                if should_defer_modal_action(
-                    agent_running=self._agent_running,
-                    shell_running=self._shell_running,
-                    connecting=self._connecting,
-                ):
-                    self._defer_action(
-                        DeferredAction(
-                            kind=f"model_switch_{selected_target}",
-                            execute=partial(
-                                self._switch_model,
-                                model_spec,
-                                target=selected_target,
-                                extra_kwargs=extra_kwargs,
-                                persist_as_default=True,
-                            ),
-                        )
-                    )
-                    self.notify(
-                        t("app.model_switch_pending"), timeout=3
-                    )
-                else:
-                    self.call_later(
-                        partial(
-                            self._switch_model,
-                            model_spec,
-                            target=selected_target,
-                            extra_kwargs=extra_kwargs,
-                            persist_as_default=True,
-                        )
-                    )
-            # Refocus input after modal closes
-            if self._chat_input:
-                self._chat_input.focus_input()
-
-        screen = ModelSelectorScreen(
-            current_model=selector_state.current_model,
-            current_provider=selector_state.current_provider,
-            current_memory_model=selector_state.memory_model,
-            current_memory_provider=selector_state.memory_provider,
-            initial_target=target,
-            cli_profile_override=self._profile_override,
-        )
-        self.push_screen(screen, handle_result)
 
     def _register_custom_themes(self) -> None:
         """Register all custom themes (built-in LC + user-defined) with Textual."""
@@ -4805,43 +4737,21 @@ class DeepAgentsApp(App):
         target_kwargs: dict[str, Any] | None,
     ) -> None:
         """Update deferred server kwargs and start the background server."""
-        assert self._server_kwargs is not None
+        from invincat_cli.app_runtime.model_handlers import (
+            start_server_after_primary_model_switch,
+        )
 
-        self._server_kwargs["model_name"] = resolved.display
-        self._server_kwargs["model_params"] = target_kwargs
-        self._model_kwargs = None
-        self._defer_server_start = False
-        self._connecting = True
-        with suppress(NoMatches):
-            banner = self.query_one("#welcome-banner", WelcomeBanner)
-            banner.set_connecting()
-        self.run_worker(
-            self._start_server_background,
-            exclusive=True,
-            group="server-startup",
+        start_server_after_primary_model_switch(
+            self,
+            resolved=resolved,
+            target_kwargs=target_kwargs,
         )
 
     def _apply_primary_model_status(self, *, model_result: Any) -> None:
         """Update status-bar labels after switching the primary model."""
-        if not self._status_bar:
-            return
+        from invincat_cli.app_runtime.model_handlers import apply_primary_model_status
 
-        status_model = model_status_fields(
-            provider=model_result.provider,
-            model_name=model_result.model_name,
-        )
-        self._status_bar.set_model(
-            provider=status_model.provider,
-            model=status_model.model,
-        )
-        if should_primary_switch_update_memory_status(
-            memory_model_override=self._memory_model_override,
-        ):
-            self._status_bar.set_memory_model(
-                provider=status_model.provider,
-                model=status_model.model,
-                follow_primary=True,
-            )
+        apply_primary_model_status(self, model_result=model_result)
 
     async def _apply_primary_model_switch(
         self,
@@ -4853,31 +4763,16 @@ class DeepAgentsApp(App):
         save_recent_model: Callable[[str], bool],
     ) -> None:
         """Apply primary model switch side effects."""
-        model_result.apply_to_settings()
-        self._model_override = resolved.display
-        self._model_params_override = target_kwargs
-        self._invalidate_planner_agent_cache()
-        if remote_agent is None:
-            self._model = model_result.model
+        from invincat_cli.app_runtime.model_handlers import apply_primary_model_switch
 
-        self._apply_primary_model_status(model_result=model_result)
-
-        if should_start_server_after_primary_model_switch(
-            has_remote_agent=remote_agent is not None,
-            has_server_kwargs=self._server_kwargs is not None,
-        ):
-            self._start_server_after_primary_model_switch(
-                resolved=resolved,
-                target_kwargs=target_kwargs,
-            )
-
-        if not await asyncio.to_thread(save_recent_model, resolved.display):
-            await self._mount_message(ErrorMessage(t("model.preference_save_failed")))
-        else:
-            await self._mount_message(
-                AppMessage(t("model.switched_to").format(model=resolved.display))
-            )
-        logger.info("Primary model switched to %s", resolved.display)
+        await apply_primary_model_switch(
+            self,
+            resolved=resolved,
+            model_result=model_result,
+            target_kwargs=target_kwargs,
+            remote_agent=remote_agent,
+            save_recent_model=save_recent_model,
+        )
 
     async def _apply_memory_model_switch(
         self,
@@ -4887,22 +4782,14 @@ class DeepAgentsApp(App):
         target_kwargs: dict[str, Any] | None,
     ) -> None:
         """Apply memory model switch side effects."""
-        self._memory_model_override = resolved.display
-        self._memory_model_params_override = target_kwargs
-        status_model = model_status_fields(
-            provider=model_result.provider,
-            model_name=model_result.model_name,
+        from invincat_cli.app_runtime.model_handlers import apply_memory_model_switch
+
+        await apply_memory_model_switch(
+            self,
+            resolved=resolved,
+            model_result=model_result,
+            target_kwargs=target_kwargs,
         )
-        if self._status_bar:
-            self._status_bar.set_memory_model(
-                provider=status_model.provider,
-                model=status_model.model,
-                follow_primary=False,
-            )
-        await self._mount_message(
-            AppMessage(t("model.memory_switched_to").format(model=resolved.display))
-        )
-        logger.info("Memory model switched to %s", resolved.display)
 
     async def _resume_thread(self, thread_id: str) -> None:
         """Resume a previously saved thread.
@@ -4945,135 +4832,15 @@ class DeepAgentsApp(App):
             persist_as_default: Whether to persist this selected model as the
                 target's default preference.
         """
-        from invincat_cli.config import create_model, detect_provider, settings
-        from invincat_cli.model_config import (
-            clear_caches,
-            get_credential_env_var,
-            get_target_model_params,
-            has_provider_credentials,
-            save_recent_model,
+        from invincat_cli.app_runtime.model_handlers import switch_model
+
+        await switch_model(
+            self,
+            model_spec,
+            target=target,
+            extra_kwargs=extra_kwargs,
+            persist_as_default=persist_as_default,
         )
-
-        logger.info("Switching %s model to %s", target, model_spec)
-
-        if self._model_switching:
-            await self._mount_message(AppMessage(t("model.switch_in_progress")))
-            return
-
-        self._model_switching = True
-        try:
-            current_model_name = settings.model_name
-            current_model_provider = settings.model_provider
-
-            clear_caches()
-
-            resolved = resolve_model_spec(
-                model_spec,
-                detect_provider=detect_provider,
-            )
-
-            has_creds = (
-                has_provider_credentials(resolved.provider)
-                if resolved.provider
-                else None
-            )
-            if has_creds is False and resolved.provider is not None:
-                detail = missing_credentials_detail(
-                    resolved.provider,
-                    get_credential_env_var=get_credential_env_var,
-                )
-                await self._mount_message(
-                    ErrorMessage(t("model.missing_credentials").format(detail=detail))
-                )
-                return
-            if has_creds is None and resolved.provider:
-                logger.debug(
-                    "Credentials for provider '%s' cannot be verified;"
-                    " proceeding anyway",
-                    resolved.provider,
-                )
-
-            target_kwargs = model_switch_target_kwargs(
-                extra_kwargs=extra_kwargs,
-                saved_kwargs=get_target_model_params(target, resolved.display),
-            )
-
-            remote_agent = self._remote_agent()
-            can_start_deferred_server = can_start_deferred_server_for_model_switch(
-                target=target,
-                has_server_kwargs=self._server_kwargs is not None,
-                connecting=self._connecting,
-            )
-            if model_switch_requires_server_error(
-                has_remote_agent=remote_agent is not None,
-                can_start_deferred_server=can_start_deferred_server,
-            ):
-                await self._mount_message(
-                    ErrorMessage(t("model.switch_requires_server"))
-                )
-                return
-
-            if is_target_already_using(
-                target=target,
-                resolved=resolved,
-                current_provider=current_model_provider,
-                current_model_name=current_model_name,
-                memory_model_override=self._memory_model_override,
-            ):
-                current = already_using_model_display(
-                    target=target,
-                    resolved=resolved,
-                    current_provider=current_model_provider,
-                    current_model_name=current_model_name,
-                )
-                await self._mount_message(
-                    AppMessage(t("model.already_using").format(model=current))
-                )
-                return
-
-            try:
-                model_result = create_model(
-                    resolved.display,
-                    extra_kwargs=target_kwargs,
-                    profile_overrides=self._profile_override,
-                )
-            except Exception as exc:
-                logger.exception(
-                    "Failed to resolve model metadata for %s",
-                    resolved.display,
-                )
-                await self._mount_message(
-                    ErrorMessage(t("model.switch_failed").format(error=str(exc)))
-                )
-                return
-
-            if target == "primary":
-                await self._apply_primary_model_switch(
-                    resolved=resolved,
-                    model_result=model_result,
-                    target_kwargs=target_kwargs,
-                    remote_agent=remote_agent,
-                    save_recent_model=save_recent_model,
-                )
-            else:
-                await self._apply_memory_model_switch(
-                    resolved=resolved,
-                    model_result=model_result,
-                    target_kwargs=target_kwargs,
-                )
-
-            if persist_as_default:
-                await self._set_default_model(
-                    resolved.display,
-                    target=target,
-                    announce=False,
-                )
-
-            # Anchor to bottom so the confirmation message is visible
-            with suppress(NoMatches, ScreenStackError):
-                self.query_one("#chat", VerticalScroll).anchor()
-        finally:
-            self._model_switching = False
 
     async def _set_default_model(
         self,
@@ -5095,52 +4862,15 @@ class DeepAgentsApp(App):
             apply_to_session: Whether to also apply this default immediately
                 to current in-memory session state for the target.
         """
-        from invincat_cli.config import detect_provider
-        from invincat_cli.model_config import (
-            save_default_model,
-            save_memory_default_model,
-        )
+        from invincat_cli.app_runtime.model_handlers import set_default_model
 
-        model_spec = normalize_default_model_spec(
+        return await set_default_model(
+            self,
             model_spec,
-            detect_provider=detect_provider,
+            target=target,
+            announce=announce,
+            apply_to_session=apply_to_session,
         )
-
-        save_fn = choose_default_model_save_fn(
-            target,
-            save_default_model=save_default_model,
-            save_memory_default_model=save_memory_default_model,
-        )
-        target_label = t(model_target_translation_key(target))
-
-        if await asyncio.to_thread(save_fn, model_spec):
-            if apply_to_session and target == "memory":
-                self._memory_model_override = model_spec
-                self._memory_model_params_override = None
-                if self._status_bar:
-                    mem_provider, mem_model = split_model_spec(model_spec)
-                    self._status_bar.set_memory_model(
-                        provider=mem_provider,
-                        model=mem_model,
-                        follow_primary=False,
-                    )
-            if announce:
-                await self._mount_message(
-                    AppMessage(
-                        t("model.default_target_set_to").format(
-                            target=target_label, spec=model_spec
-                        )
-                    )
-                )
-            return True
-        else:
-            if announce:
-                await self._mount_message(
-                    ErrorMessage(
-                        t("model.failed_target_save").format(target=target_label)
-                    )
-                )
-            return False
 
     async def _clear_default_model(self, *, target: ModelTarget = "primary") -> None:
         """Remove default model target from config.
@@ -5148,30 +4878,9 @@ class DeepAgentsApp(App):
         For primary model, launches fall back to `[models].recent` or
         environment auto-detection. For memory model, launches follow primary.
         """
-        from invincat_cli.model_config import (
-            clear_default_model,
-            clear_memory_default_model,
-        )
+        from invincat_cli.app_runtime.model_handlers import clear_default_model
 
-        clear_fn = choose_default_model_clear_fn(
-            target,
-            clear_default_model=clear_default_model,
-            clear_memory_default_model=clear_memory_default_model,
-        )
-        target_label = t(model_target_translation_key(target))
-
-        if await asyncio.to_thread(clear_fn):
-            await self._mount_message(
-                AppMessage(
-                    t("model.default_target_cleared").format(target=target_label)
-                )
-            )
-        else:
-            await self._mount_message(
-                ErrorMessage(
-                    t("model.failed_target_clear").format(target=target_label)
-                )
-            )
+        await clear_default_model(self, target=target)
 
 async def run_textual_app(
     *,
