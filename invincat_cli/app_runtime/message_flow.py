@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from textual.containers import Container
+from textual.containers import Container, VerticalScroll
 from textual.css.query import NoMatches
+from textual.widget import Widget
 
 from invincat_cli.app_runtime.thread_history import (
     is_in_flight_tool_widget,
@@ -14,7 +15,7 @@ from invincat_cli.app_runtime.thread_history import (
     tool_tracking_keys_for_widget,
 )
 from invincat_cli.widgets.message_store import MessageData
-from invincat_cli.widgets.messages import QueuedUserMessage
+from invincat_cli.widgets.messages import AssistantMessage, QueuedUserMessage
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +125,108 @@ async def prune_old_messages(app: Any) -> None:  # noqa: ANN401
 
     if pruned_ids:
         app._message_store.mark_pruned(pruned_ids)
+
+
+def check_hydration_needed(app: Any) -> None:  # noqa: ANN401
+    """Schedule hydration when the user scrolls near the top."""
+    if not app._message_store.has_messages_above:
+        return
+
+    try:
+        chat = app.query_one("#chat", VerticalScroll)
+    except NoMatches:
+        logger.debug("Skipping hydration check: #chat container not found")
+        return
+
+    scroll_y = chat.scroll_y
+    viewport_height = chat.size.height
+
+    if app._message_store.should_hydrate_above(scroll_y, viewport_height):
+        app.call_later(app._hydrate_messages_above)
+
+
+async def hydrate_messages_above(app: Any) -> None:  # noqa: ANN401
+    """Hydrate older messages when the user scrolls near the top."""
+    if not app._message_store.has_messages_above:
+        return
+
+    try:
+        chat = app.query_one("#chat", VerticalScroll)
+    except NoMatches:
+        logger.debug("Skipping hydration: #chat not found")
+        return
+
+    try:
+        messages_container = app.query_one("#messages", Container)
+    except NoMatches:
+        logger.debug("Skipping hydration: #messages not found")
+        return
+
+    to_hydrate = app._message_store.get_messages_to_hydrate()
+    if not to_hydrate:
+        return
+
+    old_scroll_y = chat.scroll_y
+    first_child = (
+        messages_container.children[0] if messages_container.children else None
+    )
+
+    hydrated_count = 0
+    hydrated_widgets: list[tuple[Widget, MessageData]] = []
+    for msg_data in to_hydrate:
+        try:
+            widget = msg_data.to_widget()
+            hydrated_widgets.append((widget, msg_data))
+        except Exception:
+            logger.warning(
+                "Failed to create widget for message %s",
+                msg_data.id,
+                exc_info=True,
+            )
+
+    widgets_to_mount = [widget for widget, _ in hydrated_widgets]
+    try:
+        if first_child:
+            await messages_container.mount(*widgets_to_mount, before=first_child)
+        else:
+            await messages_container.mount(*widgets_to_mount)
+        hydrated_count = len(widgets_to_mount)
+    except Exception:
+        logger.warning(
+            "Batch hydration mount failed; falling back to sequential",
+            exc_info=True,
+        )
+        for widget, _ in hydrated_widgets:
+            try:
+                if first_child:
+                    await messages_container.mount(widget, before=first_child)
+                else:
+                    await messages_container.mount(widget)
+                first_child = widget
+                hydrated_count += 1
+            except Exception:
+                logger.warning(
+                    "Failed to mount hydrated widget %s",
+                    widget.id,
+                    exc_info=True,
+                )
+
+    for widget, msg_data in hydrated_widgets:
+        if isinstance(widget, AssistantMessage) and msg_data.content:
+            try:
+                await widget.set_content(msg_data.content)
+            except Exception:
+                logger.warning(
+                    "Failed to set content for hydrated widget",
+                    exc_info=True,
+                )
+
+    if hydrated_count > 0:
+        app._message_store.mark_hydrated(hydrated_count)
+
+    estimated_height_per_message = 5
+    added_height = hydrated_count * estimated_height_per_message
+    chat.scroll_y = old_scroll_y + added_height
 
 
 async def clear_messages(app: Any) -> None:  # noqa: ANN401
