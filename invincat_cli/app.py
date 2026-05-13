@@ -75,7 +75,6 @@ from invincat_cli.app_runtime.approval import (
     user_is_typing,
 )
 from invincat_cli.app_runtime.model_runtime import ResolvedModelSpec
-from invincat_cli.app_runtime.queueing import can_bypass_busy_queue
 from invincat_cli.app_runtime.scheduler import (
     should_deliver_scheduled_result,
 )
@@ -1375,15 +1374,9 @@ class DeepAgentsApp(App):
             value: The message text to process.
             mode: The input mode that determines message routing.
         """
-        if mode == "shell":
-            await self._handle_shell_command(value.removeprefix("!"))
-        elif mode == "command":
-            await self._handle_command(value)
-        elif mode == "normal":
-            await self._handle_user_message(value)
-        else:
-            logger.warning("Unrecognized input mode %r, treating as normal", mode)
-            await self._handle_user_message(value)
+        from invincat_cli.app_runtime.input_handlers import process_message
+
+        await process_message(self, value, mode)
 
     def _can_bypass_queue(self, value: str) -> bool:
         """Check if a slash command can skip the message queue.
@@ -1394,55 +1387,15 @@ class DeepAgentsApp(App):
         Returns:
             `True` if the command should bypass the busy-state queue.
         """
-        return can_bypass_busy_queue(
-            value,
-            connecting=self._connecting,
-            agent_running=self._agent_running,
-            shell_running=self._shell_running,
-        )
+        from invincat_cli.app_runtime.input_handlers import can_bypass_queue
+
+        return can_bypass_queue(self, value)
 
     async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         """Handle submitted input from ChatInput widget."""
-        value = event.value
-        mode: InputMode = event.mode  # type: ignore[assignment]  # Textual event mode is str at type level but InputMode at runtime
+        from invincat_cli.app_runtime.input_handlers import handle_chat_input_submitted
 
-        # Reset quit pending state on any input
-        self._quit_pending = False
-
-        from invincat_cli.hooks import dispatch_hook
-
-        await dispatch_hook("user.prompt", {})
-
-        # /quit and /q always execute immediately, even mid-thread-switch.
-        from invincat_cli.command_registry import ALWAYS_IMMEDIATE
-
-        if mode == "command" and value.lower().strip() in ALWAYS_IMMEDIATE:
-            self.exit()
-            return
-
-        # Prevent message handling while a thread switch is in-flight.
-        if self._thread_switching:
-            self.notify(
-                t("app.thread_switch_in_progress"),
-                severity="warning",
-                timeout=3,
-            )
-            return
-
-        # If agent/shell is running or server is still starting up, enqueue
-        # instead of processing. Messages queued during connection are drained
-        # once the server is ready (see on_deep_agents_app_server_ready).
-        if self._agent_running or self._shell_running or self._connecting:
-            if mode == "command" and self._can_bypass_queue(value.lower().strip()):
-                await self._process_message(value, mode)
-                return
-            self._pending_messages.append(QueuedMessage(text=value, mode=mode))
-            queued_widget = QueuedUserMessage(value)
-            self._queued_widgets.append(queued_widget)
-            await self._mount_message(queued_widget)
-            return
-
-        await self._process_message(value, mode)
+        await handle_chat_input_submitted(self, event)
 
     def on_chat_input_mode_changed(self, event: ChatInput.ModeChanged) -> None:
         """Update status bar when input mode changes."""
