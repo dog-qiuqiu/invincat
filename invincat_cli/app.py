@@ -79,7 +79,6 @@ from invincat_cli.app_runtime.approval import (
 from invincat_cli.app_runtime.plan import (
     build_plan_text,
     build_plan_handoff_prompt,
-    build_planner_system_prompt,
     build_planner_turn_input,
     extract_latest_ai_text,
     extract_todos_from_state,
@@ -1432,69 +1431,9 @@ class DeepAgentsApp(App):
         main agent (same interaction/runtime behavior), but with a dedicated
         planning system prompt.
         """
-        if self._planner_agent is not None:
-            return self._planner_agent
-        try:
-            from pathlib import Path
+        from invincat_cli.app_runtime.plan_handlers import ensure_planner_agent
 
-            from langgraph.checkpoint.memory import InMemorySaver
-
-            from invincat_cli.agent import create_cli_agent
-            from invincat_cli.plan_agent import (
-                PLANNER_APPROVE_PLAN_SYSTEM_PROMPT,
-                PLANNER_ALLOWED_TOOLS,
-                PLANNER_SYSTEM_PROMPT,
-                PlannerToolAllowListMiddleware,
-                PlannerVisibleToolsMiddleware,
-            )
-            from invincat_cli.config import settings
-            from invincat_cli.project_utils import ProjectContext
-            from invincat_cli.tools import fetch_url, web_search
-
-            model = self._model if self._model is not None else (self._model_override or "claude-sonnet-4-6")
-            planner_assistant_id = f"{self._assistant_id or 'agent'}-planner"
-            planner_tools: list[Any] = [fetch_url]
-            planner_allowed_tools = set(PLANNER_ALLOWED_TOOLS)
-            if settings.has_tavily:
-                planner_tools.append(web_search)
-            else:
-                planner_allowed_tools.discard("web_search")
-            project_context = ProjectContext.from_user_cwd(Path(self._cwd))
-            planner_system_prompt = build_planner_system_prompt(
-                base_prompt=PLANNER_SYSTEM_PROMPT,
-                cwd=self._cwd,
-            )
-            planner_checkpointer = getattr(self._agent, "checkpointer", None)
-            if planner_checkpointer is None:
-                # approve_plan relies on Command(resume=...), which requires
-                # a checkpointer. Fallback to in-memory checkpointing for the
-                # planner peer-agent if main agent metadata is unavailable.
-                planner_checkpointer = InMemorySaver()
-            planner_agent, _planner_backend = create_cli_agent(
-                model=model,
-                assistant_id=planner_assistant_id,
-                system_prompt=planner_system_prompt,
-                auto_approve=self._auto_approve,
-                enable_memory=False,
-                enable_skills=False,
-                enable_ask_user=True,
-                enable_shell=False,
-                tools=planner_tools,
-                cwd=self._cwd,
-                project_context=project_context,
-                mcp_server_info=self._mcp_server_info,
-                checkpointer=planner_checkpointer,
-                approve_plan_system_prompt=PLANNER_APPROVE_PLAN_SYSTEM_PROMPT,
-                extra_middleware=[
-                    PlannerVisibleToolsMiddleware(planner_allowed_tools),
-                    PlannerToolAllowListMiddleware(planner_allowed_tools)
-                ],
-            )
-            self._planner_agent = planner_agent
-            return self._planner_agent
-        except Exception:
-            logger.exception("Failed to initialize planner agent")
-            return None
+        return await ensure_planner_agent(self)
 
     async def _get_thread_state_values_for_agent(
         self,
