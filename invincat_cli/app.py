@@ -180,10 +180,7 @@ from invincat_cli.app_runtime.shell import (
     should_start_new_shell_session,
 )
 from invincat_cli.app_runtime.skill import (
-    build_skill_agent_metadata,
-    build_skill_invocation_prompt,
     discover_skills_and_roots,
-    find_skill,
 )
 from invincat_cli.app_runtime.startup import (
     build_startup_slash_commands,
@@ -3382,156 +3379,9 @@ class DeepAgentsApp(App):
         Args:
             command: The full command string (e.g., `/skill:web-research find X`).
         """
-        from invincat_cli.command_registry import parse_skill_command
-        from invincat_cli.skills.load import load_skill_content
+        from invincat_cli.app_runtime.skill_handlers import handle_skill_command
 
-        skill_name, args = parse_skill_command(command)
-        if not skill_name:
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(AppMessage(t("skill.usage")))
-            return
-
-        # Fast path: look up from the cached discovery results
-        cached = find_skill(self._discovered_skills, skill_name)
-        allowed_roots = self._skill_allowed_roots
-
-        # Cache miss — fall back to fresh discovery (offloaded to thread)
-        if cached is None:
-            try:
-                skills, allowed_roots = await asyncio.to_thread(
-                    self._discover_skills_and_roots
-                )
-                # Backfill cache so subsequent invocations are fast
-                self._discovered_skills = skills
-                self._skill_allowed_roots = allowed_roots
-                cached = find_skill(skills, skill_name)
-            except OSError as exc:
-                logger.warning(
-                    "Filesystem error loading skill %r", skill_name, exc_info=True
-                )
-                await self._mount_message(UserMessage(command))
-                await self._mount_message(
-                    AppMessage(
-                        t("skill.load_filesystem_error").format(
-                            skill=skill_name,
-                            error=str(exc),
-                        )
-                    )
-                )
-                return
-            except Exception as exc:
-                logger.warning(
-                    "Error searching for skill %r", skill_name, exc_info=True
-                )
-                await self._mount_message(UserMessage(command))
-                await self._mount_message(
-                    AppMessage(
-                        t("skill.load_unexpected_error").format(
-                            skill=skill_name,
-                            error=f"{type(exc).__name__}: {exc}",
-                        )
-                    )
-                )
-                return
-
-        if cached is None:
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(t("skill.not_found").format(skill=skill_name))
-            )
-            return
-
-        # Load SKILL.md content (filesystem I/O offloaded to thread)
-        skill_path = cached["path"]
-
-        def _load() -> str | None:
-            return load_skill_content(str(skill_path), allowed_roots=allowed_roots)
-
-        try:
-            content = await asyncio.to_thread(_load)
-        except PermissionError as exc:
-            logger.warning(
-                "Containment check failed for skill %r", skill_name, exc_info=True
-            )
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(
-                    t("skill.load_permission_error").format(
-                        skill=skill_name,
-                        error=str(exc),
-                    )
-                )
-            )
-            return
-        except OSError as exc:
-            logger.warning(
-                "Filesystem error loading skill %r", skill_name, exc_info=True
-            )
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(
-                    t("skill.load_filesystem_error").format(
-                        skill=skill_name,
-                        error=str(exc),
-                    )
-                )
-            )
-            return
-        except Exception as exc:
-            logger.warning("Error reading skill %r", skill_name, exc_info=True)
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(
-                    t("skill.load_unexpected_error").format(
-                        skill=skill_name,
-                        error=f"{type(exc).__name__}: {exc}",
-                    )
-                )
-            )
-            return
-
-        if content is None:
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(
-                    t("skill.content_unreadable").format(skill=skill_name)
-                )
-            )
-            return
-
-        if not content.strip():
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(
-                    t("skill.content_empty").format(skill=skill_name)
-                )
-            )
-            return
-
-        prompt = build_skill_invocation_prompt(
-            skill=cached,
-            content=content,
-            args=args,
-        )
-
-        await self._mount_message(
-            SkillMessage(
-                skill_name=cached["name"],
-                description=str(cached.get("description", "")),
-                source=str(cached.get("source", "")),
-                body=content,
-                args=args,
-            )
-        )
-        await self._send_to_agent(
-            prompt,
-            message_kwargs={
-                "additional_kwargs": build_skill_agent_metadata(
-                    skill=cached,
-                    args=args,
-                ),
-            },
-        )
+        await handle_skill_command(self, command)
 
     async def _get_conversation_token_count(self) -> int | None:
         """Return the approximate conversation-only token count.
