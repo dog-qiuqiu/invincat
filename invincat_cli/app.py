@@ -44,7 +44,6 @@ def _patch_textual_utf8_decoder() -> None:
 
 
 _patch_textual_utf8_decoder()
-from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -89,7 +88,6 @@ from invincat_cli.widgets.chat_input import ChatInput
 from invincat_cli.widgets.messages import (
     AppMessage,
     AssistantMessage,
-    ErrorMessage,
     SkillMessage,
     ToolCallMessage,
 )
@@ -1887,47 +1885,21 @@ class DeepAgentsApp(App):
         Args:
             action: The deferred action to queue.
         """
-        self._deferred_actions = [
-            a for a in self._deferred_actions if a.kind != action.kind
-        ]
-        self._deferred_actions.append(action)
+        from invincat_cli.app_runtime.deferred_handlers import defer_action
+
+        defer_action(self, action)
 
     async def _maybe_drain_deferred(self) -> None:
         """Drain deferred actions unless a server connection is still in progress."""
-        if not self._connecting:
-            await self._drain_deferred_actions()
-            if (
-                self._pending_plan_handoff_prompt
-                and not (self._agent_running or self._shell_running or self._connecting)
-            ):
-                prompt = self._pending_plan_handoff_prompt
-                self._pending_plan_handoff_prompt = None
-                try:
-                    await self._execute_plan_handoff(prompt)
-                except Exception:
-                    self._pending_plan_handoff_prompt = prompt
-                    raise
+        from invincat_cli.app_runtime.deferred_handlers import maybe_drain_deferred
+
+        await maybe_drain_deferred(self)
 
     async def _drain_deferred_actions(self) -> None:
         """Execute deferred actions queued while busy (e.g. model/thread switch)."""
-        while self._deferred_actions:
-            action = self._deferred_actions.pop(0)
-            try:
-                await action.execute()
-            except Exception:
-                logger.exception(
-                    "Failed to execute deferred action %r (callable=%r)",
-                    action.kind,
-                    action.execute,
-                )
-                label = action.kind.replace("_", " ")
-                with suppress(Exception):
-                    await self._mount_message(
-                        ErrorMessage(
-                            f"Deferred {label} failed unexpectedly. "
-                            "You may need to retry the operation."
-                        )
-                    )
+        from invincat_cli.app_runtime.deferred_handlers import drain_deferred_actions
+
+        await drain_deferred_actions(self)
 
     def _cancel_worker(self, worker: Worker[None] | None) -> None:
         """Discard the message queue and cancel an active worker.
