@@ -727,7 +727,9 @@ def test_handle_user_message_rolls_back_plan_mode_when_planner_fails() -> None:
     app._mount_message = _fake_mount_message  # type: ignore[method-assign]
 
     async def _run() -> None:
-        await app._handle_user_message("生成计划")
+        from invincat_cli.app_runtime.input_handlers import handle_user_message
+
+        await handle_user_message(app, "生成计划")
 
     asyncio.run(_run())
     assert app._session_state.plan_mode is False

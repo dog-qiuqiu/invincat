@@ -21,10 +21,10 @@ async def process_message(app: Any, value: str, mode: InputMode) -> None:  # noq
     elif mode == "command":
         await app._handle_command(value)
     elif mode == "normal":
-        await app._handle_user_message(value)
+        await handle_user_message(app, value)
     else:
         logger.warning("Unrecognized input mode %r, treating as normal", mode)
-        await app._handle_user_message(value)
+        await handle_user_message(app, value)
 
 
 async def handle_user_message(

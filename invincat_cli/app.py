@@ -1373,29 +1373,6 @@ class DeepAgentsApp(App):
 
         await handle_offload(self)
 
-    async def _handle_user_message(
-        self,
-        message: str,
-        *,
-        on_text_delta: Callable[[str, str], Awaitable[None]] | None = None,
-        on_wecom_file_request: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
-    ) -> None:
-        """Handle a user message to send to the agent.
-
-        Args:
-            message: The user's message
-            on_text_delta: Optional callback for each real assistant text chunk.
-            on_wecom_file_request: Optional callback for WeCom file-send requests.
-        """
-        from invincat_cli.app_runtime.input_handlers import handle_user_message
-
-        await handle_user_message(
-            self,
-            message,
-            on_text_delta=on_text_delta,
-            on_wecom_file_request=on_wecom_file_request,
-        )
-
     async def _send_to_agent(
         self,
         message: str,

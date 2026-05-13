@@ -20,6 +20,7 @@ from invincat_cli.app_runtime.server import (
     should_drain_queue_on_server_ready,
     should_update_default_agent_from_thread,
 )
+from invincat_cli.app_runtime.input_handlers import handle_user_message
 from invincat_cli.app_runtime.startup import resolve_startup_followup
 from invincat_cli.app_runtime.thread_handlers import load_thread_history
 from invincat_cli.i18n import t
@@ -180,7 +181,7 @@ def handle_server_ready(app: Any, event: Any) -> None:  # noqa: ANN401
     )
     if followup and followup.kind == "submit_prompt" and followup.prompt is not None:
         app.call_after_refresh(
-            lambda: asyncio.create_task(app._handle_user_message(followup.prompt))
+            lambda: asyncio.create_task(handle_user_message(app, followup.prompt))
         )
     elif followup and followup.kind == "load_history":
         app.call_after_refresh(lambda: asyncio.create_task(load_thread_history(app)))

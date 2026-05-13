@@ -21,6 +21,7 @@ from invincat_cli.app_runtime.wecom import (
     wecom_bridge_offline_error,
     wecom_turn_is_busy,
 )
+from invincat_cli.app_runtime.input_handlers import handle_user_message
 from invincat_cli.wecom.media import build_wecom_agent_input_with_media_downloads
 from invincat_cli.wecom.bridge import WeComBridge
 from invincat_cli.wecom.session import WECOM_AGENT_TIMEOUT
@@ -176,7 +177,8 @@ async def process_wecom_message_via_cli(
         on_text_delta: Callable[[str, str], Awaitable[None]],
         on_wecom_file_request: Callable[[dict[str, Any]], Awaitable[None]],
     ) -> None:
-        await app._handle_user_message(
+        await handle_user_message(
+            app,
             message,
             on_text_delta=on_text_delta,
             on_wecom_file_request=on_wecom_file_request,
