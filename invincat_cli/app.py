@@ -156,16 +156,9 @@ from invincat_cli.app_runtime.startup import (
 )
 from invincat_cli.app_runtime.theme_prefs import (
     load_theme_preference,
-    save_theme_preference,
 )
 from invincat_cli.app_runtime.thread_runtime import (
     ThreadSwitchSnapshot,
-)
-from invincat_cli.app_runtime.ui_actions import (
-    capture_chat_scroll_state,
-    resolve_memory_store_paths,
-    restore_chat_scroll_state,
-    should_defer_modal_action,
 )
 from invincat_cli.core.debug import configure_debug_logging
 from invincat_cli.core.session_stats import (
@@ -4492,183 +4485,45 @@ class DeepAgentsApp(App):
 
     async def _show_theme_selector(self) -> None:
         """Show interactive theme selector as a modal screen."""
-        from invincat_cli.widgets.theme_selector import ThemeSelectorScreen
+        from invincat_cli.app_runtime.ui_handlers import show_theme_selector
 
-        # Capture scroll state.  The submit handler may have already caused
-        # a reflow that re-anchored to the bottom, so we save the *current*
-        # offset and release the anchor to prevent further drift while the
-        # modal is open.
-        chat = self.query_one("#chat", VerticalScroll)
-        scroll_snapshot = capture_chat_scroll_state(chat)
-
-        def handle_result(result: str | None) -> None:
-            """Handle the theme selector result."""
-            if result is not None:
-                self.theme = result
-                self.refresh_css(animate=False)
-
-                async def _persist() -> None:
-                    try:
-                        ok = await asyncio.to_thread(save_theme_preference, result)
-                        if not ok:
-                            self.notify(
-                                t("app.theme_not_saved"),
-                                severity="warning",
-                                timeout=6,
-                                markup=False,
-                            )
-                    except Exception:
-                        logger.warning(
-                            "Failed to persist theme preference",
-                            exc_info=True,
-                        )
-                        self.notify(
-                            t("app.theme_not_saved"),
-                            severity="warning",
-                            timeout=6,
-                            markup=False,
-                        )
-
-                self.call_later(_persist)
-            # Restore scroll position, then re-anchor if it was anchored.
-            restore_chat_scroll_state(chat, scroll_snapshot)
-            if self._chat_input:
-                self._chat_input.focus_input()
-
-        screen = ThemeSelectorScreen(current_theme=self.theme)
-        self.push_screen(screen, handle_result)
+        await show_theme_selector(self)
 
     async def _show_language_selector(self) -> None:
         """Show interactive language selector as a modal screen."""
-        from invincat_cli.i18n import Language, get_i18n
-        from invincat_cli.widgets.language_selector import LanguageSelectorScreen
+        from invincat_cli.app_runtime.ui_handlers import show_language_selector
 
-        chat = self.query_one("#chat", VerticalScroll)
-        scroll_snapshot = capture_chat_scroll_state(chat)
-
-        def handle_result(result: Language | None) -> None:
-            """Handle the language selector result."""
-            if result is not None:
-                i18n = get_i18n()
-                lang_name = i18n.get_language_name(result)
-                self.notify(
-                    t("app.language_changed_to", language=lang_name),
-                    severity="information",
-                    timeout=3,
-                )
-                self._refresh_all_ui_text()
-            restore_chat_scroll_state(chat, scroll_snapshot)
-            if self._chat_input:
-                self._chat_input.focus_input()
-
-        i18n = get_i18n()
-        screen = LanguageSelectorScreen(current_language=i18n.language)
-        self.push_screen(screen, handle_result)
+        await show_language_selector(self)
 
     def _refresh_all_ui_text(self) -> None:
         """Refresh all UI text to reflect language change."""
-        from invincat_cli.command_registry import COMMANDS, build_skill_commands
+        from invincat_cli.app_runtime.ui_handlers import refresh_all_ui_text
 
-        try:
-            banner = self.query_one("#welcome-banner", WelcomeBanner)
-            banner.update(banner._build_banner(banner._project_url))
-        except NoMatches:
-            pass
-
-        try:
-            status_bar = self.query_one(StatusBar)
-            status_bar.refresh()
-        except NoMatches:
-            pass
-
-        try:
-            if self._chat_input:
-                self._chat_input.update_slash_commands(
-                    build_startup_slash_commands(
-                        commands=COMMANDS,
-                        discovered_skills=self._discovered_skills,
-                        build_skill_commands=build_skill_commands,
-                    )
-                )
-        except Exception:
-            pass
+        refresh_all_ui_text(self)
 
     async def _show_mcp_viewer(self) -> None:
         """Show read-only MCP server/tool viewer as a modal screen."""
-        from invincat_cli.widgets.mcp_viewer import MCPViewerScreen
+        from invincat_cli.app_runtime.ui_handlers import show_mcp_viewer
 
-        screen = MCPViewerScreen(server_info=self._mcp_server_info or [])
-
-        def handle_result(result: None) -> None:  # noqa: ARG001
-            if self._chat_input:
-                self._chat_input.focus_input()
-
-        self.push_screen(screen, handle_result)
+        await show_mcp_viewer(self)
 
     def _resolve_memory_store_paths(self) -> dict[str, str]:
         """Resolve user/project memory store paths for the current session."""
-        from invincat_cli.config import settings
+        from invincat_cli.app_runtime.ui_handlers import resolve_memory_store_paths
 
-        return resolve_memory_store_paths(
-            cwd=self._cwd,
-            assistant_id=self._assistant_id,
-            get_agent_dir=settings.get_agent_dir,
-        )
+        return resolve_memory_store_paths(self)
 
     async def _show_memory_viewer(self) -> None:
         """Show memory manager modal with live store state."""
-        from invincat_cli.widgets.memory_viewer import MemoryViewerScreen
+        from invincat_cli.app_runtime.ui_handlers import show_memory_viewer
 
-        screen = MemoryViewerScreen(
-            memory_store_paths=self._resolve_memory_store_paths(),
-        )
-
-        def handle_result(result: None) -> None:  # noqa: ARG001
-            if self._chat_input:
-                self._chat_input.focus_input()
-
-        self.push_screen(screen, handle_result)
+        await show_memory_viewer(self)
 
     async def _show_thread_selector(self) -> None:
         """Show interactive thread selector as a modal screen."""
-        from functools import partial
+        from invincat_cli.app_runtime.ui_handlers import show_thread_selector
 
-        from invincat_cli.sessions import get_cached_threads, get_thread_limit
-        from invincat_cli.widgets.thread_selector import ThreadSelectorScreen
-
-        current = self._session_state.thread_id if self._session_state else None
-        thread_limit = get_thread_limit()
-
-        initial_threads = get_cached_threads(limit=thread_limit, require_message_counts=True)
-
-        def handle_result(result: str | None) -> None:
-            """Handle the thread selector result."""
-            if result is not None:
-                if should_defer_modal_action(
-                    agent_running=self._agent_running,
-                    shell_running=self._shell_running,
-                    connecting=self._connecting,
-                ):
-                    self._defer_action(
-                        DeferredAction(
-                            kind="thread_switch",
-                            execute=partial(self._resume_thread, result),
-                        )
-                    )
-                    self.notify(
-                        t("app.thread_switch_pending"), timeout=3
-                    )
-                else:
-                    self.call_later(self._resume_thread, result)
-            if self._chat_input:
-                self._chat_input.focus_input()
-
-        screen = ThreadSelectorScreen(
-            current_thread=current,
-            thread_limit=thread_limit,
-            initial_threads=initial_threads,
-        )
-        self.push_screen(screen, handle_result)
+        await show_thread_selector(self)
 
     def _update_welcome_banner(
         self,
@@ -4684,14 +4539,14 @@ class DeepAgentsApp(App):
             missing_message: Log message template when banner is missing.
             warn_if_missing: Whether to log missing-banner cases at warning level.
         """
-        try:
-            banner = self.query_one("#welcome-banner", WelcomeBanner)
-            banner.update_thread_id(thread_id)
-        except NoMatches:
-            if warn_if_missing:
-                logger.warning(missing_message, thread_id)
-            else:
-                logger.debug(missing_message, thread_id)
+        from invincat_cli.app_runtime.ui_handlers import update_welcome_banner
+
+        update_welcome_banner(
+            self,
+            thread_id,
+            missing_message=missing_message,
+            warn_if_missing=warn_if_missing,
+        )
 
     async def _reset_thread_conversation_view(self) -> None:
         """Clear visible conversation state before loading another thread."""
