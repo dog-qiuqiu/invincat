@@ -1842,6 +1842,7 @@ def test_app_finish_active_scheduled_run_as_failed() -> None:
 
 def test_app_complete_active_scheduled_run_delivers_and_finishes() -> None:
     from invincat_cli.app import DeepAgentsApp
+    from invincat_cli.app_runtime.scheduled_delivery import complete_active_scheduled_run
 
     delivered: list[tuple[str, str, str, str | None]] = []
     finishes: list[tuple[str, str, str, str | None]] = []
@@ -1862,6 +1863,7 @@ def test_app_complete_active_scheduled_run_delivers_and_finishes() -> None:
             finishes.append((run_id, task_id, status, error))
 
     async def deliver(
+        _app,
         *,
         task_id: str,
         run_id: str,
@@ -1877,9 +1879,8 @@ def test_app_complete_active_scheduled_run_delivers_and_finishes() -> None:
     app._scheduled_turn_retry_used = True
     app._scheduler_store = Store()
     app._scheduler_runner = Runner()
-    app._deliver_scheduled_result_to_wecom = deliver
 
-    asyncio.run(app._complete_active_scheduled_run())
+    asyncio.run(complete_active_scheduled_run(app, deliver_result=deliver))
 
     assert app._active_scheduled_run is None
     assert app._scheduled_turn_error is None
@@ -1890,6 +1891,7 @@ def test_app_complete_active_scheduled_run_delivers_and_finishes() -> None:
 
 def test_app_complete_active_scheduled_run_skips_finished_delivery() -> None:
     from invincat_cli.app import DeepAgentsApp
+    from invincat_cli.app_runtime.scheduled_delivery import complete_active_scheduled_run
 
     delivered: list[str] = []
     finishes: list[tuple[str, str, str, str | None]] = []
@@ -1909,7 +1911,7 @@ def test_app_complete_active_scheduled_run_skips_finished_delivery() -> None:
         ) -> None:
             finishes.append((run_id, task_id, status, error))
 
-    async def deliver(**_kwargs) -> None:  # noqa: ANN003
+    async def deliver(_app, **_kwargs) -> None:  # noqa: ANN001, ANN003
         delivered.append("called")
 
     app = DeepAgentsApp.__new__(DeepAgentsApp)
@@ -1919,9 +1921,8 @@ def test_app_complete_active_scheduled_run_skips_finished_delivery() -> None:
     app._scheduled_turn_retry_used = False
     app._scheduler_store = Store()
     app._scheduler_runner = Runner()
-    app._deliver_scheduled_result_to_wecom = deliver
 
-    asyncio.run(app._complete_active_scheduled_run())
+    asyncio.run(complete_active_scheduled_run(app, deliver_result=deliver))
 
     assert delivered == []
     assert finishes == [("run-1", "task-1", "success", None)]

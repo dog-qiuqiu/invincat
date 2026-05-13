@@ -67,9 +67,6 @@ from invincat_cli.app_runtime.approval import (
     user_is_typing,
 )
 from invincat_cli.app_runtime.model_runtime import ResolvedModelSpec
-from invincat_cli.app_runtime.scheduler import (
-    should_deliver_scheduled_result,
-)
 from invincat_cli.app_runtime.agent import AgentTurnRequest
 from invincat_cli.app_runtime.services import AppServices
 from invincat_cli.app_runtime.startup import (
@@ -1201,27 +1198,6 @@ class DeepAgentsApp(App):
 
         cancel_timed_out_scheduled_turn(self, run_id, task_id)
 
-    async def _deliver_scheduled_result_to_wecom(
-        self,
-        *,
-        task_id: str,
-        run_id: str,
-        status: str,
-        error: str | None,
-    ) -> None:
-        """Best-effort active WeCom delivery for a completed scheduled run."""
-        from invincat_cli.app_runtime.scheduled_delivery import (
-            deliver_scheduled_result_to_wecom,
-        )
-
-        await deliver_scheduled_result_to_wecom(
-            self,
-            task_id=task_id,
-            run_id=run_id,
-            status=status,
-            error=error,
-        )
-
     async def _send_scheduled_wecom_text(
         self,
         *,
@@ -1593,60 +1569,6 @@ class DeepAgentsApp(App):
         )
 
         await run_post_agent_cleanup_side_effects(self)
-
-    async def _complete_active_scheduled_run(self) -> None:
-        """Record completion and WeCom delivery for the active scheduled run."""
-        if self._active_scheduled_run is None:
-            return
-
-        run_id, task_id = self._active_scheduled_run
-        self._active_scheduled_run = None
-        try:
-            if self._scheduler_runner is not None:
-                await self._deliver_active_scheduled_result_if_needed(
-                    run_id=run_id,
-                    task_id=task_id,
-                )
-                self._finish_scheduled_run(run_id=run_id, task_id=task_id)
-        finally:
-            self._reset_scheduled_turn_state()
-
-    async def _deliver_active_scheduled_result_if_needed(
-        self,
-        *,
-        run_id: str,
-        task_id: str,
-    ) -> None:
-        """Deliver scheduled result to WeCom unless the run already finished."""
-        run = self._scheduler_store.load_run(run_id)
-        if not should_deliver_scheduled_result(run):
-            return
-        try:
-            await self._deliver_scheduled_result_to_wecom(
-                task_id=task_id,
-                run_id=run_id,
-                status=self._scheduled_turn_status,
-                error=self._scheduled_turn_error,
-            )
-        except Exception:
-            logger.exception("Failed to deliver scheduled run %r to WeCom", run_id)
-
-    def _finish_scheduled_run(self, *, run_id: str, task_id: str) -> None:
-        """Mark a scheduled run as finished in the scheduler runner."""
-        try:
-            self._scheduler_runner.finish_run(
-                run_id,
-                task_id,
-                status=self._scheduled_turn_status,
-                error=self._scheduled_turn_error,
-            )
-        except Exception:
-            logger.exception("Failed to finish scheduled run %r", run_id)
-
-    def _reset_scheduled_turn_state(self) -> None:
-        """Reset per-turn scheduled-run result bookkeeping."""
-        self._scheduled_turn_error = None
-        self._scheduled_turn_retry_used = False
 
     async def _drain_scheduler_if_idle(self) -> None:
         """Drain scheduler fire-now queue when no foreground task is running."""

@@ -13,6 +13,7 @@ from invincat_cli.app_runtime.scheduler import (
     remove_scheduled_messages,
     resolve_scheduled_wecom_file_path,
     scheduled_run_matches,
+    should_deliver_scheduled_result,
     wecom_daemon_claims_scheduled_task,
 )
 from invincat_cli.app_runtime.state import QueuedMessage
@@ -70,6 +71,72 @@ async def handle_scheduled_timeout(
         status="timeout",
         error="Scheduled task timed out",
     )
+
+
+async def complete_active_scheduled_run(
+    app: Any,  # noqa: ANN401
+    *,
+    deliver_result: Any | None = None,  # noqa: ANN401
+) -> None:
+    """Record completion and WeCom delivery for the active scheduled run."""
+    if app._active_scheduled_run is None:
+        return
+
+    run_id, task_id = app._active_scheduled_run
+    app._active_scheduled_run = None
+    try:
+        if app._scheduler_runner is not None:
+            await deliver_active_scheduled_result_if_needed(
+                app,
+                run_id=run_id,
+                task_id=task_id,
+                deliver_result=deliver_result or deliver_scheduled_result_to_wecom,
+            )
+            finish_scheduled_run(app, run_id=run_id, task_id=task_id)
+    finally:
+        reset_scheduled_turn_state(app)
+
+
+async def deliver_active_scheduled_result_if_needed(
+    app: Any,  # noqa: ANN401
+    *,
+    run_id: str,
+    task_id: str,
+    deliver_result: Any,  # noqa: ANN401
+) -> None:
+    """Deliver scheduled result to WeCom unless the run already finished."""
+    run = app._scheduler_store.load_run(run_id)
+    if not should_deliver_scheduled_result(run):
+        return
+    try:
+        await deliver_result(
+            app,
+            task_id=task_id,
+            run_id=run_id,
+            status=app._scheduled_turn_status,
+            error=app._scheduled_turn_error,
+        )
+    except Exception:
+        logger.exception("Failed to deliver scheduled run %r to WeCom", run_id)
+
+
+def finish_scheduled_run(app: Any, *, run_id: str, task_id: str) -> None:  # noqa: ANN401
+    """Mark a scheduled run as finished in the scheduler runner."""
+    try:
+        app._scheduler_runner.finish_run(
+            run_id,
+            task_id,
+            status=app._scheduled_turn_status,
+            error=app._scheduled_turn_error,
+        )
+    except Exception:
+        logger.exception("Failed to finish scheduled run %r", run_id)
+
+
+def reset_scheduled_turn_state(app: Any) -> None:  # noqa: ANN401
+    """Reset per-turn scheduled-run result bookkeeping."""
+    app._scheduled_turn_error = None
+    app._scheduled_turn_retry_used = False
 
 
 def cancel_timed_out_scheduled_turn(

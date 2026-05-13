@@ -25,6 +25,7 @@ from invincat_cli.app_runtime.agent import (
     should_clear_scheduled_run_before_send,
     should_continue_after_deferred_actions,
 )
+from invincat_cli.app_runtime.scheduled_delivery import complete_active_scheduled_run
 from invincat_cli.core.session_stats import SessionStats
 from invincat_cli.i18n import t
 from invincat_cli.widgets.messages import AppMessage, ErrorMessage
@@ -294,6 +295,6 @@ async def run_post_agent_cleanup_side_effects(app: Any) -> None:  # noqa: ANN401
         logger.exception("Auto-offload failed during agent cleanup")
 
     await app._maybe_notify_memory_update()
-    await app._complete_active_scheduled_run()
+    await complete_active_scheduled_run(app)
     await app._drain_scheduler_if_idle()
     await app._process_next_from_queue()
