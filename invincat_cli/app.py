@@ -72,12 +72,8 @@ from invincat_cli.app_runtime.state import (
     new_thread_id,
 )
 from invincat_cli.app_runtime.approval import (
-    INTERACTION_POLL_SECONDS,
     TYPING_IDLE_THRESHOLD_SECONDS,
-    deadline_expired,
     plan_todos_fingerprint,
-    pending_interaction_timeout_log,
-    pending_widget_deadline,
     user_is_typing,
 )
 from invincat_cli.app_runtime.plan import (
@@ -1708,14 +1704,9 @@ class DeepAgentsApp(App):
             widget: Ask-user widget instance to remove.
             context: Short context string for diagnostics.
         """
-        try:
-            await widget.remove()
-        except Exception:
-            logger.debug(
-                "Failed to remove ask-user widget during %s",
-                context,
-                exc_info=True,
-            )
+        from invincat_cli.app_runtime.approval_handlers import remove_ask_user_widget
+
+        await remove_ask_user_widget(widget, context=context)
 
     async def _request_ask_user(
         self,
@@ -1737,23 +1728,11 @@ class DeepAgentsApp(App):
 
     async def _wait_for_pending_ask_user_widget(self) -> None:
         """Wait for an active ask_user widget, forcing cleanup on timeout."""
-        if self._pending_ask_user_widget is None:
-            return
+        from invincat_cli.app_runtime.approval_handlers import (
+            wait_for_pending_ask_user_widget,
+        )
 
-        deadline = pending_widget_deadline(now=_monotonic())
-        while self._pending_ask_user_widget is not None:
-            if deadline_expired(now=_monotonic(), deadline=deadline):
-                logger.error(pending_interaction_timeout_log(kind="ask_user"))
-                old_widget = self._pending_ask_user_widget
-                if old_widget is not None:
-                    old_widget.action_cancel()
-                    self._pending_ask_user_widget = None
-                    await self._remove_ask_user_widget(
-                        old_widget,
-                        context="ask-user timeout cleanup",
-                    )
-                break
-            await asyncio.sleep(INTERACTION_POLL_SECONDS)
+        await wait_for_pending_ask_user_widget(self)
 
     async def _mount_ask_user_widget(
         self,
@@ -1761,45 +1740,31 @@ class DeepAgentsApp(App):
         result_future: asyncio.Future[AskUserWidgetResult],
     ) -> None:
         """Mount the ask_user widget and focus the active field."""
-        try:
-            messages = self.query_one("#messages", Container)
-            await self._mount_before_queued(messages, menu)
-            self.call_after_refresh(menu.scroll_visible)
-            self.call_after_refresh(menu.focus_active)
-        except Exception as e:
-            logger.exception(
-                "Failed to mount ask-user menu (id=%s)",
-                menu.id,
-            )
-            self._pending_ask_user_widget = None
-            if not result_future.done():
-                result_future.set_exception(e)
+        from invincat_cli.app_runtime.approval_handlers import mount_ask_user_widget
+
+        await mount_ask_user_widget(self, menu, result_future)
 
     async def on_ask_user_menu_answered(
         self,
         event: Any,  # noqa: ARG002, ANN401
     ) -> None:
         """Handle ask_user menu answers - remove widget and refocus input."""
-        if self._pending_ask_user_widget:
-            widget = self._pending_ask_user_widget
-            self._pending_ask_user_widget = None
-            await self._remove_ask_user_widget(widget, context="ask-user answered")
+        from invincat_cli.app_runtime.approval_handlers import (
+            handle_ask_user_menu_answered,
+        )
 
-        if self._chat_input:
-            self.call_after_refresh(self._chat_input.focus_input)
+        await handle_ask_user_menu_answered(self)
 
     async def on_ask_user_menu_cancelled(
         self,
         event: Any,  # noqa: ARG002, ANN401
     ) -> None:
         """Handle ask_user menu cancellation - remove widget and refocus input."""
-        if self._pending_ask_user_widget:
-            widget = self._pending_ask_user_widget
-            self._pending_ask_user_widget = None
-            await self._remove_ask_user_widget(widget, context="ask-user cancelled")
+        from invincat_cli.app_runtime.approval_handlers import (
+            handle_ask_user_menu_cancelled,
+        )
 
-        if self._chat_input:
-            self.call_after_refresh(self._chat_input.focus_input)
+        await handle_ask_user_menu_cancelled(self)
 
     async def _request_approve_plan(
         self,
@@ -1823,22 +1788,22 @@ class DeepAgentsApp(App):
         event: Any,  # noqa: ARG002, ANN401
     ) -> None:
         """Handle approve widget approval - remove widget and refocus input."""
-        from invincat_cli.i18n import t
+        from invincat_cli.app_runtime.approval_handlers import (
+            handle_approve_widget_approved,
+        )
 
-        await self._mount_message(AppMessage(t("approve.approved")))
-        if self._chat_input:
-            self.call_after_refresh(self._chat_input.focus_input)
+        await handle_approve_widget_approved(self)
 
     async def on_approve_widget_rejected(
         self,
         event: Any,  # noqa: ARG002, ANN401
     ) -> None:
         """Handle approve widget rejection - remove widget and refocus input."""
-        from invincat_cli.i18n import t
+        from invincat_cli.app_runtime.approval_handlers import (
+            handle_approve_widget_rejected,
+        )
 
-        await self._mount_message(AppMessage(t("approve.rejected")))
-        if self._chat_input:
-            self.call_after_refresh(self._chat_input.focus_input)
+        await handle_approve_widget_rejected(self)
 
     async def _process_message(self, value: str, mode: InputMode) -> None:
         """Route a message to the appropriate handler based on mode.

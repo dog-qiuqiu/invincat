@@ -337,3 +337,101 @@ async def request_ask_user(
     await app._mount_ask_user_widget(menu, result_future)
 
     return result_future
+
+
+async def remove_ask_user_widget(
+    widget: Any,  # noqa: ANN401
+    *,
+    context: str,
+) -> None:
+    """Remove an ask_user widget without surfacing cleanup races."""
+    try:
+        await widget.remove()
+    except Exception:
+        logger.debug(
+            "Failed to remove ask-user widget during %s",
+            context,
+            exc_info=True,
+        )
+
+
+async def wait_for_pending_ask_user_widget(app: Any) -> None:  # noqa: ANN401
+    """Wait for an active ask_user widget, forcing cleanup on timeout."""
+    if app._pending_ask_user_widget is None:
+        return
+
+    deadline = pending_widget_deadline(now=_monotonic())
+    while app._pending_ask_user_widget is not None:
+        if deadline_expired(now=_monotonic(), deadline=deadline):
+            logger.error(pending_interaction_timeout_log(kind="ask_user"))
+            old_widget = app._pending_ask_user_widget
+            if old_widget is not None:
+                old_widget.action_cancel()
+                app._pending_ask_user_widget = None
+                await app._remove_ask_user_widget(
+                    old_widget,
+                    context="ask-user timeout cleanup",
+                )
+            break
+        await asyncio.sleep(INTERACTION_POLL_SECONDS)
+
+
+async def mount_ask_user_widget(
+    app: Any,  # noqa: ANN401
+    menu: Any,  # noqa: ANN401
+    result_future: asyncio.Future[AskUserWidgetResult],
+) -> None:
+    """Mount the ask_user widget and focus the active field."""
+    try:
+        messages = app.query_one("#messages", Container)
+        await app._mount_before_queued(messages, menu)
+        app.call_after_refresh(menu.scroll_visible)
+        app.call_after_refresh(menu.focus_active)
+    except Exception as exc:
+        logger.exception(
+            "Failed to mount ask-user menu (id=%s)",
+            menu.id,
+        )
+        app._pending_ask_user_widget = None
+        if not result_future.done():
+            result_future.set_exception(exc)
+
+
+async def handle_ask_user_menu_answered(app: Any) -> None:  # noqa: ANN401
+    """Handle ask_user menu answers: remove widget and refocus input."""
+    if app._pending_ask_user_widget:
+        widget = app._pending_ask_user_widget
+        app._pending_ask_user_widget = None
+        await app._remove_ask_user_widget(widget, context="ask-user answered")
+
+    if app._chat_input:
+        app.call_after_refresh(app._chat_input.focus_input)
+
+
+async def handle_ask_user_menu_cancelled(app: Any) -> None:  # noqa: ANN401
+    """Handle ask_user menu cancellation: remove widget and refocus input."""
+    if app._pending_ask_user_widget:
+        widget = app._pending_ask_user_widget
+        app._pending_ask_user_widget = None
+        await app._remove_ask_user_widget(widget, context="ask-user cancelled")
+
+    if app._chat_input:
+        app.call_after_refresh(app._chat_input.focus_input)
+
+
+async def handle_approve_widget_approved(app: Any) -> None:  # noqa: ANN401
+    """Handle approve widget approval."""
+    from invincat_cli.i18n import t
+
+    await app._mount_message(AppMessage(t("approve.approved")))
+    if app._chat_input:
+        app.call_after_refresh(app._chat_input.focus_input)
+
+
+async def handle_approve_widget_rejected(app: Any) -> None:  # noqa: ANN401
+    """Handle approve widget rejection."""
+    from invincat_cli.i18n import t
+
+    await app._mount_message(AppMessage(t("approve.rejected")))
+    if app._chat_input:
+        app.call_after_refresh(app._chat_input.focus_input)
