@@ -121,17 +121,6 @@ from invincat_cli.app_runtime.agent import (
     should_route_message_to_planner,
 )
 from invincat_cli.app_runtime.services import AppServices
-from invincat_cli.app_runtime.server import (
-    count_mcp_tools,
-    normalize_server_start_error,
-    resolve_mcp_preload_result,
-    resolve_most_recent_agent_filter,
-    resolve_no_recent_threads_notice,
-    resolve_thread_not_found_notice,
-    should_drain_deferred_on_server_ready,
-    should_drain_queue_on_server_ready,
-    should_update_default_agent_from_thread,
-)
 from invincat_cli.app_runtime.startup import (
     build_startup_slash_commands,
     create_startup_session_state,
@@ -990,70 +979,9 @@ class DeepAgentsApp(App):
         `self._assistant_id` / `self._server_kwargs`. Falls back to a fresh
         thread on any DB error.
         """
-        from invincat_cli.sessions import (
-            find_similar_threads,
-            generate_thread_id,
-            get_most_recent,
-            get_thread_agent,
-            thread_exists,
-        )
+        from invincat_cli.app_runtime.server_handlers import resolve_resume_thread
 
-        resume = self._resume_thread_intent
-        self._resume_thread_intent = None  # consumed
-
-        if not resume:
-            return
-
-        try:
-            if resume == "__MOST_RECENT__":
-                agent_filter = resolve_most_recent_agent_filter(
-                    assistant_id=self._assistant_id
-                )
-                thread_id = await get_most_recent(agent_filter)
-                if thread_id:
-                    agent_name = await get_thread_agent(thread_id)
-                    if agent_name:
-                        self._assistant_id = agent_name
-                        if self._server_kwargs:
-                            self._server_kwargs["assistant_id"] = agent_name
-                    self._lc_thread_id = thread_id
-                else:
-                    self._lc_thread_id = generate_thread_id()
-                    notice = resolve_no_recent_threads_notice(agent_filter)
-                    msg = t(notice.key, **notice.params)
-                    self.notify(msg, severity="warning", markup=False)
-            elif await thread_exists(resume):
-                self._lc_thread_id = resume
-                if should_update_default_agent_from_thread(
-                    assistant_id=self._assistant_id
-                ):
-                    agent_name = await get_thread_agent(resume)
-                    if agent_name:
-                        self._assistant_id = agent_name
-                        if self._server_kwargs:
-                            self._server_kwargs["assistant_id"] = agent_name
-            else:
-                # Thread not found — notify + fall back to new thread
-                self._lc_thread_id = generate_thread_id()
-                similar = await find_similar_threads(resume)
-                notice = resolve_thread_not_found_notice(
-                    thread_id=resume,
-                    similar=similar,
-                )
-                hint = t(notice.key, **notice.params)
-                self.notify(hint, severity="warning", timeout=6, markup=False)
-        except Exception:
-            logger.exception("Failed to resolve resume thread %r", resume)
-            self._lc_thread_id = generate_thread_id()
-            self.notify(
-                t("app.thread_lookup_failed"),
-                severity="warning",
-            )
-
-        # Update session state if ready (may still be initializing in a
-        # concurrent worker)
-        if self._session_state:
-            self._session_state.thread_id = self._lc_thread_id
+        await resolve_resume_thread(self)
 
     async def _start_server_background(self) -> None:
         """Background worker: resolve resume-thread intent, start server + MCP preload.
@@ -1061,159 +989,21 @@ class DeepAgentsApp(App):
         Also runs deferred model creation if `model_kwargs` was provided,
         so the langchain import + init doesn't block first paint.
         """
-        # Phase 1: Resolve resume thread (if any) before server startup
-        if self._resume_thread_intent:
-            await self._resolve_resume_thread()
+        from invincat_cli.app_runtime.server_handlers import start_server_background
 
-        # Run deferred model creation. settings.model_name / model_provider
-        # are already set eagerly for the status bar display; this call
-        # does the heavy langchain import + SDK init and may refine them
-        # (e.g., context_limit from the model profile).
-        model_instance: BaseChatModel | None = None
-        if self._model_kwargs is not None:
-            from invincat_cli.config import create_model
-            from invincat_cli.model_config import ModelConfigError, save_recent_model
-
-            try:
-                result = create_model(**self._model_kwargs)
-            except ModelConfigError as exc:
-                self.post_message(self.ServerStartFailed(error=exc))
-                return
-            result.apply_to_settings()
-            save_recent_model(f"{result.provider}:{result.model_name}")
-            model_instance = result.model
-            self._model_kwargs = None  # consumed
-
-        from invincat_cli.server.manager import start_server_and_get_agent
-
-        coros: list[Any] = [start_server_and_get_agent(**self._server_kwargs)]  # type: ignore[arg-type]
-
-        if self._mcp_preload_kwargs is not None:
-            from invincat_cli.main import _preload_session_mcp_server_info
-
-            coros.append(_preload_session_mcp_server_info(**self._mcp_preload_kwargs))
-
-        try:
-            results = await asyncio.gather(*coros, return_exceptions=True)
-        except Exception as exc:  # noqa: BLE001  # defensive catch around gather
-            self.post_message(self.ServerStartFailed(error=exc))
-            return
-
-        server_result = results[0]
-        server_error = normalize_server_start_error(server_result)
-        if server_error is not None:
-            self.post_message(self.ServerStartFailed(error=server_error))
-            return
-
-        agent, server_proc, _ = server_result
-
-        # Assign immediately so the finally block in run_textual_app can
-        # clean up the server even if the ServerReady message is never
-        # processed (e.g. user quits during startup).
-        self._server_proc = server_proc
-
-        mcp_preload = resolve_mcp_preload_result(results)
-        if mcp_preload.error is not None:
-            logger.warning(
-                "MCP metadata preload failed: %s",
-                mcp_preload.error,
-                exc_info=mcp_preload.error,
-            )
-
-        self.post_message(
-            self.ServerReady(
-                agent=agent,
-                server_proc=server_proc,
-                mcp_server_info=mcp_preload.info,
-                model=model_instance,
-            )
-        )
+        await start_server_background(self)
 
     def on_deep_agents_app_server_ready(self, event: ServerReady) -> None:
         """Handle successful background server startup."""
-        self._connecting = False
-        self._agent = event.agent
-        self._server_proc = event.server_proc
-        self._mcp_server_info = event.mcp_server_info
-        self._mcp_tool_count = count_mcp_tools(event.mcp_server_info)
-        if event.model is not None:
-            self._model = event.model
+        from invincat_cli.app_runtime.server_handlers import handle_server_ready
 
-        # Update welcome banner to show ready state
-        try:
-            banner = self.query_one("#welcome-banner", WelcomeBanner)
-            banner.set_connected(self._mcp_tool_count)
-        except NoMatches:
-            logger.warning("Welcome banner not found during server ready transition")
-
-        # Handle deferred initial prompt or thread history
-        followup = resolve_startup_followup(
-            connecting=self._connecting,
-            initial_prompt=self._initial_prompt,
-            thread_id=self._lc_thread_id,
-            agent=self._agent,
-        )
-        if followup and followup.kind == "submit_prompt" and followup.prompt is not None:
-            self.call_after_refresh(
-                lambda: asyncio.create_task(self._handle_user_message(followup.prompt))
-            )
-        elif followup and followup.kind == "load_history":
-            self.call_after_refresh(
-                lambda: asyncio.create_task(self._load_thread_history())
-            )
-
-        # Drain deferred actions (e.g. model/thread switch queued during connection)
-        # if the agent is not actively running. Wrapped in a helper so that
-        # exceptions are logged rather than becoming unhandled task errors.
-        if should_drain_deferred_on_server_ready(
-            deferred_action_count=len(self._deferred_actions),
-            agent_running=self._agent_running,
-        ):
-
-            async def _safe_drain() -> None:
-                try:
-                    await self._maybe_drain_deferred()
-                except Exception:
-                    logger.exception("Unhandled error while draining deferred actions")
-                    with suppress(Exception):
-                        await self._mount_message(
-                            ErrorMessage(
-                                "A deferred action failed during startup. "
-                                "You may need to retry the operation."
-                            )
-                        )
-
-            self.call_after_refresh(lambda: asyncio.create_task(_safe_drain()))
-
-        # Drain any messages the user typed while the server was starting.
-        # (If an initial prompt exists, its cleanup path will drain the queue.)
-        if should_drain_queue_on_server_ready(
-            pending_message_count=len(self._pending_messages),
-            initial_prompt=self._initial_prompt,
-        ):
-            self.call_after_refresh(
-                lambda: asyncio.create_task(self._process_next_from_queue())
-            )
+        handle_server_ready(self, event)
 
     def on_deep_agents_app_server_start_failed(self, event: ServerStartFailed) -> None:
         """Handle background server startup failure."""
-        self._connecting = False
-        logger.error("Server startup failed: %s", event.error, exc_info=event.error)
-        # Update banner to show persistent failure state
-        try:
-            banner = self.query_one("#welcome-banner", WelcomeBanner)
-            banner.set_failed(str(event.error))
-        except NoMatches:
-            logger.warning("Welcome banner not found during server failure transition")
+        from invincat_cli.app_runtime.server_handlers import handle_server_start_failed
 
-        # Discard any messages queued while the server was starting
-        if self._pending_messages:
-            self._pending_messages.clear()
-            for w in self._queued_widgets:
-                w.remove()
-            self._queued_widgets.clear()
-        self._deferred_actions.clear()
-        self._pending_plan_handoff_prompt = None
+        handle_server_start_failed(self, event)
 
     @staticmethod
     def _prewarm_deferred_imports() -> None:
