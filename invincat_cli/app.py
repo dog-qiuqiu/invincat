@@ -206,8 +206,11 @@ from invincat_cli.app_runtime.theme_prefs import (
 from invincat_cli.app_runtime.tokens import build_tokens_message
 from invincat_cli.app_runtime.thread_history import (
     build_resume_summary,
+    is_in_flight_tool_widget,
     merge_thread_state_with_fallback,
+    should_mark_missing_widget_pruned,
     thread_history_payload_from_state_values,
+    tool_tracking_keys_for_widget,
 )
 from invincat_cli.app_runtime.thread_links import build_thread_message
 from invincat_cli.app_runtime.thread_runtime import (
@@ -5312,7 +5315,7 @@ class DeepAgentsApp(App):
                 # Skip widgets that are still in the live tracking map — their
                 # result hasn't arrived yet and removing them now would cause
                 # the incoming ToolMessage to silently lose its target.
-                if widget in active_tool_widgets:
+                if is_in_flight_tool_widget(widget, active_tool_widgets):
                     logger.debug(
                         "Skipping prune of in-flight tool widget id=%s "
                         "(still awaiting ToolMessage result)",
@@ -5331,11 +5334,10 @@ class DeepAgentsApp(App):
                     # (name-match fallback) to find a "pending" widget that is
                     # about to be removed, stealing the result from the correct
                     # newly-created widget in the next turn.
-                    stale_keys = [
-                        k
-                        for k, v in self._ui_adapter._current_tool_messages.items()
-                        if v is widget
-                    ]
+                    stale_keys = tool_tracking_keys_for_widget(
+                        self._ui_adapter._current_tool_messages,
+                        widget,
+                    )
                     for key in stale_keys:
                         self._ui_adapter._current_tool_messages.pop(key, None)
                         logger.debug(
@@ -5368,7 +5370,9 @@ class DeepAgentsApp(App):
                 #
                 # 2. Streaming message: its widget IS being constructed — skip
                 #    so we don't prune a widget that is mid-mount.
-                if msg_data.is_streaming:
+                if not should_mark_missing_widget_pruned(
+                    is_streaming=msg_data.is_streaming,
+                ):
                     logger.debug(
                         "Widget %s not found but still streaming; skipping prune",
                         msg_data.id,

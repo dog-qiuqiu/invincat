@@ -7,8 +7,11 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from invincat_cli.app_runtime.thread_history import (
     build_resume_summary,
     convert_messages_to_data,
+    is_in_flight_tool_widget,
     merge_thread_state_with_fallback,
+    should_mark_missing_widget_pruned,
     thread_history_payload_from_state_values,
+    tool_tracking_keys_for_widget,
 )
 from invincat_cli.widgets.message_store import MessageData, MessageType, ToolStatus
 
@@ -148,3 +151,17 @@ def test_build_resume_summary_returns_empty_without_user_messages() -> None:
         )
         == ""
     )
+
+
+def test_prune_widget_helpers() -> None:
+    active_widget = object()
+    other_widget = object()
+
+    assert is_in_flight_tool_widget(active_widget, {active_widget})
+    assert not is_in_flight_tool_widget(other_widget, {active_widget})
+    assert tool_tracking_keys_for_widget(
+        {"index": active_widget, "uuid": active_widget, "other": other_widget},
+        active_widget,
+    ) == ["index", "uuid"]
+    assert should_mark_missing_widget_pruned(is_streaming=False)
+    assert not should_mark_missing_widget_pruned(is_streaming=True)

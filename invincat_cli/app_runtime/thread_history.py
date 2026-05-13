@@ -159,6 +159,27 @@ def build_resume_summary(messages: list[MessageData], context_tokens: int) -> st
     return " · ".join(parts)
 
 
+def is_in_flight_tool_widget(
+    widget: object,
+    active_tool_widgets: set[object],
+) -> bool:
+    """Return whether a widget is still tracked as an active tool call."""
+    return widget in active_tool_widgets
+
+
+def tool_tracking_keys_for_widget(
+    tracking: dict[str, object],
+    widget: object,
+) -> list[str]:
+    """Return all tool tracking keys that currently point to a widget."""
+    return [key for key, tracked_widget in tracking.items() if tracked_widget is widget]
+
+
+def should_mark_missing_widget_pruned(*, is_streaming: bool) -> bool:
+    """Return whether missing DOM widget data can be safely marked pruned."""
+    return not is_streaming
+
+
 def _extract_ai_text(content: Any) -> str:
     if isinstance(content, str):
         return content.strip()
