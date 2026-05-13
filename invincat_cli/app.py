@@ -223,18 +223,6 @@ from invincat_cli.app_runtime.ui_actions import (
     restore_chat_scroll_state,
     should_defer_modal_action,
 )
-from invincat_cli.app_runtime.wecom import (
-    WeComTurnContext,
-    create_wecom_message_responder,
-    load_wecom_bot_config,
-    resolve_wecom_bot_command_decision,
-    resolve_wecom_bridge_availability,
-    should_clear_wecom_bridge,
-    wecom_bot_is_running,
-    wecom_bot_missing_config_message,
-    wecom_bridge_offline_error,
-    wecom_turn_is_busy,
-)
 from invincat_cli.core.debug import configure_debug_logging
 from invincat_cli.core.session_stats import (
     SessionStats,
@@ -266,13 +254,9 @@ from invincat_cli.widgets.messages import (
 from invincat_cli.widgets.status import StatusBar
 from invincat_cli.widgets.welcome import WelcomeBanner
 from invincat_cli.wecom.bridge import WeComBridge
-from invincat_cli.wecom.media import (
-    build_wecom_agent_input_with_media_downloads,
-)
 from invincat_cli.wecom.session import (
     WECOM_AGENT_TIMEOUT,
 )
-from invincat_cli.wecom.turn import WeComTurnRunner
 
 logger = logging.getLogger(__name__)
 configure_debug_logging(logger)
@@ -3315,64 +3299,15 @@ class DeepAgentsApp(App):
         - /wecombot-status
         - /wecombot-stop
         """
-        await self._mount_message(UserMessage(command))
+        from invincat_cli.app_runtime.wecom_handlers import handle_wecombot_command
 
-        decision = resolve_wecom_bot_command_decision(
-            action=action,
-            running=wecom_bot_is_running(self._wecom_task),
-            auto_approve_enabled=self._auto_approve,
-        )
-
-        if decision.should_start_bridge:
-            self._on_auto_approve_enabled()
-            self._wecom_task = asyncio.create_task(self._run_wecombot_bridge())
-        elif decision.should_stop_bridge:
-            if self._wecom_bridge is not None:
-                self._wecom_bridge.stop()
-            if wecom_bot_is_running(self._wecom_task):
-                self._wecom_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await self._wecom_task
-            self._wecom_task = None
-            self._wecom_bridge = None
-
-        await self._mount_message(AppMessage(decision.message))
+        await handle_wecombot_command(self, command, action=action)
 
     async def _run_wecombot_bridge(self) -> None:
         """Run WeCom long-connection client and bridge to current session."""
-        config = load_wecom_bot_config(os.environ)
-        if not config.is_complete:
-            await self._mount_message(ErrorMessage(wecom_bot_missing_config_message()))
-            return
+        from invincat_cli.app_runtime.wecom_handlers import run_wecombot_bridge
 
-        async def _on_status(message: str) -> None:
-            await self._mount_message(AppMessage(message))
-
-        async def _on_error(message: str) -> None:
-            await self._mount_message(ErrorMessage(message))
-
-        async def _on_message(frame: dict[str, Any]) -> None:
-            await self._wecom_handle_inbound_message(frame=frame)
-
-        bridge = WeComBridge(
-            on_status=_on_status,
-            on_error=_on_error,
-            on_message=_on_message,
-            should_exit=lambda: self._exit,
-        )
-        self._wecom_bridge = bridge
-        try:
-            await bridge.run(
-                bot_id=config.bot_id,
-                secret=config.secret,
-                ws_url=config.ws_url,
-            )
-        finally:
-            if should_clear_wecom_bridge(
-                current_bridge=self._wecom_bridge,
-                bridge=bridge,
-            ):
-                self._wecom_bridge = None
+        await run_wecombot_bridge(self)
 
     async def _wecom_handle_inbound_message(
         self,
@@ -3380,39 +3315,16 @@ class DeepAgentsApp(App):
         frame: dict[str, Any],
     ) -> None:
         """Process one inbound WeCom message and deliver a true streaming reply."""
-
-        async def _build_agent_input(inbound_frame: dict[str, Any]) -> str:
-            return await build_wecom_agent_input_with_media_downloads(
-                inbound_frame,
-                cwd=self._cwd,
-            )
-
-        async def _run_turn(
-            text: str,
-            inbound_frame: dict[str, Any],
-            on_content: Callable[[str], Awaitable[None]],
-        ) -> str:
-            return await self._process_wecom_message_via_cli(
-                text,
-                inbound_frame=inbound_frame,
-                on_content=on_content,
-            )
-
-        responder = create_wecom_message_responder(
-            enqueue=self._wecom_enqueue,
-            flush=self._wecom_flush_outbox,
-            build_agent_input=_build_agent_input,
-            run_turn=_run_turn,
-            report_error=lambda message: self._mount_message(ErrorMessage(message)),
+        from invincat_cli.app_runtime.wecom_handlers import (
+            wecom_handle_inbound_message,
         )
-        await responder.handle(frame)
+
+        await wecom_handle_inbound_message(self, frame=frame)
 
     def _wecom_enqueue(self, payload: dict[str, Any]) -> None:
-        availability = resolve_wecom_bridge_availability(self._wecom_bridge)
-        if not availability.online:
-            logger.debug("Skipping WeCom enqueue while bridge is offline")
-            return
-        self._wecom_bridge.enqueue(payload)
+        from invincat_cli.app_runtime.wecom_handlers import wecom_enqueue
+
+        wecom_enqueue(self, payload)
 
     async def _wecom_flush_outbox(self) -> bool:
         """Flush pending outbound replies using the current live WS connection.
@@ -3420,10 +3332,9 @@ class DeepAgentsApp(App):
         Returns False when no connection is available or sending failed; queued
         items are preserved and retried when the next connection is established.
         """
-        availability = resolve_wecom_bridge_availability(self._wecom_bridge)
-        if not availability.online:
-            return False
-        return await self._wecom_bridge.flush_outbox()
+        from invincat_cli.app_runtime.wecom_handlers import wecom_flush_outbox
+
+        return await wecom_flush_outbox(self)
 
     async def _wecom_send_request(
         self,
@@ -3432,10 +3343,9 @@ class DeepAgentsApp(App):
         timeout: float = 30.0,
     ) -> dict[str, Any]:
         """Send a WeCom request frame and wait for its matching req_id response."""
-        availability = resolve_wecom_bridge_availability(self._wecom_bridge)
-        if not availability.online:
-            raise wecom_bridge_offline_error()
-        return await self._wecom_bridge.send_request(payload, timeout=timeout)
+        from invincat_cli.app_runtime.wecom_handlers import wecom_send_request
+
+        return await wecom_send_request(self, payload, timeout=timeout)
 
     async def _process_wecom_message_via_cli(
         self,
@@ -3450,46 +3360,16 @@ class DeepAgentsApp(App):
         the agent works. The complete assistant text is sent only once in the
         final finish=True frame.
         """
-        async def _handle_user_message(
-            message: str,
-            on_text_delta: Callable[[str, str], Awaitable[None]],
-            on_wecom_file_request: Callable[[dict[str, Any]], Awaitable[None]],
-        ) -> None:
-            await self._handle_user_message(
-                message,
-                on_text_delta=on_text_delta,
-                on_wecom_file_request=on_wecom_file_request,
-            )
+        from invincat_cli.app_runtime.wecom_handlers import (
+            process_wecom_message_via_cli,
+        )
 
-        turn_context = WeComTurnContext(
-            get_current_frame=lambda: self._current_wecom_inbound_frame,
-            set_current_frame=lambda frame: setattr(
-                self,
-                "_current_wecom_inbound_frame",
-                frame,
-            ),
+        return await process_wecom_message_via_cli(
+            self,
+            text,
             inbound_frame=inbound_frame,
-        )
-
-        runner = WeComTurnRunner(
-            lock=self._wecom_lock,
-            cwd=self._cwd,
-            is_busy=lambda: wecom_turn_is_busy(
-                connecting=self._connecting,
-                thread_switching=self._thread_switching,
-                model_switching=self._model_switching,
-                agent_running=self._agent_running,
-                shell_running=self._shell_running,
-            ),
-            get_messages=self._message_store.get_all_messages,
-            handle_user_message=_handle_user_message,
-            send_request=self._wecom_send_request,
-            cancel_timed_out_turn=self._cancel_wecom_timed_out_turn,
             on_content=on_content,
-            enter_turn_context=turn_context.enter,
-            exit_turn_context=turn_context.exit,
         )
-        return await runner.run(text, inbound_frame=inbound_frame)
 
     async def _handle_skill_command(self, command: str) -> None:
         """Handle a `/skill:<name>` command by loading and invoking a skill.
