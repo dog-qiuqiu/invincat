@@ -202,11 +202,8 @@ from invincat_cli.app_runtime.theme_prefs import (
 )
 from invincat_cli.app_runtime.thread_history import (
     build_resume_summary,
-    is_in_flight_tool_widget,
     merge_thread_state_with_fallback,
-    should_mark_missing_widget_pruned,
     thread_history_payload_from_state_values,
-    tool_tracking_keys_for_widget,
 )
 from invincat_cli.app_runtime.thread_links import build_thread_message
 from invincat_cli.app_runtime.thread_runtime import (
@@ -5017,166 +5014,16 @@ class DeepAgentsApp(App):
     async def _mount_message(
         self, widget: Static | AssistantMessage | ToolCallMessage | SkillMessage
     ) -> None:
-        """Mount a message widget to the messages area.
+        """Mount a message widget to the messages area."""
+        from invincat_cli.app_runtime.message_flow import mount_message
 
-        This method also stores the message data and handles pruning
-        when the widget count exceeds the maximum.
-
-        If the ``#messages`` container is not present (e.g. the screen has
-        been torn down during an interruption), the call is silently skipped
-        to avoid cascading `NoMatches` errors.
-
-        Args:
-            widget: The message widget to mount
-        """
-        try:
-            messages = self.query_one("#messages", Container)
-        except NoMatches:
-            return
-
-        # During shutdown (e.g. Ctrl+D mid-stream) the container may still
-        # be in the DOM tree but already detached, so mount() would raise
-        # MountError. Bail out silently — the app is exiting anyway.
-        if not messages.is_attached:
-            return
-
-        # Store message data for virtualization
-        message_data = MessageData.from_widget(widget)
-        # Ensure the widget's DOM id matches the store id so that
-        # features like click-to-show-timestamp can look it up.
-        if not widget.id:
-            widget.id = message_data.id
-        self._message_store.append(message_data)
-
-        # Update message count display
-        if self._status_bar:
-            self._status_bar.set_message_count(self._message_store.total_count)
-
-        # Queued-message widgets must always stay at the bottom so they
-        # remain visually anchored below the current agent response.
-        if isinstance(widget, QueuedUserMessage):
-            await messages.mount(widget)
-        else:
-            await self._mount_before_queued(messages, widget)
-
-        # Prune old widgets if window exceeded
-        await self._prune_old_messages()
-
-        # Scroll to keep input bar visible
-        try:
-            input_container = self.query_one("#bottom-app-container", Container)
-            input_container.scroll_visible()
-        except NoMatches:
-            pass
+        await mount_message(self, widget)
 
     async def _prune_old_messages(self) -> None:
-        """Prune oldest message widgets if we exceed the window size.
+        """Prune oldest message widgets if we exceed the window size."""
+        from invincat_cli.app_runtime.message_flow import prune_old_messages
 
-        This removes widgets from the DOM but keeps data in MessageStore
-        for potential re-hydration when scrolling up.
-        """
-        if not self._message_store.window_exceeded():
-            return
-
-        try:
-            messages_container = self.query_one("#messages", Container)
-        except NoMatches:
-            logger.debug("Skipping pruning: #messages container not found")
-            return
-
-        to_prune = self._message_store.get_messages_to_prune()
-        if not to_prune:
-            return
-
-        pruned_ids: list[str] = []
-        # Build set of widgets still actively tracked (pending/running tool calls).
-        # We must not prune these — their ToolMessage result hasn't arrived yet,
-        # and removing them from the DOM would leave the result with no target
-        # widget.  The fallback hydration path would re-create them, but that
-        # adds latency and a visible flash.
-        active_tool_widgets: set[object] = set()
-        if self._ui_adapter is not None:
-            active_tool_widgets = set(self._ui_adapter._current_tool_messages.values())
-
-        for msg_data in to_prune:
-            try:
-                widget = messages_container.query_one(f"#{msg_data.id}")
-
-                # Skip widgets that are still in the live tracking map — their
-                # result hasn't arrived yet and removing them now would cause
-                # the incoming ToolMessage to silently lose its target.
-                if is_in_flight_tool_widget(widget, active_tool_widgets):
-                    logger.debug(
-                        "Skipping prune of in-flight tool widget id=%s "
-                        "(still awaiting ToolMessage result)",
-                        msg_data.id,
-                    )
-                    continue
-
-                if (
-                    msg_data.type == "tool"
-                    and self._ui_adapter is not None
-                ):
-                    # Remove ALL keys that point to this widget, not just the
-                    # first one.  A widget can accumulate multiple keys when it
-                    # is re-keyed from an index-based key ("0") to its real UUID
-                    # during streaming; leaving stale keys causes Strategy 3
-                    # (name-match fallback) to find a "pending" widget that is
-                    # about to be removed, stealing the result from the correct
-                    # newly-created widget in the next turn.
-                    stale_keys = tool_tracking_keys_for_widget(
-                        self._ui_adapter._current_tool_messages,
-                        widget,
-                    )
-                    for key in stale_keys:
-                        self._ui_adapter._current_tool_messages.pop(key, None)
-                        logger.debug(
-                            "Removed tool message from tracking: key=%s id=%s",
-                            key,
-                            msg_data.id,
-                        )
-                try:
-                    await widget.remove()
-                except Exception:  # noqa: BLE001
-                    # widget.remove() failed — do not mark as pruned so the
-                    # store stays consistent with whatever the DOM state is.
-                    logger.warning(
-                        "Failed to remove widget %s during pruning; "
-                        "skipping to keep store/DOM in sync",
-                        msg_data.id,
-                        exc_info=True,
-                    )
-                    continue
-                pruned_ids.append(msg_data.id)
-            except NoMatches:
-                # Widget not in the DOM.  Two distinct cases:
-                #
-                # 1. Historical (non-streaming) message whose widget was never
-                #    mounted because bulk_load() interleaved with streaming
-                #    append() calls: the visible window grew but the widget was
-                #    never created, so there is nothing to desync.  Force-mark
-                #    as pruned so _visible_start advances and the window stays
-                #    bounded.
-                #
-                # 2. Streaming message: its widget IS being constructed — skip
-                #    so we don't prune a widget that is mid-mount.
-                if not should_mark_missing_widget_pruned(
-                    is_streaming=msg_data.is_streaming,
-                ):
-                    logger.debug(
-                        "Widget %s not found but still streaming; skipping prune",
-                        msg_data.id,
-                    )
-                else:
-                    logger.debug(
-                        "Widget %s not in DOM and not streaming; "
-                        "force-advancing window to prevent unbounded growth",
-                        msg_data.id,
-                    )
-                    pruned_ids.append(msg_data.id)
-
-        if pruned_ids:
-            self._message_store.mark_pruned(pruned_ids)
+        await prune_old_messages(self)
 
     def _set_active_message(self, message_id: str | None) -> None:
         """Set the active streaming message (won't be pruned).
@@ -5204,16 +5051,9 @@ class DeepAgentsApp(App):
 
     async def _clear_messages(self) -> None:
         """Clear the messages area and message store."""
-        # Clear the message store first
-        self._message_store.clear()
-        try:
-            messages = self.query_one("#messages", Container)
-            await messages.remove_children()
-        except NoMatches:
-            logger.warning(
-                "Messages container (#messages) not found during clear; "
-                "UI may be out of sync with message store"
-            )
+        from invincat_cli.app_runtime.message_flow import clear_messages
+
+        await clear_messages(self)
 
     def _pop_last_queued_message(self) -> None:
         """Remove the most recently queued message (LIFO).
