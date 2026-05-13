@@ -20,6 +20,7 @@ from invincat_cli.app_runtime.memory import (
     resolve_auto_offload_decision,
     resolve_memory_update_notification,
 )
+from invincat_cli.app_runtime.thread_handlers import get_thread_state_values
 from invincat_cli.i18n import t
 from invincat_cli.widgets.messages import AppMessage, ErrorMessage
 
@@ -70,7 +71,7 @@ async def maybe_auto_offload(app: Any) -> None:  # noqa: ANN401
 async def maybe_notify_memory_update(app: Any) -> None:  # noqa: ANN401
     """Show a status bar notification when memory files were updated."""
     try:
-        state_values = await app._get_thread_state_values(app._lc_thread_id)
+        state_values = await get_thread_state_values(app, app._lc_thread_id)
         updated_paths = state_values.get("_auto_memory_updated_paths")
         notification = resolve_memory_update_notification(
             updated_paths,
@@ -168,7 +169,7 @@ async def handle_offload(app: Any) -> None:  # noqa: ANN401
     config: RunnableConfig = {"configurable": {"thread_id": app._lc_thread_id}}
 
     try:
-        state_values = await app._get_thread_state_values(app._lc_thread_id)
+        state_values = await get_thread_state_values(app, app._lc_thread_id)
     except Exception as exc:
         await app._mount_message(
             ErrorMessage(t("offload.failed_read_state").format(error=str(exc)))

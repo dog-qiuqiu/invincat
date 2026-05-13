@@ -21,6 +21,7 @@ from invincat_cli.app_runtime.server import (
     should_update_default_agent_from_thread,
 )
 from invincat_cli.app_runtime.startup import resolve_startup_followup
+from invincat_cli.app_runtime.thread_handlers import load_thread_history
 from invincat_cli.i18n import t
 from invincat_cli.widgets.messages import ErrorMessage
 from invincat_cli.widgets.welcome import WelcomeBanner
@@ -182,7 +183,7 @@ def handle_server_ready(app: Any, event: Any) -> None:  # noqa: ANN401
             lambda: asyncio.create_task(app._handle_user_message(followup.prompt))
         )
     elif followup and followup.kind == "load_history":
-        app.call_after_refresh(lambda: asyncio.create_task(app._load_thread_history()))
+        app.call_after_refresh(lambda: asyncio.create_task(load_thread_history(app)))
 
     if should_drain_deferred_on_server_ready(
         deferred_action_count=len(app._deferred_actions),

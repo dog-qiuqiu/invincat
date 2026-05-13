@@ -65,7 +65,7 @@ async def get_thread_state_values(
         "Remote state empty for thread %s; falling back to local checkpointer",
         thread_id,
     )
-    fallback_values = await app._read_channel_values_from_checkpointer(thread_id)
+    fallback_values = await read_channel_values_from_checkpointer(thread_id)
     return merge_thread_state_with_fallback(values, fallback_values)
 
 
@@ -74,7 +74,7 @@ async def fetch_thread_history_data(
     thread_id: str,
 ) -> ThreadHistoryPayload:
     """Fetch and convert stored messages for a thread."""
-    state_values = await app._get_thread_state_values(thread_id)
+    state_values = await get_thread_state_values(app, thread_id)
     return await asyncio.to_thread(
         thread_history_payload_from_state_values,
         state_values,
@@ -151,7 +151,7 @@ def schedule_thread_message_link(
 ) -> None:
     """Schedule thread URL link resolution and apply updates in the background."""
     app.run_worker(
-        app._upgrade_thread_message_link(
+        upgrade_thread_message_link(
             widget,
             prefix=prefix,
             thread_id=thread_id,
@@ -182,7 +182,7 @@ async def load_thread_history(
         payload = (
             preloaded_payload
             if preloaded_payload is not None
-            else await app._fetch_thread_history_data(history_thread_id)
+            else await fetch_thread_history_data(app, history_thread_id)
         )
         if not payload.messages:
             return
@@ -230,7 +230,8 @@ async def load_thread_history(
             t("thread.resumed").format(thread_id=history_thread_id)
         )
         await app._mount_message(thread_msg_widget)
-        app._schedule_thread_message_link(
+        schedule_thread_message_link(
+            app,
             thread_msg_widget,
             prefix="Resumed thread",
             thread_id=history_thread_id,
@@ -308,7 +309,7 @@ async def restore_previous_thread_after_failed_switch(
     """Try to restore the previous thread view after a failed switch."""
     try:
         await app._clear_messages()
-        await app._load_thread_history(thread_id=snapshot.session_thread_id)
+        await load_thread_history(app, thread_id=snapshot.session_thread_id)
     except Exception:
         logger.warning(
             thread_switch_rollback_restore_failure_log(failed_thread_id),
@@ -352,11 +353,12 @@ async def resume_thread(app: Any, thread_id: str) -> None:  # noqa: ANN401
     prefetched_payload: ThreadHistoryPayload | None = None
     try:
         app._update_status(thread_loading_status(thread_id))
-        prefetched_payload = await app._fetch_thread_history_data(thread_id)
+        prefetched_payload = await fetch_thread_history_data(app, thread_id)
 
         await app._reset_thread_conversation_view()
         app._apply_thread_switch_ids(thread_id)
-        await app._load_thread_history(
+        await load_thread_history(
+            app,
             thread_id=thread_id,
             preloaded_payload=prefetched_payload,
         )

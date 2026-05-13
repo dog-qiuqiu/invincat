@@ -60,7 +60,6 @@ from invincat_cli.app_runtime.state import (
     AppResult,
     DeferredAction,
     InputMode,
-    ThreadHistoryPayload,
 )
 from invincat_cli.app_runtime.state import QueuedMessage as QueuedMessage  # noqa: F401
 from invincat_cli.app_runtime.approval import (
@@ -86,7 +85,6 @@ from invincat_cli.i18n import t
 
 from invincat_cli.widgets.chat_input import ChatInput
 from invincat_cli.widgets.messages import (
-    AppMessage,
     AssistantMessage,
     SkillMessage,
     ToolCallMessage,
@@ -1655,135 +1653,6 @@ class DeepAgentsApp(App):
         if self._scheduler_runner is None or self._agent_running or self._shell_running:
             return
         await self._scheduler_runner.drain_pending_now()
-
-    async def _get_thread_state_values(self, thread_id: str) -> dict[str, Any]:
-        """Fetch thread state values, with remote checkpointer fallback.
-
-        In server mode the LangGraph dev server can report an empty thread state
-        after a restart even when checkpoints exist on disk. When that happens,
-        read the latest checkpoint directly so resumed threads can still load
-        history and offload correctly.
-
-        Args:
-            thread_id: Thread ID to fetch from checkpoint storage.
-
-        Returns:
-            Thread state values keyed by channel name. Returns an empty dict
-                when no checkpointed values are available.
-        """
-        from invincat_cli.app_runtime.thread_handlers import (
-            get_thread_state_values,
-        )
-
-        return await get_thread_state_values(self, thread_id)
-
-    async def _fetch_thread_history_data(self, thread_id: str) -> ThreadHistoryPayload:
-        """Fetch and convert stored messages for a thread.
-
-        In server mode the LangGraph dev server starts with an empty thread
-        store, so `aget_state` via the HTTP API returns no messages even when
-        checkpoints exist on disk. We fall back to reading the SQLite
-        checkpointer directly to guarantee resumed threads load their history.
-
-        Args:
-            thread_id: Thread ID to fetch from checkpoint storage.
-
-        Returns:
-            Payload containing converted message data and the persisted
-            context-token count.
-        """
-        from invincat_cli.app_runtime.thread_handlers import (
-            fetch_thread_history_data,
-        )
-
-        return await fetch_thread_history_data(self, thread_id)
-
-    @staticmethod
-    async def _read_channel_values_from_checkpointer(thread_id: str) -> dict[str, Any]:
-        """Read checkpoint channel values directly from the SQLite checkpointer.
-
-        Args:
-            thread_id: Thread ID to look up.
-
-        Returns:
-            Channel values from the latest checkpoint, or an empty dict on
-                failure.
-        """
-        from invincat_cli.app_runtime.thread_handlers import (
-            read_channel_values_from_checkpointer,
-        )
-
-        return await read_channel_values_from_checkpointer(thread_id)
-
-    async def _upgrade_thread_message_link(
-        self,
-        widget: AppMessage,
-        *,
-        prefix: str,
-        thread_id: str,
-    ) -> None:
-        """Upgrade a plain thread message to a linked one when URL resolves.
-
-        Args:
-            widget: The already-mounted app message.
-            prefix: Text prefix before thread ID.
-            thread_id: Thread ID to resolve.
-        """
-        from invincat_cli.app_runtime.thread_handlers import (
-            upgrade_thread_message_link,
-        )
-
-        await upgrade_thread_message_link(widget, prefix=prefix, thread_id=thread_id)
-
-    def _schedule_thread_message_link(
-        self,
-        widget: AppMessage,
-        *,
-        prefix: str,
-        thread_id: str,
-    ) -> None:
-        """Schedule thread URL link resolution and apply updates in the background.
-
-        Args:
-            widget: The message widget to update.
-            prefix: Text prefix before thread ID.
-            thread_id: Thread ID to resolve.
-        """
-        from invincat_cli.app_runtime.thread_handlers import (
-            schedule_thread_message_link,
-        )
-
-        schedule_thread_message_link(self, widget, prefix=prefix, thread_id=thread_id)
-
-    async def _load_thread_history(
-        self,
-        *,
-        thread_id: str | None = None,
-        preloaded_payload: ThreadHistoryPayload | None = None,
-    ) -> None:
-        """Load and render message history when resuming a thread.
-
-        When `preloaded_payload` is provided (e.g., from `_resume_thread`),
-        this reuses that data. Otherwise, it fetches checkpoint state from the
-        agent and converts stored messages into lightweight `MessageData`
-        objects. The method then bulk-loads into the `MessageStore` and mounts
-        only the last `WINDOW_SIZE` widgets to reduce DOM operations on large
-        threads.
-
-        Args:
-            thread_id: Optional explicit thread ID to load.
-
-                Defaults to current.
-            preloaded_payload: Optional pre-fetched history payload for the
-                thread.
-        """
-        from invincat_cli.app_runtime.thread_handlers import load_thread_history
-
-        await load_thread_history(
-            self,
-            thread_id=thread_id,
-            preloaded_payload=preloaded_payload,
-        )
 
     async def _mount_message(
         self, widget: Static | AssistantMessage | ToolCallMessage | SkillMessage

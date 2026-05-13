@@ -15,6 +15,7 @@ from invincat_cli.app_runtime.startup import (
     resolve_startup_followup,
     resolve_startup_model_overrides,
 )
+from invincat_cli.app_runtime.thread_handlers import load_thread_history
 from invincat_cli.app_runtime.skill import discover_skills_and_roots as discover_roots
 from invincat_cli.config import is_ascii_mode
 from invincat_cli.i18n import t
@@ -200,7 +201,7 @@ async def post_paint_init(app: Any) -> None:  # noqa: ANN401
             lambda: asyncio.create_task(app._handle_user_message(followup.prompt))
         )
     elif followup and followup.kind == "load_history":
-        app.call_after_refresh(lambda: asyncio.create_task(app._load_thread_history()))
+        app.call_after_refresh(lambda: asyncio.create_task(load_thread_history(app)))
 
 
 async def check_optional_tools_background(app: Any) -> None:  # noqa: ANN401
