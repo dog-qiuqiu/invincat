@@ -116,6 +116,33 @@ async def run_planner(app: Any, task: str) -> bool:  # noqa: ANN401
     )
 
 
+async def exit_plan_mode(app: Any) -> None:  # noqa: ANN401
+    """Exit plan mode, cancel planner work, and restore main thread."""
+    if not app._session_state or not app._session_state.plan_mode:
+        await app._mount_message(AppMessage(t("plan.not_on")))
+        return
+
+    if app._agent_running and app._agent_worker and app._active_turn_is_planner:
+        if app._pending_approval_widget:
+            app._pending_approval_widget.action_select_reject()
+        await app._remove_approval_placeholder(context="plan exit")
+        app._pending_approval_widget = None
+        app._agent_worker.cancel()
+        app._agent_running = False
+        app._agent_worker = None
+        app._active_turn_is_planner = False
+
+    app._deferred_actions = [
+        action
+        for action in app._deferred_actions
+        if action.kind != "plan_handoff"
+    ]
+    app._pending_plan_handoff_prompt = None
+
+    app._reset_plan_mode_state()
+    await app._mount_message(AppMessage(t("plan.exited")))
+
+
 async def get_thread_state_values_for_agent(
     agent: Any,  # noqa: ANN401
     thread_id: str,

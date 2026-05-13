@@ -820,32 +820,9 @@ class DeepAgentsApp(App):
 
     async def _exit_plan_mode(self) -> None:
         """Exit plan mode, cancel planner work, and restore main thread."""
-        from invincat_cli.i18n import t
+        from invincat_cli.app_runtime.plan_handlers import exit_plan_mode
 
-        if not self._session_state or not self._session_state.plan_mode:
-            await self._mount_message(AppMessage(t("plan.not_on")))
-            return
-
-        if self._agent_running and self._agent_worker and self._active_turn_is_planner:
-            if self._pending_approval_widget:
-                self._pending_approval_widget.action_select_reject()
-            await self._remove_approval_placeholder(context="plan exit")
-            self._pending_approval_widget = None
-            self._agent_worker.cancel()
-            self._agent_running = False
-            self._agent_worker = None
-            self._active_turn_is_planner = False
-
-        # Ensure exiting plan mode also cancels any queued handoff to main agent.
-        self._deferred_actions = [
-            action
-            for action in self._deferred_actions
-            if action.kind != "plan_handoff"
-        ]
-        self._pending_plan_handoff_prompt = None
-
-        self._reset_plan_mode_state()
-        await self._mount_message(AppMessage(t("plan.exited")))
+        await exit_plan_mode(self)
 
     async def _run_planner(self, task: str) -> bool:
         """Send a user message to the planner agent session.
