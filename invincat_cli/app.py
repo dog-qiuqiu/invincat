@@ -176,17 +176,6 @@ from invincat_cli.app_runtime.theme_prefs import (
 )
 from invincat_cli.app_runtime.thread_runtime import (
     ThreadSwitchSnapshot,
-    capture_thread_switch_snapshot,
-    should_handle_thread_switch_error_as_prefetch_failure,
-    thread_loading_status,
-    thread_resume_block_message_key,
-    thread_resume_block_reason,
-    thread_switch_banner_update,
-    thread_switch_failed_message,
-    thread_switch_failure_log,
-    thread_switch_prefetch_failure_log,
-    thread_switch_rollback_banner_update,
-    thread_switch_rollback_restore_failure_log,
 )
 from invincat_cli.app_runtime.ui_actions import (
     capture_chat_scroll_state,
@@ -4774,41 +4763,23 @@ class DeepAgentsApp(App):
 
     async def _reset_thread_conversation_view(self) -> None:
         """Clear visible conversation state before loading another thread."""
-        self._pending_messages.clear()
-        self._queued_widgets.clear()
-        await self._clear_messages()
-        self._context_tokens = 0
-        self._tokens_approximate = False
-        self._update_tokens(0)
-        self._update_status("")
+        from invincat_cli.app_runtime.thread_handlers import (
+            reset_thread_conversation_view,
+        )
+
+        await reset_thread_conversation_view(self)
 
     def _apply_thread_switch_ids(self, thread_id: str) -> None:
         """Apply active thread IDs and update the welcome banner."""
-        assert self._session_state is not None
+        from invincat_cli.app_runtime.thread_handlers import apply_thread_switch_ids
 
-        self._session_state.thread_id = thread_id
-        self._lc_thread_id = thread_id
-        banner_update = thread_switch_banner_update(thread_id)
-        self._update_welcome_banner(
-            banner_update.thread_id,
-            missing_message=banner_update.missing_message,
-            warn_if_missing=banner_update.warn_if_missing,
-        )
+        apply_thread_switch_ids(self, thread_id)
 
     def _rollback_thread_switch_ids(self, snapshot: ThreadSwitchSnapshot) -> None:
         """Restore active thread IDs from a pre-switch snapshot."""
-        assert self._session_state is not None
+        from invincat_cli.app_runtime.thread_handlers import rollback_thread_switch_ids
 
-        self._session_state.thread_id = snapshot.session_thread_id
-        self._lc_thread_id = snapshot.lc_thread_id
-        banner_update = thread_switch_rollback_banner_update(
-            snapshot.session_thread_id,
-        )
-        self._update_welcome_banner(
-            banner_update.thread_id,
-            missing_message=banner_update.missing_message,
-            warn_if_missing=banner_update.warn_if_missing,
-        )
+        rollback_thread_switch_ids(self, snapshot)
 
     async def _restore_previous_thread_after_failed_switch(
         self,
@@ -4817,16 +4788,15 @@ class DeepAgentsApp(App):
         failed_thread_id: str,
     ) -> bool:
         """Try to restore the previous thread view after a failed switch."""
-        try:
-            await self._clear_messages()
-            await self._load_thread_history(thread_id=snapshot.session_thread_id)
-        except Exception:  # Resilient session state saving
-            logger.warning(
-                thread_switch_rollback_restore_failure_log(failed_thread_id),
-                exc_info=True,
-            )
-            return False
-        return True
+        from invincat_cli.app_runtime.thread_handlers import (
+            restore_previous_thread_after_failed_switch,
+        )
+
+        return await restore_previous_thread_after_failed_switch(
+            self,
+            snapshot=snapshot,
+            failed_thread_id=failed_thread_id,
+        )
 
     def _start_server_after_primary_model_switch(
         self,
@@ -4944,80 +4914,9 @@ class DeepAgentsApp(App):
         Args:
             thread_id: The thread ID to resume.
         """
-        block_reason = thread_resume_block_reason(
-            has_agent=self._agent is not None,
-            has_session=self._session_state is not None,
-            current_thread_id=(
-                self._session_state.thread_id if self._session_state else None
-            ),
-            requested_thread_id=thread_id,
-            switching=self._thread_switching,
-        )
-        if block_reason is not None:
-            await self._mount_message(
-                AppMessage(
-                    t(thread_resume_block_message_key(block_reason)).format(
-                        thread_id=thread_id
-                    )
-                )
-            )
-            return
+        from invincat_cli.app_runtime.thread_handlers import resume_thread
 
-        assert self._session_state is not None
-
-        snapshot = capture_thread_switch_snapshot(
-            lc_thread_id=self._lc_thread_id,
-            session_thread_id=self._session_state.thread_id,
-        )
-        self._thread_switching = True
-        if self._chat_input:
-            self._chat_input.set_cursor_active(active=False)
-
-        prefetched_payload: ThreadHistoryPayload | None = None
-        try:
-            self._update_status(thread_loading_status(thread_id))
-            prefetched_payload = await self._fetch_thread_history_data(thread_id)
-
-            await self._reset_thread_conversation_view()
-            self._apply_thread_switch_ids(thread_id)
-            await self._load_thread_history(
-                thread_id=thread_id,
-                preloaded_payload=prefetched_payload,
-            )
-        except Exception as exc:
-            if should_handle_thread_switch_error_as_prefetch_failure(
-                has_prefetched_payload=prefetched_payload is not None,
-            ):
-                logger.exception(thread_switch_prefetch_failure_log(thread_id))
-                await self._mount_message(
-                    AppMessage(
-                        thread_switch_failed_message(
-                            thread_id=thread_id,
-                            error=exc,
-                        )
-                    )
-                )
-                return
-            logger.exception(thread_switch_failure_log(thread_id))
-            self._rollback_thread_switch_ids(snapshot)
-            rollback_restored = await self._restore_previous_thread_after_failed_switch(
-                snapshot=snapshot,
-                failed_thread_id=thread_id,
-            )
-            await self._mount_message(
-                AppMessage(
-                    thread_switch_failed_message(
-                        thread_id=thread_id,
-                        error=exc,
-                        rollback_restore_failed=not rollback_restored,
-                    )
-                )
-            )
-        finally:
-            self._thread_switching = False
-            self._update_status("")
-            if self._chat_input:
-                self._chat_input.set_cursor_active(active=not self._agent_running)
+        await resume_thread(self, thread_id)
 
     async def _switch_model(
         self,

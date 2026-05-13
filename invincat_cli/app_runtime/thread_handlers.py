@@ -19,6 +19,20 @@ from invincat_cli.app_runtime.thread_history import (
     thread_history_payload_from_state_values,
 )
 from invincat_cli.app_runtime.thread_links import build_thread_message
+from invincat_cli.app_runtime.thread_runtime import (
+    ThreadSwitchSnapshot,
+    capture_thread_switch_snapshot,
+    should_handle_thread_switch_error_as_prefetch_failure,
+    thread_loading_status,
+    thread_resume_block_message_key,
+    thread_resume_block_reason,
+    thread_switch_banner_update,
+    thread_switch_failed_message,
+    thread_switch_failure_log,
+    thread_switch_prefetch_failure_log,
+    thread_switch_rollback_banner_update,
+    thread_switch_rollback_restore_failure_log,
+)
 from invincat_cli.i18n import t
 from invincat_cli.widgets.messages import AppMessage, AssistantMessage
 
@@ -236,3 +250,144 @@ async def load_thread_history(
         await app._mount_message(
             AppMessage(t("thread.history_load_failed").format(error=str(exc)))
         )
+
+
+async def reset_thread_conversation_view(app: Any) -> None:  # noqa: ANN401
+    """Clear visible conversation state before loading another thread."""
+    app._pending_messages.clear()
+    app._queued_widgets.clear()
+    await app._clear_messages()
+    app._context_tokens = 0
+    app._tokens_approximate = False
+    app._update_tokens(0)
+    app._update_status("")
+
+
+def apply_thread_switch_ids(app: Any, thread_id: str) -> None:  # noqa: ANN401
+    """Apply active thread IDs and update the welcome banner."""
+    assert app._session_state is not None
+
+    app._session_state.thread_id = thread_id
+    app._lc_thread_id = thread_id
+    banner_update = thread_switch_banner_update(thread_id)
+    app._update_welcome_banner(
+        banner_update.thread_id,
+        missing_message=banner_update.missing_message,
+        warn_if_missing=banner_update.warn_if_missing,
+    )
+
+
+def rollback_thread_switch_ids(
+    app: Any,  # noqa: ANN401
+    snapshot: ThreadSwitchSnapshot,
+) -> None:
+    """Restore active thread IDs from a pre-switch snapshot."""
+    assert app._session_state is not None
+
+    app._session_state.thread_id = snapshot.session_thread_id
+    app._lc_thread_id = snapshot.lc_thread_id
+    banner_update = thread_switch_rollback_banner_update(
+        snapshot.session_thread_id,
+    )
+    app._update_welcome_banner(
+        banner_update.thread_id,
+        missing_message=banner_update.missing_message,
+        warn_if_missing=banner_update.warn_if_missing,
+    )
+
+
+async def restore_previous_thread_after_failed_switch(
+    app: Any,  # noqa: ANN401
+    *,
+    snapshot: ThreadSwitchSnapshot,
+    failed_thread_id: str,
+) -> bool:
+    """Try to restore the previous thread view after a failed switch."""
+    try:
+        await app._clear_messages()
+        await app._load_thread_history(thread_id=snapshot.session_thread_id)
+    except Exception:
+        logger.warning(
+            thread_switch_rollback_restore_failure_log(failed_thread_id),
+            exc_info=True,
+        )
+        return False
+    return True
+
+
+async def resume_thread(app: Any, thread_id: str) -> None:  # noqa: ANN401
+    """Resume a previously saved thread."""
+    block_reason = thread_resume_block_reason(
+        has_agent=app._agent is not None,
+        has_session=app._session_state is not None,
+        current_thread_id=(
+            app._session_state.thread_id if app._session_state else None
+        ),
+        requested_thread_id=thread_id,
+        switching=app._thread_switching,
+    )
+    if block_reason is not None:
+        await app._mount_message(
+            AppMessage(
+                t(thread_resume_block_message_key(block_reason)).format(
+                    thread_id=thread_id
+                )
+            )
+        )
+        return
+
+    assert app._session_state is not None
+
+    snapshot = capture_thread_switch_snapshot(
+        lc_thread_id=app._lc_thread_id,
+        session_thread_id=app._session_state.thread_id,
+    )
+    app._thread_switching = True
+    if app._chat_input:
+        app._chat_input.set_cursor_active(active=False)
+
+    prefetched_payload: ThreadHistoryPayload | None = None
+    try:
+        app._update_status(thread_loading_status(thread_id))
+        prefetched_payload = await app._fetch_thread_history_data(thread_id)
+
+        await app._reset_thread_conversation_view()
+        app._apply_thread_switch_ids(thread_id)
+        await app._load_thread_history(
+            thread_id=thread_id,
+            preloaded_payload=prefetched_payload,
+        )
+    except Exception as exc:
+        if should_handle_thread_switch_error_as_prefetch_failure(
+            has_prefetched_payload=prefetched_payload is not None,
+        ):
+            logger.exception(thread_switch_prefetch_failure_log(thread_id))
+            await app._mount_message(
+                AppMessage(
+                    thread_switch_failed_message(
+                        thread_id=thread_id,
+                        error=exc,
+                    )
+                )
+            )
+            return
+        logger.exception(thread_switch_failure_log(thread_id))
+        app._rollback_thread_switch_ids(snapshot)
+        rollback_restored = await app._restore_previous_thread_after_failed_switch(
+            snapshot=snapshot,
+            failed_thread_id=thread_id,
+        )
+        await app._mount_message(
+            AppMessage(
+                thread_switch_failed_message(
+                    thread_id=thread_id,
+                    error=exc,
+                    rollback_restore_failed=not rollback_restored,
+                )
+            )
+        )
+    finally:
+        app._thread_switching = False
+        app._update_status("")
+        if app._chat_input:
+            app._chat_input.set_cursor_active(active=not app._agent_running)
