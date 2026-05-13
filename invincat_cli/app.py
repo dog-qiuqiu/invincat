@@ -91,6 +91,7 @@ from invincat_cli.app_runtime.approval import (
     map_raw_approval_to_plan_decision,
     plan_interrupt_guard_disallowed_tools,
     plan_todos_fingerprint,
+    pending_interaction_timeout_log,
     pending_widget_deadline,
     resolve_auto_approved_shell_commands,
     should_cancel_detached_placeholder,
@@ -1977,8 +1978,6 @@ class DeepAgentsApp(App):
         loop = asyncio.get_running_loop()
         result_future: asyncio.Future = loop.create_future()
 
-        # In /plan mode, hard-reject non-read/plan interrupting tools so
-        # planner cannot proceed with implementation-side effects.
         disallowed_tool_names = plan_interrupt_guard_disallowed_tools(
             action_requests,
             bypass_plan_guard=bypass_plan_guard,
@@ -1986,32 +1985,8 @@ class DeepAgentsApp(App):
             active_turn_is_planner=self._active_turn_is_planner,
         )
         if disallowed_tool_names:
-            # If planner already wrote todos in this turn, surface plan
-            # approval immediately (before rejecting the disallowed write).
-            try:
-                await self._maybe_approve_current_planner_todos()
-            except Exception:
-                logger.debug(
-                    "Failed to trigger immediate /plan approval before rejecting tool call",
-                    exc_info=True,
-                )
             result_future.set_result({"type": "reject"})
-            denied = ", ".join(disallowed_tool_names)
-            try:
-                from invincat_cli.i18n import t
-
-                messages = self.query_one("#messages", Container)
-                await self._mount_before_queued(
-                    messages,
-                    AppMessage(
-                        t("plan.auto_reject_non_plan_tool").format(tools=denied)
-                    ),
-                )
-            except Exception:  # noqa: BLE001  # best-effort status message
-                logger.debug(
-                    "Failed to mount /plan auto-reject notice",
-                    exc_info=True,
-                )
+            await self._handle_plan_guard_auto_reject(disallowed_tool_names)
             return result_future
 
         approved_commands = resolve_auto_approved_shell_commands(
@@ -2024,33 +1999,10 @@ class DeepAgentsApp(App):
         if approved_commands is not None:
             # Auto-approve all commands in the batch
             result_future.set_result({"type": "approve"})
-
-            # Mount system messages showing the auto-approvals
-            try:
-                messages = self.query_one("#messages", Container)
-                for command in approved_commands:
-                    auto_msg = AppMessage(
-                        build_auto_approved_shell_message(command)
-                    )
-                    await self._mount_before_queued(messages, auto_msg)
-                with suppress(NoMatches, ScreenStackError):
-                    self.query_one("#chat", VerticalScroll).anchor()
-            except Exception:  # noqa: BLE001  # Resilient auto-message display
-                logger.debug("Failed to display auto-approval message", exc_info=True)
-
+            await self._mount_auto_approval_messages(approved_commands)
             return result_future
 
-        # If there's already a pending approval, wait for it to complete first
-        if self._pending_approval_widget is not None:
-            queue_deadline = pending_widget_deadline(now=_monotonic())
-            while self._pending_approval_widget is not None:  # noqa: ASYNC110
-                if deadline_expired(now=_monotonic(), deadline=queue_deadline):
-                    logger.warning(
-                        "Timed out waiting for previous approval widget to clear "
-                        "after 30s; proceeding with new approval"
-                    )
-                    break
-                await asyncio.sleep(INTERACTION_POLL_SECONDS)
+        await self._wait_for_pending_approval_widget()
 
         # Create menu with unique ID to avoid conflicts
         from invincat_cli.widgets.approval import ApprovalMenu
@@ -2098,6 +2050,58 @@ class DeepAgentsApp(App):
             await self._mount_approval_widget(menu, result_future)
 
         return result_future
+
+    async def _handle_plan_guard_auto_reject(
+        self,
+        disallowed_tool_names: list[str],
+    ) -> None:
+        """Mount the `/plan` guard rejection notice and approval prompt."""
+        try:
+            await self._maybe_approve_current_planner_todos()
+        except Exception:
+            logger.debug(
+                "Failed to trigger immediate /plan approval before rejecting tool call",
+                exc_info=True,
+            )
+
+        denied = ", ".join(disallowed_tool_names)
+        try:
+            from invincat_cli.i18n import t
+
+            messages = self.query_one("#messages", Container)
+            await self._mount_before_queued(
+                messages,
+                AppMessage(t("plan.auto_reject_non_plan_tool").format(tools=denied)),
+            )
+        except Exception:  # noqa: BLE001  # best-effort status message
+            logger.debug(
+                "Failed to mount /plan auto-reject notice",
+                exc_info=True,
+            )
+
+    async def _mount_auto_approval_messages(self, commands: list[str]) -> None:
+        """Mount system messages for shell commands approved by allow-list."""
+        try:
+            messages = self.query_one("#messages", Container)
+            for command in commands:
+                auto_msg = AppMessage(build_auto_approved_shell_message(command))
+                await self._mount_before_queued(messages, auto_msg)
+            with suppress(NoMatches, ScreenStackError):
+                self.query_one("#chat", VerticalScroll).anchor()
+        except Exception:  # noqa: BLE001  # Resilient auto-message display
+            logger.debug("Failed to display auto-approval message", exc_info=True)
+
+    async def _wait_for_pending_approval_widget(self) -> None:
+        """Wait briefly for any active approval widget before showing another."""
+        if self._pending_approval_widget is None:
+            return
+
+        queue_deadline = pending_widget_deadline(now=_monotonic())
+        while self._pending_approval_widget is not None:  # noqa: ASYNC110
+            if deadline_expired(now=_monotonic(), deadline=queue_deadline):
+                logger.warning(pending_interaction_timeout_log(kind="approval"))
+                break
+            await asyncio.sleep(INTERACTION_POLL_SECONDS)
 
     async def _mount_approval_widget(
         self,
@@ -2606,24 +2610,7 @@ class DeepAgentsApp(App):
         loop = asyncio.get_running_loop()
         result_future: asyncio.Future[AskUserWidgetResult] = loop.create_future()
 
-        if self._pending_ask_user_widget is not None:
-            deadline = pending_widget_deadline(now=_monotonic())
-            while self._pending_ask_user_widget is not None:
-                if deadline_expired(now=_monotonic(), deadline=deadline):
-                    logger.error(
-                        "Timed out waiting for previous ask-user widget to "
-                        "clear. Forcefully cleaning up."
-                    )
-                    old_widget = self._pending_ask_user_widget
-                    if old_widget is not None:
-                        old_widget.action_cancel()
-                        self._pending_ask_user_widget = None
-                        await self._remove_ask_user_widget(
-                            old_widget,
-                            context="ask-user timeout cleanup",
-                        )
-                    break
-                await asyncio.sleep(INTERACTION_POLL_SECONDS)
+        await self._wait_for_pending_ask_user_widget()
 
         from invincat_cli.widgets.ask_user import AskUserMenu
 
@@ -2635,7 +2622,36 @@ class DeepAgentsApp(App):
         menu.set_future(result_future)
 
         self._pending_ask_user_widget = menu
+        await self._mount_ask_user_widget(menu, result_future)
 
+        return result_future
+
+    async def _wait_for_pending_ask_user_widget(self) -> None:
+        """Wait for an active ask_user widget, forcing cleanup on timeout."""
+        if self._pending_ask_user_widget is None:
+            return
+
+        deadline = pending_widget_deadline(now=_monotonic())
+        while self._pending_ask_user_widget is not None:
+            if deadline_expired(now=_monotonic(), deadline=deadline):
+                logger.error(pending_interaction_timeout_log(kind="ask_user"))
+                old_widget = self._pending_ask_user_widget
+                if old_widget is not None:
+                    old_widget.action_cancel()
+                    self._pending_ask_user_widget = None
+                    await self._remove_ask_user_widget(
+                        old_widget,
+                        context="ask-user timeout cleanup",
+                    )
+                break
+            await asyncio.sleep(INTERACTION_POLL_SECONDS)
+
+    async def _mount_ask_user_widget(
+        self,
+        menu: AskUserMenu,
+        result_future: asyncio.Future[AskUserWidgetResult],
+    ) -> None:
+        """Mount the ask_user widget and focus the active field."""
         try:
             messages = self.query_one("#messages", Container)
             await self._mount_before_queued(messages, menu)
@@ -2644,13 +2660,11 @@ class DeepAgentsApp(App):
         except Exception as e:
             logger.exception(
                 "Failed to mount ask-user menu (id=%s)",
-                unique_id,
+                menu.id,
             )
             self._pending_ask_user_widget = None
             if not result_future.done():
                 result_future.set_exception(e)
-
-        return result_future
 
     async def on_ask_user_menu_answered(
         self,

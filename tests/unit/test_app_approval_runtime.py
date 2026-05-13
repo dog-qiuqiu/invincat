@@ -14,6 +14,7 @@ from invincat_cli.app_runtime.approval import (
     normalize_plan_todos,
     plan_interrupt_guard_disallowed_tools,
     plan_todos_fingerprint,
+    pending_interaction_timeout_log,
     pending_widget_deadline,
     resolve_auto_approved_shell_commands,
     should_cancel_detached_placeholder,
@@ -120,6 +121,17 @@ def test_interaction_widget_helpers() -> None:
     assert should_cancel_detached_placeholder(placeholder_attached=True) is False
     assert APPROVAL_PLACEHOLDER_TEXT
     assert APPROVAL_PLACEHOLDER_CLASS == "approval-placeholder"
+
+
+def test_pending_interaction_timeout_log() -> None:
+    assert pending_interaction_timeout_log(kind="approval") == (
+        "Timed out waiting for previous approval widget to clear after 30s; "
+        "proceeding with new approval"
+    )
+    assert pending_interaction_timeout_log(kind="ask_user") == (
+        "Timed out waiting for previous ask-user widget to clear. "
+        "Forcefully cleaning up."
+    )
 
 
 def test_build_approve_plan_action_request() -> None:

@@ -30,6 +30,15 @@ DEFERRED_APPROVAL_POLL_SECONDS: float = 0.2
 APPROVAL_PLACEHOLDER_TEXT = "Waiting for typing to finish..."
 APPROVAL_PLACEHOLDER_CLASS = "approval-placeholder"
 
+APPROVAL_PENDING_TIMEOUT_LOG = (
+    "Timed out waiting for previous approval widget to clear after 30s; "
+    "proceeding with new approval"
+)
+ASK_USER_PENDING_TIMEOUT_LOG = (
+    "Timed out waiting for previous ask-user widget to clear. "
+    "Forcefully cleaning up."
+)
+
 
 def _action_request_mappings(action_requests: object) -> list[Mapping[str, Any]]:
     if not action_requests or isinstance(action_requests, str | bytes):
@@ -128,6 +137,13 @@ def pending_widget_deadline(
 ) -> float:
     """Return the deadline for waiting on a previous interaction widget."""
     return now + timeout_seconds
+
+
+def pending_interaction_timeout_log(*, kind: str) -> str:
+    """Return the timeout log message for a pending interaction kind."""
+    if kind == "ask_user":
+        return ASK_USER_PENDING_TIMEOUT_LOG
+    return APPROVAL_PENDING_TIMEOUT_LOG
 
 
 def deadline_expired(*, now: float, deadline: float) -> bool:
