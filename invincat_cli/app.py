@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import time
-import uuid
 import webbrowser
 
 
@@ -76,23 +75,15 @@ from invincat_cli.app_runtime.state import (
     new_thread_id,
 )
 from invincat_cli.app_runtime.approval import (
-    APPROVAL_PLACEHOLDER_CLASS,
-    APPROVAL_PLACEHOLDER_TEXT,
-    DEFERRED_APPROVAL_TIMEOUT_SECONDS,
-    DEFERRED_APPROVAL_POLL_SECONDS,
     INTERACTION_POLL_SECONDS,
     TYPING_IDLE_THRESHOLD_SECONDS,
     build_approve_plan_action_request,
     build_auto_approved_shell_message,
-    build_interaction_widget_id,
     deadline_expired,
     map_raw_approval_to_plan_decision,
-    plan_interrupt_guard_disallowed_tools,
     plan_todos_fingerprint,
     pending_interaction_timeout_log,
     pending_widget_deadline,
-    resolve_auto_approved_shell_commands,
-    should_cancel_detached_placeholder,
     user_is_typing,
 )
 from invincat_cli.app_runtime.plan import (
@@ -1577,87 +1568,15 @@ class DeepAgentsApp(App):
         Returns:
             A Future that resolves to the user's decision.
         """
-        from invincat_cli.config import (
-            SHELL_TOOL_NAMES,
-            is_shell_command_allowed,
-            settings,
-        )
+        from invincat_cli.app_runtime.approval_handlers import request_approval
 
-        loop = asyncio.get_running_loop()
-        result_future: asyncio.Future = loop.create_future()
-
-        disallowed_tool_names = plan_interrupt_guard_disallowed_tools(
-            action_requests,
-            bypass_plan_guard=bypass_plan_guard,
-            plan_mode=bool(self._session_state and self._session_state.plan_mode),
-            active_turn_is_planner=self._active_turn_is_planner,
-        )
-        if disallowed_tool_names:
-            result_future.set_result({"type": "reject"})
-            await self._handle_plan_guard_auto_reject(disallowed_tool_names)
-            return result_future
-
-        approved_commands = resolve_auto_approved_shell_commands(
-            action_requests,
-            shell_allow_list=settings.shell_allow_list,
-            shell_tool_names=SHELL_TOOL_NAMES,
-            cwd=self._cwd,
-            is_shell_command_allowed=is_shell_command_allowed,
-        )
-        if approved_commands is not None:
-            # Auto-approve all commands in the batch
-            result_future.set_result({"type": "approve"})
-            await self._mount_auto_approval_messages(approved_commands)
-            return result_future
-
-        await self._wait_for_pending_approval_widget()
-
-        # Create menu with unique ID to avoid conflicts
-        from invincat_cli.widgets.approval import ApprovalMenu
-
-        unique_id = build_interaction_widget_id(
-            prefix="approval-menu",
-            token=uuid.uuid4().hex[:8],
-        )
-        menu = ApprovalMenu(
+        return await request_approval(
+            self,
             action_requests,
             assistant_id,
+            bypass_plan_guard=bypass_plan_guard,
             allow_auto_approve=allow_auto_approve,
-            id=unique_id,
         )
-        menu.set_future(result_future)
-
-        self._pending_approval_widget = menu
-
-        if self._is_user_typing():
-            # Show a placeholder until the user stops typing, then swap in the
-            # real ApprovalMenu.  This prevents accidental key presses (e.g.
-            # 'y', 'n') from triggering approval decisions mid-sentence.
-            placeholder = Static(
-                APPROVAL_PLACEHOLDER_TEXT,
-                classes=APPROVAL_PLACEHOLDER_CLASS,
-            )
-            self._approval_placeholder = placeholder
-            try:
-                messages = self.query_one("#messages", Container)
-                await self._mount_before_queued(messages, placeholder)
-                self.call_after_refresh(placeholder.scroll_visible)
-            except Exception:
-                logger.exception("Failed to mount approval placeholder")
-                # Placeholder failed — fall back to showing the menu directly
-                # so the future is always resolvable.
-                self._approval_placeholder = None
-                await self._mount_approval_widget(menu, result_future)
-                return result_future
-
-            self.run_worker(
-                self._deferred_show_approval(placeholder, menu, result_future),
-                exclusive=False,
-            )
-        else:
-            await self._mount_approval_widget(menu, result_future)
-
-        return result_future
 
     async def _handle_plan_guard_auto_reject(
         self,
@@ -1756,49 +1675,9 @@ class DeepAgentsApp(App):
             menu: The `ApprovalMenu` to show once the user stops typing.
             result_future: The future backing this approval flow.
         """
-        try:
-            deadline = _monotonic() + DEFERRED_APPROVAL_TIMEOUT_SECONDS
-            while self._is_user_typing():  # Simple polling
-                if deadline_expired(now=_monotonic(), deadline=deadline):
-                    logger.warning(
-                        "Timed out waiting for user to stop typing; showing approval now"
-                    )
-                    break
-                await asyncio.sleep(DEFERRED_APPROVAL_POLL_SECONDS)
+        from invincat_cli.app_runtime.approval_handlers import deferred_show_approval
 
-            # Guard: if the placeholder was already removed (e.g. agent cancelled
-            # the approval while we were waiting), clean up and cancel the future.
-            if should_cancel_detached_placeholder(
-                placeholder_attached=placeholder.is_attached
-            ):
-                logger.warning(
-                    "Approval placeholder detached before menu shown (id=%s)",
-                    menu.id,
-                )
-                self._approval_placeholder = None
-                self._pending_approval_widget = None
-                if not result_future.done():
-                    result_future.cancel()
-                return
-
-            self._approval_placeholder = None
-            try:
-                await placeholder.remove()
-            except Exception:
-                logger.warning(
-                    "Failed to remove approval placeholder during swap",
-                    exc_info=True,
-                )
-            await self._mount_approval_widget(menu, result_future)
-        except BaseException:
-            # Worker cancelled (CancelledError) or unexpected crash — ensure the
-            # future is always resolved so the agent is never left deadlocked
-            # awaiting an approval that will never arrive.
-            if not result_future.done():
-                self._pending_approval_widget = None
-                self._approval_placeholder = None
-                result_future.cancel()
-            raise
+        await deferred_show_approval(self, placeholder, menu, result_future)
 
     async def _remove_approval_placeholder(self, *, context: str) -> None:
         """Remove any mounted deferred approval placeholder."""
@@ -2215,24 +2094,9 @@ class DeepAgentsApp(App):
             A Future that resolves to a dict with `'type'` (`'answered'` or
                 `'cancelled'`) and, when answered, an `'answers'` list.
         """
-        loop = asyncio.get_running_loop()
-        result_future: asyncio.Future[AskUserWidgetResult] = loop.create_future()
+        from invincat_cli.app_runtime.approval_handlers import request_ask_user
 
-        await self._wait_for_pending_ask_user_widget()
-
-        from invincat_cli.widgets.ask_user import AskUserMenu
-
-        unique_id = build_interaction_widget_id(
-            prefix="ask-user-menu",
-            token=uuid.uuid4().hex[:8],
-        )
-        menu = AskUserMenu(questions, id=unique_id)
-        menu.set_future(result_future)
-
-        self._pending_ask_user_widget = menu
-        await self._mount_ask_user_widget(menu, result_future)
-
-        return result_future
+        return await request_ask_user(self, questions)
 
     async def _wait_for_pending_ask_user_widget(self) -> None:
         """Wait for an active ask_user widget, forcing cleanup on timeout."""
