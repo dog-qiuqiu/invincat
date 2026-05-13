@@ -20,9 +20,43 @@ from invincat_cli.app_runtime.plan import (
     planner_turn_has_write_todos,
 )
 from invincat_cli.i18n import t
-from invincat_cli.widgets.messages import AppMessage
+from invincat_cli.widgets.messages import AppMessage, UserMessage
 
 logger = logging.getLogger(__name__)
+
+
+async def handle_plan_task(app: Any) -> None:  # noqa: ANN401
+    """Enter plan mode and wait for the user's planning task."""
+    from invincat_cli.app_runtime.state import new_thread_id
+
+    if app._session_state and app._session_state.plan_mode:
+        await app._mount_message(AppMessage(t("plan.already_on")))
+        return
+    app._planner_thread_id = new_thread_id()
+    app._planner_last_todos_fingerprint = None
+    app._planner_prompted_todos_fingerprint = None
+    if app._session_state:
+        app._main_thread_before_plan = app._session_state.thread_id
+        app._session_state.plan_mode = True
+    if app._status_bar:
+        app._status_bar.set_plan_mode(enabled=True)
+    await app._mount_message(UserMessage("/plan"))
+    await app._mount_message(AppMessage(t("plan.entered")))
+
+
+def reset_plan_mode_state(app: Any) -> None:  # noqa: ANN401
+    """Restore main-thread state and clear planner-only bookkeeping."""
+    if app._session_state:
+        app._session_state.plan_mode = False
+        if app._main_thread_before_plan:
+            app._session_state.thread_id = app._main_thread_before_plan
+    if app._status_bar:
+        app._status_bar.set_plan_mode(enabled=False)
+    app._planner_thread_id = None
+    app._main_thread_before_plan = None
+    app._planner_last_todos_fingerprint = None
+    app._planner_prompted_todos_fingerprint = None
+    app._pending_plan_handoff_prompt = None
 
 
 async def ensure_planner_agent(app: Any) -> Any | None:  # noqa: ANN401

@@ -62,7 +62,6 @@ from invincat_cli.app_runtime.state import (
     DeferredAction,
     InputMode,
     ThreadHistoryPayload,
-    new_thread_id,
 )
 from invincat_cli.app_runtime.state import QueuedMessage as QueuedMessage  # noqa: F401
 from invincat_cli.app_runtime.approval import (
@@ -93,7 +92,6 @@ from invincat_cli.widgets.messages import (
     ErrorMessage,
     SkillMessage,
     ToolCallMessage,
-    UserMessage,
 )
 from invincat_cli.wecom.session import (
     WECOM_AGENT_TIMEOUT,
@@ -787,36 +785,15 @@ class DeepAgentsApp(App):
         message. `/plan <task>` is intentionally unsupported so mode entry and
         the user's requirement stay as separate conversational events.
         """
-        from invincat_cli.i18n import t
+        from invincat_cli.app_runtime.plan_handlers import handle_plan_task
 
-        if self._session_state and self._session_state.plan_mode:
-            await self._mount_message(AppMessage(t("plan.already_on")))
-            return
-        self._planner_thread_id = new_thread_id()
-        self._planner_last_todos_fingerprint = None
-        self._planner_prompted_todos_fingerprint = None
-        if self._session_state:
-            self._main_thread_before_plan = self._session_state.thread_id
-        if self._session_state:
-            self._session_state.plan_mode = True
-        if self._status_bar:
-            self._status_bar.set_plan_mode(enabled=True)
-        await self._mount_message(UserMessage("/plan"))
-        await self._mount_message(AppMessage(t("plan.entered")))
+        await handle_plan_task(self)
 
     def _reset_plan_mode_state(self) -> None:
         """Restore main-thread state and clear planner-only bookkeeping."""
-        if self._session_state:
-            self._session_state.plan_mode = False
-            if self._main_thread_before_plan:
-                self._session_state.thread_id = self._main_thread_before_plan
-        if self._status_bar:
-            self._status_bar.set_plan_mode(enabled=False)
-        self._planner_thread_id = None
-        self._main_thread_before_plan = None
-        self._planner_last_todos_fingerprint = None
-        self._planner_prompted_todos_fingerprint = None
-        self._pending_plan_handoff_prompt = None
+        from invincat_cli.app_runtime.plan_handlers import reset_plan_mode_state
+
+        reset_plan_mode_state(self)
 
     async def _exit_plan_mode(self) -> None:
         """Exit plan mode, cancel planner work, and restore main thread."""
