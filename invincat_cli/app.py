@@ -73,19 +73,7 @@ from invincat_cli.app_runtime.state import (
 )
 from invincat_cli.app_runtime.approval import (
     TYPING_IDLE_THRESHOLD_SECONDS,
-    plan_todos_fingerprint,
     user_is_typing,
-)
-from invincat_cli.app_runtime.plan import (
-    build_plan_text,
-    build_plan_handoff_prompt,
-    build_planner_turn_input,
-    extract_latest_ai_text,
-    extract_todos_from_state,
-    latest_ai_text_after_latest_tool,
-    normalize_state_messages,
-    planner_turn_approve_plan_decision,
-    planner_turn_has_write_todos,
 )
 from invincat_cli.app_runtime.model_args import (
     split_model_spec,
@@ -150,7 +138,6 @@ if TYPE_CHECKING:
 
     from deepagents.backends import CompositeBackend
     from langchain_core.language_models import BaseChatModel
-    from langchain_core.runnables import RunnableConfig
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
     from textual.events import Click, MouseUp, Paste
@@ -1396,33 +1383,9 @@ class DeepAgentsApp(App):
         Args:
             task: The task description to plan.
         """
-        if not self._agent or not self._session_state:
-            from invincat_cli.i18n import t
+        from invincat_cli.app_runtime.plan_handlers import run_planner
 
-            await self._mount_message(AppMessage(t("plan.agent_not_configured")))
-            return False
-
-        planner = await self._ensure_planner_agent()
-        if planner is None:
-            from invincat_cli.i18n import t
-
-            await self._mount_message(AppMessage(t("plan.planner_unavailable")))
-            return False
-
-        if not self._planner_thread_id:
-            self._planner_thread_id = new_thread_id()
-
-        # Reset per-turn dedupe so a rejected plan can be re-submitted (same
-        # todos) on the next planner turn.
-        self._planner_last_todos_fingerprint = None
-        self._planner_prompted_todos_fingerprint = None
-
-        return await self._send_to_agent(
-            build_planner_turn_input(task=task, cwd=self._cwd),
-            agent_override=planner,
-            thread_id_override=self._planner_thread_id,
-            post_turn_hook=self._after_planner_turn,
-        )
+        return await run_planner(self, task)
 
     async def _ensure_planner_agent(self) -> Pregel | None:
         """Lazily create and cache a planner peer-agent.
@@ -1441,109 +1404,36 @@ class DeepAgentsApp(App):
         thread_id: str,
     ) -> dict[str, Any]:
         """Fetch state values from a specific agent/thread pair."""
-        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
-        state = await agent.aget_state(config)
-        if state and state.values:
-            return dict(state.values)
-        return {}
+        from invincat_cli.app_runtime.plan_handlers import (
+            get_thread_state_values_for_agent,
+        )
+
+        return await get_thread_state_values_for_agent(agent, thread_id)
 
     async def _after_planner_turn(self) -> None:
         """Check planner turn result and drive plan approval flow."""
-        from invincat_cli.plan_agent import extract_todos_from_message
+        from invincat_cli.app_runtime.plan_handlers import after_planner_turn
 
-        if not self._planner_agent or not self._planner_thread_id:
-            return
-
-        state_values = await self._get_thread_state_values_for_agent(
-            self._planner_agent, self._planner_thread_id
-        )
-        if not state_values:
-            return
-
-        messages = normalize_state_messages(state_values.get("messages", []))
-        approve_plan_decision = planner_turn_approve_plan_decision(messages)
-        if approve_plan_decision is not None:
-            if approve_plan_decision != "approved":
-                if not latest_ai_text_after_latest_tool(messages, "approve_plan"):
-                    await self._mount_message(AppMessage(t("plan.refine_prompt")))
-                return
-
-            todos = extract_todos_from_state(state_values)
-            if not todos:
-                latest_text = extract_latest_ai_text(messages)
-                todos = extract_todos_from_message(latest_text) or []
-            if not todos:
-                await self._mount_message(
-                    AppMessage(
-                        t("plan.approval_no_valid_todos")
-                    )
-                )
-                return
-            await self._finalize_planner_approval(
-                todos,
-                planner_state_values=state_values,
-            )
-            return
-        wrote_todos_this_turn = planner_turn_has_write_todos(messages)
-        if not wrote_todos_this_turn:
-            return
-
-        todos = extract_todos_from_state(state_values)
-        if not todos:
-            latest_text = extract_latest_ai_text(messages)
-            todos = extract_todos_from_message(latest_text) or []
-        if not todos:
-            await self._mount_message(
-                AppMessage(t("plan.ready_no_valid_todos"))
-            )
-            return
-
-        todos_fingerprint = plan_todos_fingerprint(todos)
-        if todos_fingerprint == self._planner_prompted_todos_fingerprint:
-            return
-
-        await self._process_planner_todos_approval(todos)
+        await after_planner_turn(self)
 
     async def _process_planner_todos_approval(
         self,
         todos: list[dict[str, str]],
     ) -> bool:
         """Approve planner todos and finalize plan mode when approved."""
-        from invincat_cli.i18n import t
+        from invincat_cli.app_runtime.plan_handlers import (
+            process_planner_todos_approval,
+        )
 
-        todos_fingerprint = plan_todos_fingerprint(todos)
-        if todos_fingerprint == self._planner_last_todos_fingerprint:
-            return False
-
-        future = await self._request_approve_plan(todos)
-        result = await future
-        self._planner_last_todos_fingerprint = todos_fingerprint
-        if result.get("type") != "approved":
-            await self._mount_message(AppMessage(t("plan.refine_prompt")))
-            return False
-
-        await self._finalize_planner_approval(todos)
-        return True
+        return await process_planner_todos_approval(self, todos)
 
     async def _maybe_approve_current_planner_todos(self) -> bool:
         """Best-effort immediate approval when planner already has todo state."""
-        from invincat_cli.plan_agent import extract_todos_from_message
-
-        if not self._planner_agent or not self._planner_thread_id:
-            return False
-        state_values = await self._get_thread_state_values_for_agent(
-            self._planner_agent, self._planner_thread_id
+        from invincat_cli.app_runtime.plan_handlers import (
+            maybe_approve_current_planner_todos,
         )
-        messages = normalize_state_messages(state_values.get("messages", []))
-        if not planner_turn_has_write_todos(messages):
-            return False
-        todos = extract_todos_from_state(state_values)
-        if not todos:
-            latest_text = extract_latest_ai_text(messages)
-            todos = extract_todos_from_message(latest_text) or []
-        if not todos:
-            return False
-        return await self._process_planner_todos_approval(todos)
+
+        return await maybe_approve_current_planner_todos(self)
 
     def _invalidate_planner_agent_cache(self) -> None:
         """Invalidate cached planner runtime so it picks up fresh model config."""
@@ -1558,33 +1448,12 @@ class DeepAgentsApp(App):
         planner_state_values: dict[str, Any] | None = None,
     ) -> None:
         """Finalize plan mode after approval and handoff execution to main agent."""
-        from invincat_cli.i18n import t
+        from invincat_cli.app_runtime.plan_handlers import finalize_planner_approval
 
-        plan_text = build_plan_text(todos)
-        effective_state = planner_state_values
-        if effective_state is None and self._planner_agent and self._planner_thread_id:
-            try:
-                effective_state = await self._get_thread_state_values_for_agent(
-                    self._planner_agent,
-                    self._planner_thread_id,
-                )
-            except Exception:
-                logger.debug(
-                    "Failed to fetch planner state for handoff prompt; "
-                    "falling back to todos-only handoff",
-                    exc_info=True,
-                )
-                effective_state = None
-        handoff_prompt = build_plan_handoff_prompt(
+        await finalize_planner_approval(
+            self,
             todos,
-            planner_state_values=effective_state,
-        )
-        self._reset_plan_mode_state()
-        self._pending_plan_handoff_prompt = handoff_prompt
-        await self._mount_message(
-            AppMessage(
-                f"{t('plan.approved_no_execute')}\n\n{plan_text}"
-            )
+            planner_state_values=planner_state_values,
         )
 
     async def _execute_plan_handoff(self, prompt: str) -> None:
@@ -1593,24 +1462,9 @@ class DeepAgentsApp(App):
         This bypasses `_handle_user_message()` routing so handoff execution
         cannot be redirected back into planner mode by stale session flags.
         """
-        if not self._session_state:
-            return
+        from invincat_cli.app_runtime.plan_handlers import execute_plan_handoff
 
-        self._session_state.plan_mode = False
-        if self._status_bar:
-            self._status_bar.set_plan_mode(enabled=False)
-
-        from invincat_cli.i18n import t
-
-        await self._mount_message(AppMessage(t("plan.handoff_started")))
-        await self._mount_message(
-            AppMessage(
-                f"{t('plan.handoff_prompt_preview')}\n\n{prompt}"
-            )
-        )
-        started = await self._send_to_agent(prompt)
-        if not started:
-            self._pending_plan_handoff_prompt = prompt
+        await execute_plan_handoff(self, prompt)
 
     async def _remove_ask_user_widget(  # noqa: PLR6301  # Shared helper used by ask_user event handlers
         self,
