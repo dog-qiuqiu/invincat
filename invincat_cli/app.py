@@ -154,13 +154,15 @@ from invincat_cli.app_runtime.agent import (
     build_agent_error_detail,
     can_start_agent_turn,
     is_current_agent_generation,
-    is_planner_agent_turn,
+    next_agent_turn_start_state,
     queued_scheduled_run_state,
+    resolve_agent_task_exception_decision,
     resolve_wecom_file_request_handler,
     should_clear_scheduled_run_before_send,
+    should_continue_queue_after_sync_message,
     should_continue_after_deferred_actions,
+    should_process_next_from_queue,
     should_route_message_to_planner,
-    should_retry_scheduled_turn,
 )
 from invincat_cli.app_runtime.services import AppServices
 from invincat_cli.app_runtime.server import (
@@ -4496,16 +4498,17 @@ class DeepAgentsApp(App):
             ui_adapter=self._ui_adapter,
             session_state=self._session_state,
         ):
-            self._agent_generation += 1
-            generation = self._agent_generation
-            self._agent_running = True
-            self._active_turn_is_planner = is_planner_agent_turn(
+            start_state = next_agent_turn_start_state(
+                current_generation=self._agent_generation,
                 agent_override=agent_override,
                 target_agent=target_agent,
                 planner_agent=self._planner_agent,
                 thread_id_override=thread_id_override,
                 planner_thread_id=self._planner_thread_id,
             )
+            self._agent_generation = start_state.generation
+            self._agent_running = True
+            self._active_turn_is_planner = start_state.active_turn_is_planner
 
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=False)
@@ -4517,7 +4520,7 @@ class DeepAgentsApp(App):
                     AgentTurnRequest(
                         message=message,
                         message_kwargs=message_kwargs,
-                        generation=generation,
+                        generation=start_state.generation,
                         agent_override=target_agent,
                         thread_id_override=thread_id_override,
                         post_turn_hook=post_turn_hook,
@@ -4634,12 +4637,12 @@ class DeepAgentsApp(App):
 
     async def _handle_agent_task_exception(self, exc: BaseException) -> bool:
         """Handle a failed agent turn and return whether it should retry."""
-        scheduled_retryable = should_retry_scheduled_turn(
+        decision = resolve_agent_task_exception_decision(
             active_scheduled_run=self._active_scheduled_run,
             retry_used=self._scheduled_turn_retry_used,
             exc=exc,
         )
-        if scheduled_retryable:
+        if decision.retry:
             self._scheduled_turn_retry_used = True
             logger.warning(
                 "Scheduled run transient agent error; retrying once after %.1fs",
@@ -4647,14 +4650,11 @@ class DeepAgentsApp(App):
                 exc_info=True,
             )
             with suppress(Exception):
-                await self._mount_message(
-                    AppMessage(
-                        "Scheduled task hit a transient model/network error; retrying once..."
-                    )
-                )
+                if decision.retry_notice is not None:
+                    await self._mount_message(AppMessage(decision.retry_notice))
         else:
-            self._scheduled_turn_status = "failed"
-            self._scheduled_turn_error = build_agent_error_detail(exc)
+            self._scheduled_turn_status = decision.scheduled_turn_status or "failed"
+            self._scheduled_turn_error = decision.scheduled_turn_error
 
         logger.exception("Agent execution failed")
         error_detail = self._agent_error_detail_with_server_log(exc)
@@ -4662,7 +4662,7 @@ class DeepAgentsApp(App):
             self._ui_adapter.finalize_pending_tools_with_error(
                 t("agent.error").format(error=error_detail)
             )
-        if not scheduled_retryable:
+        if not decision.retry:
             try:
                 await self._mount_message(
                     ErrorMessage(t("agent.error").format(error=error_detail))
@@ -4672,7 +4672,7 @@ class DeepAgentsApp(App):
                     "Could not mount error message (app closing?)",
                     exc_info=True,
                 )
-        return scheduled_retryable
+        return decision.retry
 
     def _agent_error_detail_with_server_log(self, exc: BaseException) -> str:
         """Build agent error detail, including server log tail when useful."""
@@ -4690,7 +4690,11 @@ class DeepAgentsApp(App):
         Dequeues and processes the next pending message in FIFO order.
         Uses the `_processing_pending` flag to prevent reentrant execution.
         """
-        if self._processing_pending or not self._pending_messages or self._exit:
+        if not should_process_next_from_queue(
+            processing_pending=self._processing_pending,
+            has_pending_messages=bool(self._pending_messages),
+            exiting=self._exit,
+        ):
             return
 
         self._processing_pending = True
@@ -4728,8 +4732,11 @@ class DeepAgentsApp(App):
         # Command mode messages complete synchronously without spawning
         # a worker, so cleanup won't fire again. Continue draining the
         # queue if no worker was started.
-        busy = self._agent_running or self._shell_running
-        if not busy and self._pending_messages:
+        if should_continue_queue_after_sync_message(
+            agent_running=self._agent_running,
+            shell_running=self._shell_running,
+            has_pending_messages=bool(self._pending_messages),
+        ):
             await self._process_next_from_queue()
 
     async def _cleanup_agent_task(self, *, generation: int = 0) -> None:

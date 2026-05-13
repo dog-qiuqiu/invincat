@@ -13,11 +13,15 @@ from invincat_cli.app_runtime.agent import (
     can_start_agent_turn,
     is_current_agent_generation,
     is_planner_agent_turn,
+    next_agent_turn_start_state,
     queued_scheduled_run_state,
+    resolve_agent_task_exception_decision,
     resolve_wecom_file_request_handler,
     scheduled_run_from_message,
     should_clear_scheduled_run_before_send,
+    should_continue_queue_after_sync_message,
     should_continue_after_deferred_actions,
+    should_process_next_from_queue,
     should_route_message_to_planner,
     should_retry_scheduled_turn,
 )
@@ -77,6 +81,52 @@ def test_should_clear_scheduled_run_before_send() -> None:
     assert should_clear_scheduled_run_before_send(processing_pending=True) is False
 
 
+def test_should_process_next_from_queue() -> None:
+    assert should_process_next_from_queue(
+        processing_pending=False,
+        has_pending_messages=True,
+        exiting=False,
+    )
+    assert not should_process_next_from_queue(
+        processing_pending=True,
+        has_pending_messages=True,
+        exiting=False,
+    )
+    assert not should_process_next_from_queue(
+        processing_pending=False,
+        has_pending_messages=False,
+        exiting=False,
+    )
+    assert not should_process_next_from_queue(
+        processing_pending=False,
+        has_pending_messages=True,
+        exiting=True,
+    )
+
+
+def test_should_continue_queue_after_sync_message() -> None:
+    assert should_continue_queue_after_sync_message(
+        agent_running=False,
+        shell_running=False,
+        has_pending_messages=True,
+    )
+    assert not should_continue_queue_after_sync_message(
+        agent_running=True,
+        shell_running=False,
+        has_pending_messages=True,
+    )
+    assert not should_continue_queue_after_sync_message(
+        agent_running=False,
+        shell_running=True,
+        has_pending_messages=True,
+    )
+    assert not should_continue_queue_after_sync_message(
+        agent_running=False,
+        shell_running=False,
+        has_pending_messages=False,
+    )
+
+
 def test_can_start_agent_turn_requires_runtime_pieces() -> None:
     assert can_start_agent_turn(
         target_agent=object(),
@@ -107,6 +157,34 @@ def test_is_planner_agent_turn() -> None:
         thread_id_override="planner-thread",
         planner_thread_id="planner-thread",
     ) is False
+
+
+def test_next_agent_turn_start_state() -> None:
+    planner = object()
+
+    state = next_agent_turn_start_state(
+        current_generation=4,
+        agent_override=planner,
+        target_agent=planner,
+        planner_agent=planner,
+        thread_id_override="planner-thread",
+        planner_thread_id="planner-thread",
+    )
+
+    assert state.generation == 5
+    assert state.active_turn_is_planner is True
+
+    normal_state = next_agent_turn_start_state(
+        current_generation=5,
+        agent_override=None,
+        target_agent=object(),
+        planner_agent=planner,
+        thread_id_override=None,
+        planner_thread_id="planner-thread",
+    )
+
+    assert normal_state.generation == 6
+    assert normal_state.active_turn_is_planner is False
 
 
 def test_agent_cleanup_decisions() -> None:
@@ -193,6 +271,34 @@ def test_should_retry_scheduled_turn() -> None:
         retry_used=False,
         exc=ValueError("bad input"),
     )
+
+
+def test_resolve_agent_task_exception_decision_retries_scheduled_transient() -> None:
+    decision = resolve_agent_task_exception_decision(
+        active_scheduled_run=("run-1", "task-1"),
+        retry_used=False,
+        exc=TimeoutError("timed out"),
+    )
+
+    assert decision.retry is True
+    assert decision.scheduled_turn_status is None
+    assert decision.scheduled_turn_error is None
+    assert decision.retry_notice == (
+        "Scheduled task hit a transient model/network error; retrying once..."
+    )
+
+
+def test_resolve_agent_task_exception_decision_marks_failure() -> None:
+    decision = resolve_agent_task_exception_decision(
+        active_scheduled_run=("run-1", "task-1"),
+        retry_used=True,
+        exc=ValueError("bad input"),
+    )
+
+    assert decision.retry is False
+    assert decision.scheduled_turn_status == "failed"
+    assert decision.scheduled_turn_error == "ValueError: bad input"
+    assert decision.retry_notice is None
 
 
 def test_build_agent_error_detail_appends_server_tail_for_masked_error() -> None:

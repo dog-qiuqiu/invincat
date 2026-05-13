@@ -34,6 +34,24 @@ class AgentTurnRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentTurnStartState:
+    """State derived when an agent turn is accepted for execution."""
+
+    generation: int
+    active_turn_is_planner: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AgentTaskExceptionDecision:
+    """Decision for handling an exception raised by an agent turn."""
+
+    retry: bool
+    scheduled_turn_status: str | None
+    scheduled_turn_error: str | None
+    retry_notice: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class QueuedScheduledRunState:
     """State to apply when a queued message starts a scheduled run."""
 
@@ -103,6 +121,26 @@ def should_clear_scheduled_run_before_send(*, processing_pending: bool) -> bool:
     return not processing_pending
 
 
+def should_process_next_from_queue(
+    *,
+    processing_pending: bool,
+    has_pending_messages: bool,
+    exiting: bool,
+) -> bool:
+    """Return whether the pending-message queue may start processing."""
+    return not processing_pending and has_pending_messages and not exiting
+
+
+def should_continue_queue_after_sync_message(
+    *,
+    agent_running: bool,
+    shell_running: bool,
+    has_pending_messages: bool,
+) -> bool:
+    """Return whether the queue should keep draining after synchronous work."""
+    return not (agent_running or shell_running) and has_pending_messages
+
+
 def can_start_agent_turn(
     *,
     target_agent: object | None,
@@ -126,6 +164,28 @@ def is_planner_agent_turn(
         agent_override is not None
         and target_agent is planner_agent
         and thread_id_override == planner_thread_id
+    )
+
+
+def next_agent_turn_start_state(
+    *,
+    current_generation: int,
+    agent_override: object | None,
+    target_agent: object | None,
+    planner_agent: object | None,
+    thread_id_override: str | None,
+    planner_thread_id: str | None,
+) -> AgentTurnStartState:
+    """Build state updates for a newly accepted agent turn."""
+    return AgentTurnStartState(
+        generation=current_generation + 1,
+        active_turn_is_planner=is_planner_agent_turn(
+            agent_override=agent_override,
+            target_agent=target_agent,
+            planner_agent=planner_agent,
+            thread_id_override=thread_id_override,
+            planner_thread_id=planner_thread_id,
+        ),
     )
 
 
@@ -154,6 +214,35 @@ def should_retry_scheduled_turn(
         active_scheduled_run is not None
         and not retry_used
         and is_scheduled_retryable_error(exc)
+    )
+
+
+def resolve_agent_task_exception_decision(
+    *,
+    active_scheduled_run: tuple[str, str] | None,
+    retry_used: bool,
+    exc: BaseException,
+) -> AgentTaskExceptionDecision:
+    """Resolve retry and scheduled-run state updates for an agent exception."""
+    retry = should_retry_scheduled_turn(
+        active_scheduled_run=active_scheduled_run,
+        retry_used=retry_used,
+        exc=exc,
+    )
+    if retry:
+        return AgentTaskExceptionDecision(
+            retry=True,
+            scheduled_turn_status=None,
+            scheduled_turn_error=None,
+            retry_notice=(
+                "Scheduled task hit a transient model/network error; retrying once..."
+            ),
+        )
+    return AgentTaskExceptionDecision(
+        retry=False,
+        scheduled_turn_status="failed",
+        scheduled_turn_error=build_agent_error_detail(exc),
+        retry_notice=None,
     )
 
 
