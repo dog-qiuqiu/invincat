@@ -5,8 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from invincat_cli.app_runtime.queueing import can_bypass_busy_queue
 from invincat_cli.app_runtime.agent import should_route_message_to_planner
+from invincat_cli.app_runtime.queueing import can_bypass_busy_queue
 from invincat_cli.app_runtime.state import InputMode, QueuedMessage
 from invincat_cli.i18n import t
 from invincat_cli.widgets.messages import QueuedUserMessage, UserMessage

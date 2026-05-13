@@ -595,6 +595,8 @@ def parse_args() -> argparse.Namespace:
     try:
         from importlib.metadata import (
             PackageNotFoundError,
+        )
+        from importlib.metadata import (
             version as _pkg_version,
         )
 
@@ -1223,6 +1225,8 @@ def cli_main() -> None:
         try:
             from importlib.metadata import (
                 PackageNotFoundError,
+            )
+            from importlib.metadata import (
                 version as _pkg_version,
             )
 

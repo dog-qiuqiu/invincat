@@ -12,6 +12,13 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
 from invincat_cli.wecom.bridge import WeComBridge
+from invincat_cli.wecom.file import (
+    WECOM_CONTEXT_FLAG,
+    WECOM_FILE_MAX_BYTES,
+    WECOM_FILE_TOOL_NAME,
+    WeComFileMiddleware,
+    parse_wecom_file_request,
+)
 from invincat_cli.wecom.media import (
     build_wecom_agent_input_with_media_downloads,
     decrypt_wecom_media_payload,
@@ -20,13 +27,6 @@ from invincat_cli.wecom.media import (
     upload_wecom_outbound_media,
     validate_wecom_media_url,
     wecom_filename_from_response,
-)
-from invincat_cli.wecom.file import (
-    WECOM_CONTEXT_FLAG,
-    WECOM_FILE_MAX_BYTES,
-    WECOM_FILE_TOOL_NAME,
-    WeComFileMiddleware,
-    parse_wecom_file_request,
 )
 from invincat_cli.wecom.protocol import (
     WeComInboundMedia,

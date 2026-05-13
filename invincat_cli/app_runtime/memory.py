@@ -9,7 +9,6 @@ from typing import Any
 
 from invincat_cli.core.session_stats import format_token_count
 
-
 AUTO_OFFLOAD_THRESHOLD = 0.8
 AUTO_OFFLOAD_COOLDOWN_SECONDS = 300
 

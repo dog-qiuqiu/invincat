@@ -8,10 +8,9 @@ import logging
 import os
 import uuid
 from collections import OrderedDict, deque
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from typing import Any
-
-from collections.abc import Awaitable, Callable
 
 from invincat_cli.wecom.protocol import (
     build_wecom_ping_frame,

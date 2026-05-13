@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import ipaddress
 import socket
-from urllib.parse import urljoin, urlparse
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urljoin, urlparse
 
 if TYPE_CHECKING:
     from tavily import TavilyClient
@@ -81,7 +81,8 @@ def web_search(  # noqa: ANN201  # Return type depends on dynamic tool configura
             MissingAPIKeyError,
             UsageLimitExceededError,
         )
-        from tavily.errors import ForbiddenError, TimeoutError as TavilyTimeoutError
+        from tavily.errors import ForbiddenError
+        from tavily.errors import TimeoutError as TavilyTimeoutError
     except ImportError as exc:
         return {
             "error": f"Required package not installed: {exc.name}. "

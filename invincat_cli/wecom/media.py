@@ -118,7 +118,7 @@ def validate_wecom_media_url(url: str) -> None:
 
 
 async def download_wecom_inbound_media(
-    media: "WeComInboundMedia",
+    media: WeComInboundMedia,
     *,
     inbound_frame: dict[str, Any],
     index: int,

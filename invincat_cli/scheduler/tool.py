@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import UTC
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from langchain.agents.middleware.types import AgentMiddleware
@@ -14,8 +15,8 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
-    from langgraph.types import Command
     from langgraph.prebuilt.tool_node import ToolCallRequest
+    from langgraph.types import Command
 
     from invincat_cli.scheduler.store import SchedulerStore
 
@@ -67,7 +68,7 @@ def validate_timezone_name(timezone_name: str) -> str:
 
 def parse_once_at(value: str, timezone_name: str) -> str:
     """Parse an absolute one-shot run time and return an ISO UTC timestamp."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     timezone_name = validate_timezone_name(timezone_name)
     raw = value.strip()
@@ -84,7 +85,7 @@ def parse_once_at(value: str, timezone_name: str) -> str:
         from zoneinfo import ZoneInfo
 
         dt = dt.replace(tzinfo=ZoneInfo(timezone_name))
-    return dt.astimezone(timezone.utc).isoformat()
+    return dt.astimezone(UTC).isoformat()
 
 
 def validate_schedule_create_options(
@@ -172,7 +173,7 @@ class ScheduleMiddleware(AgentMiddleware):
     creation.
     """
 
-    def __init__(self, *, store: "SchedulerStore") -> None:  # noqa: F821
+    def __init__(self, *, store: SchedulerStore) -> None:  # noqa: F821
         super().__init__()
         self._store = store
         self.tools = [
@@ -510,7 +511,7 @@ class ScheduleMiddleware(AgentMiddleware):
 
     def _reject_management_tool_during_scheduled_run(
         self,
-        request: "ToolCallRequest",
+        request: ToolCallRequest,
     ) -> ToolMessage | None:
         name = str(request.tool_call.get("name", ""))
         if name not in _MANAGEMENT_TOOLS:
@@ -526,34 +527,34 @@ class ScheduleMiddleware(AgentMiddleware):
 
     def wrap_model_call(
         self,
-        request: "ModelRequest",
-        handler: "Callable[[ModelRequest], ModelResponse]",
-    ) -> "ModelResponse":
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
         tools = self._filter_tools(list(getattr(request, "tools", [])), request.runtime)
         return handler(request.override(tools=tools))
 
     async def awrap_model_call(
         self,
-        request: "ModelRequest",
-        handler: "Callable[[ModelRequest], Awaitable[ModelResponse]]",
-    ) -> "ModelResponse":
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
         tools = self._filter_tools(list(getattr(request, "tools", [])), request.runtime)
         return await handler(request.override(tools=tools))
 
     def wrap_tool_call(
         self,
-        request: "ToolCallRequest",
-        handler: "Callable[[ToolCallRequest], ToolMessage | Command[Any]]",
-    ) -> "ToolMessage | Command[Any]":
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
         if (rejection := self._reject_management_tool_during_scheduled_run(request)) is not None:
             return rejection
         return handler(request)
 
     async def awrap_tool_call(
         self,
-        request: "ToolCallRequest",
-        handler: "Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]]",
-    ) -> "ToolMessage | Command[Any]":
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
         if (rejection := self._reject_management_tool_during_scheduled_run(request)) is not None:
             return rejection
         return await handler(request)

@@ -9,7 +9,6 @@ from typing import Literal
 from invincat_cli.core.session_stats import SessionStats
 from invincat_cli.widgets.message_store import MessageData
 
-
 InputMode = Literal["normal", "shell", "command"]
 
 

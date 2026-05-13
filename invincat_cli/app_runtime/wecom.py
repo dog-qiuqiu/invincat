@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, Mapping
+from typing import Any, Literal
 
 from invincat_cli.wecom.session import WeComMessageResponder
-
 
 DEFAULT_WECOM_WS_URL = "wss://openws.work.weixin.qq.com"
 WeComBotCommandKind = Literal["start", "stop", "status", "usage"]

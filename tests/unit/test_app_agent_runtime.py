@@ -20,11 +20,11 @@ from invincat_cli.app_runtime.agent import (
     resolve_wecom_file_request_handler,
     scheduled_run_from_message,
     should_clear_scheduled_run_before_send,
-    should_continue_queue_after_sync_message,
     should_continue_after_deferred_actions,
+    should_continue_queue_after_sync_message,
     should_process_next_from_queue,
-    should_route_message_to_planner,
     should_retry_scheduled_turn,
+    should_route_message_to_planner,
 )
 from invincat_cli.app_runtime.state import QueuedMessage
 

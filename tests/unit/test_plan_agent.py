@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from invincat_cli.plan_agent import (
-    PLANNER_APPROVE_PLAN_SYSTEM_PROMPT,
     PLANNER_ALLOWED_TOOLS,
+    PLANNER_APPROVE_PLAN_SYSTEM_PROMPT,
     PLANNER_SUBAGENT_NAME,
     PLANNER_SYSTEM_PROMPT,
     PlannerToolAllowListMiddleware,

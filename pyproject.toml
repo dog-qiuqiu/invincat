@@ -105,7 +105,15 @@ target-version = "py311"
 line-length = 88
 
 [tool.ruff.lint]
-select = ["E", "F"] # pycodestyle + pyflakes correctness checks
+select = [
+    "E",
+    "F",
+    "I",
+    "UP017",
+    "UP035",
+    "UP037",
+    "UP041",
+]
 ignore = ["E501"] # line too long, handled by black
 
 [tool.ruff.lint.per-file-ignores]

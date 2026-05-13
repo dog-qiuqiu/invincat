@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
-from collections.abc import Mapping
 
 from langchain_core.messages import SystemMessage
 
@@ -18,7 +18,7 @@ class _FakeRequest:
     state: dict[str, Any]
     system_message: SystemMessage | None = None
 
-    def override(self, **kwargs: Any) -> "_FakeRequest":
+    def override(self, **kwargs: Any) -> _FakeRequest:
         return replace(self, **kwargs)
 
 
@@ -27,7 +27,7 @@ class _AsyncFakeRequest:
     state: dict[str, Any]
     system_message: SystemMessage | None = None
 
-    def override(self, **kwargs: Any) -> "_AsyncFakeRequest":
+    def override(self, **kwargs: Any) -> _AsyncFakeRequest:
         return replace(self, **kwargs)
 
 

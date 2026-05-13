@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -68,7 +68,7 @@ def scheduled_report_path_for_wecom(
     try:
         scheduled_for = datetime.fromisoformat(run.scheduled_for)
         if scheduled_for.tzinfo is None:
-            scheduled_for = scheduled_for.replace(tzinfo=timezone.utc)
+            scheduled_for = scheduled_for.replace(tzinfo=UTC)
         date_str = scheduled_for.astimezone(ZoneInfo(task.timezone)).strftime(
             "%Y-%m-%d"
         )

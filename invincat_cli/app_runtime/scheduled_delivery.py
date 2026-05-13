@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -312,7 +312,7 @@ async def send_scheduled_wecom_text(
         run_id,
         status="success",
         error=None,
-        delivered_at=datetime.now(timezone.utc).isoformat(),
+        delivered_at=datetime.now(UTC).isoformat(),
     )
     return True
 

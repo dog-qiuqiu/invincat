@@ -9,18 +9,18 @@ from typing import Any, Literal, cast
 
 from textual.containers import VerticalScroll
 
+from invincat_cli.app_runtime.input_handlers import handle_user_message
+from invincat_cli.app_runtime.model_args import split_model_spec
+from invincat_cli.app_runtime.skill import discover_skills_and_roots as discover_roots
 from invincat_cli.app_runtime.startup import (
     build_startup_slash_commands,
     resolve_memory_status_model,
     resolve_startup_followup,
     resolve_startup_model_overrides,
 )
-from invincat_cli.app_runtime.input_handlers import handle_user_message
 from invincat_cli.app_runtime.thread_handlers import load_thread_history
-from invincat_cli.app_runtime.skill import discover_skills_and_roots as discover_roots
 from invincat_cli.config import is_ascii_mode
 from invincat_cli.i18n import t
-from invincat_cli.app_runtime.model_args import split_model_spec
 from invincat_cli.skills.load import ExtendedSkillMetadata
 from invincat_cli.widgets.chat_input import ChatInput
 from invincat_cli.widgets.status import StatusBar
@@ -292,10 +292,10 @@ def discover_skills_and_roots(
 
 def prewarm_deferred_imports() -> None:
     """Background-load modules deferred from the startup path."""
-    from invincat_cli.io.clipboard import copy_selection_to_clipboard  # noqa: F401
     from invincat_cli.command_registry import ALWAYS_IMMEDIATE  # noqa: F401
     from invincat_cli.config import settings  # noqa: F401
     from invincat_cli.hooks import dispatch_hook  # noqa: F401
+    from invincat_cli.io.clipboard import copy_selection_to_clipboard  # noqa: F401
     from invincat_cli.model_config import ModelSpec  # noqa: F401
     from invincat_cli.textual_adapter import TextualUIAdapter  # noqa: F401
     from invincat_cli.update_check import is_update_check_enabled  # noqa: F401
@@ -311,15 +311,17 @@ def prewarm_deferred_imports() -> None:
         logger.warning("Could not prewarm third-party imports", exc_info=True)
 
     import markdown_it  # noqa: F401
-    from pygments.lexers import get_lexer_by_name as _get_lexer  # type: ignore[import-untyped]
+    from pygments.lexers import (  # type: ignore[import-untyped]
+        get_lexer_by_name as _get_lexer,
+    )
     from textual.widgets import Markdown  # noqa: F401
 
     _get_lexer("python")
 
     from invincat_cli.widgets.approval import ApprovalMenu  # noqa: F401
     from invincat_cli.widgets.ask_user import AskUserMenu  # noqa: F401
-    from invincat_cli.widgets.model_selector import ModelSelectorScreen  # noqa: F401
     from invincat_cli.widgets.memory_viewer import MemoryViewerScreen  # noqa: F401
+    from invincat_cli.widgets.model_selector import ModelSelectorScreen  # noqa: F401
     from invincat_cli.widgets.thread_selector import (  # noqa: F401
         DeleteThreadConfirmScreen,
         ThreadSelectorScreen,

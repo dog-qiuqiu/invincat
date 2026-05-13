@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-import ast
-import json
 import logging
 import re
-from dataclasses import dataclass
-from pathlib import Path
 from time import time
 from typing import TYPE_CHECKING, Any
 
@@ -25,12 +21,17 @@ from invincat_cli.config import (
     get_glyphs,
     is_ascii_mode,
 )
-from invincat_cli.i18n import t
 from invincat_cli.formatting import format_duration
+from invincat_cli.i18n import t
 from invincat_cli.io.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
 from invincat_cli.tool_display import format_tool_display
 from invincat_cli.widgets._links import open_style_link
 from invincat_cli.widgets.diff import compose_diff_lines
+from invincat_cli.widgets.output_formatters import (
+    FormattedOutput,
+    format_tool_output,
+    prefix_tool_output,
+)
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -102,24 +103,8 @@ def _mode_color(mode: str | None, widget_or_app: object | None = None) -> str:
     return colors.primary
 
 
-@dataclass(frozen=True, slots=True)
-class FormattedOutput:
-    """Result of formatting tool output for display."""
-
-    content: Content
-    """Styled `Content` for the formatted output."""
-
-    truncation: str | None = None
-    """Description of truncated content (e.g., "10 more lines"), or None if no
-    truncation occurred."""
-
-
 # Maximum number of tool arguments to display inline
 _MAX_INLINE_ARGS = 3
-
-# Truncation limits for display
-_MAX_TODO_CONTENT_LEN = 70
-_MAX_WEB_CONTENT_LEN = 100
 
 # Tools that have their key info already in the header (no need for args line)
 _TOOLS_WITH_HEADER_INFO: set[str] = {
@@ -1171,45 +1156,14 @@ class ToolCallMessage(Vertical):
         Returns:
             FormattedOutput with content and optional truncation info.
         """
-        output = output.strip()
-        if not output:
-            return FormattedOutput(content=Content(""))
-
-        # Tool-specific formatting using dispatch table
-        formatters = {
-            "write_todos": self._format_todos_output,
-            "ls": self._format_ls_output,
-            "read_file": self._format_file_output,
-            "write_file": self._format_file_output,
-            "edit_file": self._format_file_output,
-            "grep": self._format_search_output,
-            "glob": self._format_search_output,
-            "shell": self._format_shell_output,
-            "bash": self._format_shell_output,
-            "execute": self._format_shell_output,
-            "web_search": self._format_web_output,
-            "fetch_url": self._format_web_output,
-            "task": self._format_task_output,
-        }
-
-        formatter = formatters.get(self._tool_name)
-        if formatter:
-            return formatter(output, is_preview=is_preview)
-
-        if is_preview:
-            # Fallback for unknown tools: use generic truncation
-            lines = output.split("\n")
-            if len(lines) > self._PREVIEW_LINES:
-                return self._format_lines_output(lines, is_preview=True)
-            if len(output) > self._PREVIEW_CHARS:
-                truncated = output[: self._PREVIEW_CHARS]
-                truncation = f"{len(output) - self._PREVIEW_CHARS} more chars"
-                return FormattedOutput(
-                    content=Content(truncated), truncation=truncation
-                )
-
-        # Default: plain text (Content treats input as literal)
-        return FormattedOutput(content=Content(output))
+        return format_tool_output(
+            self._tool_name,
+            output,
+            is_preview=is_preview,
+            preview_lines=self._PREVIEW_LINES,
+            preview_chars=self._PREVIEW_CHARS,
+            theme_context=self,
+        )
 
     def _prefix_output(self, content: Content) -> Content:  # noqa: PLR6301  # Grouped as method for widget cohesion
         """Prefix output with output marker and indent continuation lines.
@@ -1221,391 +1175,7 @@ class ToolCallMessage(Vertical):
             `Content` with output prefix on first line and indented
                 continuation.
         """
-        if not content.plain:
-            return Content("")
-        output_prefix = get_glyphs().output_prefix
-        lines = content.split("\n")
-        prefixed = [Content.assemble(f"{output_prefix} ", lines[0])]
-        prefixed.extend(Content.assemble("  ", line) for line in lines[1:])
-        return Content("\n").join(prefixed)
-
-    def _format_todos_output(
-        self, output: str, *, is_preview: bool = False
-    ) -> FormattedOutput:
-        """Format write_todos output as a checklist.
-
-        Returns:
-            FormattedOutput with checklist content and optional truncation info.
-        """
-        items = self._parse_todo_items(output)
-        if items is None:
-            return FormattedOutput(content=Content(output))
-
-        if not items:
-            return FormattedOutput(content=Content.styled("    No todos", "dim"))
-
-        lines: list[Content] = []
-        max_items = 4 if is_preview else len(items)
-
-        # Build stats header
-        stats = self._build_todo_stats(items)
-        if stats:
-            lines.extend([Content.assemble("    ", stats), Content("")])
-
-        # Format each item
-        lines.extend(self._format_single_todo(item) for item in items[:max_items])
-
-        truncation = None
-        if is_preview and len(items) > max_items:
-            truncation = f"{len(items) - max_items} more"
-
-        return FormattedOutput(content=Content("\n").join(lines), truncation=truncation)
-
-    def _parse_todo_items(self, output: str) -> list | None:  # noqa: PLR6301  # Grouped as method for widget cohesion
-        """Parse todo items from output.
-
-        Returns:
-            List of todo items, or None if parsing fails.
-        """
-        list_match = re.search(r"\[(\{.*\})\]", output.replace("\n", " "), re.DOTALL)
-        if list_match:
-            try:
-                return ast.literal_eval("[" + list_match.group(1) + "]")
-            except (ValueError, SyntaxError):
-                return None
-        try:
-            items = ast.literal_eval(output)
-            return items if isinstance(items, list) else None
-        except (ValueError, SyntaxError):
-            return None
-
-    def _build_todo_stats(self, items: list) -> Content:
-        """Build stats content for todo list.
-
-        Returns:
-            Styled `Content` showing active, pending, and completed counts.
-        """
-        colors = theme.get_theme_colors(self)
-        completed = sum(
-            1 for i in items if isinstance(i, dict) and i.get("status") == "completed"
-        )
-        active = sum(
-            1 for i in items if isinstance(i, dict) and i.get("status") == "in_progress"
-        )
-        pending = len(items) - completed - active
-
-        parts: list[Content] = []
-        if active:
-            parts.append(Content.styled(f"{active} active", colors.warning))
-        if pending:
-            parts.append(Content.styled(f"{pending} pending", "dim"))
-        if completed:
-            parts.append(Content.styled(f"{completed} done", colors.success))
-        return Content.styled(" | ", "dim").join(parts) if parts else Content("")
-
-    def _format_single_todo(self, item: dict | str) -> Content:
-        """Format a single todo item.
-
-        Returns:
-            Styled `Content` with checkbox and status styling.
-        """
-        colors = theme.get_theme_colors(self)
-        if isinstance(item, dict):
-            text = item.get("content", str(item))
-            status = item.get("status", "pending")
-        else:
-            text = str(item)
-            status = "pending"
-
-        if len(text) > _MAX_TODO_CONTENT_LEN:
-            text = text[: _MAX_TODO_CONTENT_LEN - 3] + "..."
-
-        glyphs = get_glyphs()
-        if status == "completed":
-            return Content.assemble(
-                Content.styled(f"    {glyphs.checkmark} done", colors.success),
-                Content.styled(f"   {text}", "dim"),
-            )
-        if status == "in_progress":
-            return Content.assemble(
-                Content.styled(f"    {glyphs.circle_filled} active", colors.warning),
-                f" {text}",
-            )
-        return Content.assemble(
-            Content.styled(f"    {glyphs.circle_empty} todo", "dim"),
-            f"   {text}",
-        )
-
-    def _format_ls_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
-        self, output: str, *, is_preview: bool = False
-    ) -> FormattedOutput:
-        """Format ls output as a clean directory listing.
-
-        Returns:
-            FormattedOutput with directory listing and optional truncation info.
-        """
-        # Try to parse as a Python list (common format)
-        try:
-            items = ast.literal_eval(output)
-            if isinstance(items, list):
-                lines: list[Content] = []
-                max_items = 5 if is_preview else len(items)
-                for item in items[:max_items]:
-                    path = Path(str(item))
-                    name = path.name
-                    if path.suffix in {".py", ".pyx"}:
-                        lines.append(Content.styled(f"    {name}", theme.FILE_PYTHON))
-                    elif path.suffix in {".json", ".yaml", ".yml", ".toml"}:
-                        lines.append(Content.styled(f"    {name}", theme.FILE_CONFIG))
-                    elif not path.suffix:
-                        lines.append(Content.styled(f"    {name}/", theme.FILE_DIR))
-                    else:
-                        lines.append(Content(f"    {name}"))
-
-                truncation = None
-                if is_preview and len(items) > max_items:
-                    truncation = f"{len(items) - max_items} more"
-
-                return FormattedOutput(
-                    content=Content("\n").join(lines), truncation=truncation
-                )
-        except (ValueError, SyntaxError):
-            pass
-
-        # Fallback: plain text
-        return FormattedOutput(content=Content(output))
-
-    def _format_file_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
-        self, output: str, *, is_preview: bool = False
-    ) -> FormattedOutput:
-        """Format file read/write output.
-
-        Returns:
-            FormattedOutput with file content and optional truncation info.
-        """
-        lines = output.split("\n")
-        total_chars = len(output)
-
-        if is_preview:
-            max_lines = self._PREVIEW_LINES
-            max_chars = self._PREVIEW_CHARS
-
-            if len(lines) > max_lines:
-                parts = [Content(line) for line in lines[:max_lines]]
-                content = Content("\n").join(parts)
-                truncation = f"{len(lines) - max_lines} more lines"
-                return FormattedOutput(content=content, truncation=truncation)
-
-            if total_chars > max_chars:
-                truncated = output[:max_chars]
-                parts = [Content(line) for line in truncated.split("\n")]
-                content = Content("\n").join(parts)
-                truncation = f"{total_chars - max_chars} more chars"
-                return FormattedOutput(content=content, truncation=truncation)
-
-        parts = [Content(line) for line in lines]
-        content = Content("\n").join(parts)
-        return FormattedOutput(content=content)
-
-    def _format_search_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
-        self, output: str, *, is_preview: bool = False
-    ) -> FormattedOutput:
-        """Format grep/glob search output.
-
-        Returns:
-            FormattedOutput with search results and optional truncation info.
-        """
-        # Try to parse as a Python list (glob returns list of paths)
-        try:
-            items = ast.literal_eval(output.strip())
-            if isinstance(items, list):
-                parts: list[Content] = []
-                max_items = 5 if is_preview else len(items)
-                for item in items[:max_items]:
-                    path = Path(str(item))
-                    try:
-                        rel = path.relative_to(Path.cwd())
-                        display = str(rel)
-                    except ValueError:
-                        display = path.name
-                    parts.append(Content(f"    {display}"))
-
-                truncation = None
-                if is_preview and len(items) > max_items:
-                    truncation = f"{len(items) - max_items} more files"
-
-                return FormattedOutput(
-                    content=Content("\n").join(parts), truncation=truncation
-                )
-        except (ValueError, SyntaxError):
-            pass
-
-        # Fallback: line-based output (grep results)
-        lines = output.split("\n")
-        max_lines = 5 if is_preview else len(lines)
-
-        parts = [
-            Content(f"    {raw_line.strip()}")
-            for raw_line in lines[:max_lines]
-            if raw_line.strip()
-        ]
-
-        content = Content("\n").join(parts) if parts else Content("")
-        truncation = None
-        if is_preview and len(lines) > max_lines:
-            truncation = f"{len(lines) - max_lines} more"
-
-        return FormattedOutput(content=content, truncation=truncation)
-
-    def _format_shell_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
-        self, output: str, *, is_preview: bool = False
-    ) -> FormattedOutput:
-        """Format shell command output.
-
-        Returns:
-            FormattedOutput with shell output and optional truncation info.
-        """
-        lines = output.split("\n")
-        max_lines = 4 if is_preview else len(lines)
-
-        parts: list[Content] = []
-        for i, line in enumerate(lines[:max_lines]):
-            if i == 0 and line.startswith("$ "):
-                parts.append(Content.styled(line, "dim"))
-            else:
-                parts.append(Content(line))
-
-        content = Content("\n").join(parts) if parts else Content("")
-
-        truncation = None
-        if is_preview and len(lines) > max_lines:
-            truncation = f"{len(lines) - max_lines} more lines"
-
-        return FormattedOutput(content=content, truncation=truncation)
-
-    def _format_web_output(
-        self, output: str, *, is_preview: bool = False
-    ) -> FormattedOutput:
-        """Format web_search/fetch_url output.
-
-        Returns:
-            FormattedOutput with web response and optional truncation info.
-        """
-        data = self._try_parse_web_data(output)
-        if isinstance(data, dict):
-            return self._format_web_dict(data, is_preview=is_preview)
-
-        # Fallback: plain text
-        return self._format_lines_output(output.split("\n"), is_preview=is_preview)
-
-    @staticmethod
-    def _try_parse_web_data(output: str) -> dict | None:
-        """Try to parse web output as JSON or dict.
-
-        Returns:
-            Parsed dict if successful, None otherwise.
-        """
-        try:
-            if output.strip().startswith("{"):
-                return json.loads(output)
-            return ast.literal_eval(output)
-        except (ValueError, SyntaxError, json.JSONDecodeError):
-            return None
-
-    def _format_web_dict(self, data: dict, *, is_preview: bool) -> FormattedOutput:
-        """Format a parsed web response dict.
-
-        Returns:
-            FormattedOutput with web response content and optional truncation info.
-        """
-        # Handle web_search results
-        if "results" in data:
-            return self._format_web_search_results(
-                data.get("results", []), is_preview=is_preview
-            )
-
-        # Handle fetch_url response
-        if "markdown_content" in data:
-            lines = data["markdown_content"].split("\n")
-            return self._format_lines_output(lines, is_preview=is_preview)
-
-        # Generic dict - show key fields
-        parts: list[Content] = []
-        max_keys = 3 if is_preview else len(data)
-        for k, v in list(data.items())[:max_keys]:
-            v_str = str(v)
-            if is_preview and len(v_str) > _MAX_WEB_CONTENT_LEN:
-                v_str = v_str[:_MAX_WEB_CONTENT_LEN] + "..."
-            parts.append(Content(f"  {k}: {v_str}"))
-        truncation = None
-        if is_preview and len(data) > max_keys:
-            truncation = f"{len(data) - max_keys} more"
-        return FormattedOutput(
-            content=Content("\n").join(parts) if parts else Content(""),
-            truncation=truncation,
-        )
-
-    def _format_web_search_results(  # noqa: PLR6301  # Grouped as method for widget cohesion
-        self, results: list, *, is_preview: bool
-    ) -> FormattedOutput:
-        """Format web search results.
-
-        Returns:
-            FormattedOutput with search results and optional truncation info.
-        """
-        if not results:
-            return FormattedOutput(content=Content.styled(t("message.no_results"), "dim"))
-        parts: list[Content] = []
-        max_results = 3 if is_preview else len(results)
-        for r in results[:max_results]:
-            title = r.get("title", "")
-            url = r.get("url", "")
-            parts.extend(
-                [
-                    Content.styled(f"  {title}", "bold"),
-                    Content.styled(f"  {url}", "dim"),
-                ]
-            )
-        truncation = None
-        if is_preview and len(results) > max_results:
-            truncation = t("message.more_results", count=len(results) - max_results)
-        return FormattedOutput(content=Content("\n").join(parts), truncation=truncation)
-
-    def _format_lines_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
-        self, lines: list[str], *, is_preview: bool
-    ) -> FormattedOutput:
-        """Format a list of lines with optional preview truncation.
-
-        Returns:
-            FormattedOutput with lines content and optional truncation info.
-        """
-        max_lines = 4 if is_preview else len(lines)
-        parts = [Content(line) for line in lines[:max_lines]]
-        content = Content("\n").join(parts) if parts else Content("")
-        truncation = None
-        if is_preview and len(lines) > max_lines:
-            truncation = f"{len(lines) - max_lines} more lines"
-        return FormattedOutput(content=content, truncation=truncation)
-
-    def _format_task_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
-        self, output: str, *, is_preview: bool = False
-    ) -> FormattedOutput:
-        """Format task (subagent) output.
-
-        Returns:
-            FormattedOutput with task output and optional truncation info.
-        """
-        lines = output.split("\n")
-        max_lines = 4 if is_preview else len(lines)
-
-        parts = [Content(line) for line in lines[:max_lines]]
-        content = Content("\n").join(parts) if parts else Content("")
-
-        truncation = None
-        if is_preview and len(lines) > max_lines:
-            truncation = f"{len(lines) - max_lines} more lines"
-
-        return FormattedOutput(content=content, truncation=truncation)
+        return prefix_tool_output(content)
 
     def _update_output_display(self) -> None:
         """Update the output display based on expanded state."""

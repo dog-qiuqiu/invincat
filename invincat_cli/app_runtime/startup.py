@@ -9,7 +9,6 @@ from typing import Any, Literal
 from invincat_cli.app_runtime.state import TextualSessionState
 from invincat_cli.skills.load import ExtendedSkillMetadata
 
-
 StartupFollowupKind = Literal["submit_prompt", "load_history"]
 
 

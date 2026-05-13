@@ -12,8 +12,8 @@ from contextlib import suppress
 from typing import Any
 
 from textual.app import ScreenStackError
-from textual.css.query import NoMatches
 from textual.containers import VerticalScroll
+from textual.css.query import NoMatches
 
 from invincat_cli.app_runtime.shell import (
     format_shell_output,
@@ -22,8 +22,12 @@ from invincat_cli.app_runtime.shell import (
     should_start_new_shell_session,
 )
 from invincat_cli.i18n import t
-from invincat_cli.widgets.messages import AppMessage, AssistantMessage, ErrorMessage
-from invincat_cli.widgets.messages import UserMessage
+from invincat_cli.widgets.messages import (
+    AppMessage,
+    AssistantMessage,
+    ErrorMessage,
+    UserMessage,
+)
 
 logger = logging.getLogger(__name__)
 

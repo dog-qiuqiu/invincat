@@ -34,8 +34,8 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
     from langgraph.types import Command
 
-    from invincat_cli.mcp.tools import MCPServerInfo
     from invincat_cli.io.output import OutputFormat
+    from invincat_cli.mcp.tools import MCPServerInfo
 
 from langchain.agents.middleware.types import AgentMiddleware
 
@@ -212,7 +212,7 @@ class MemoryFileGuardMiddleware(AgentMiddleware):
     tool is rejected with an explanatory error message.
     """
 
-    def _check(self, request: "ToolCallRequest") -> "ToolMessage | None":
+    def _check(self, request: ToolCallRequest) -> ToolMessage | None:
         from langchain_core.messages import ToolMessage as LCToolMessage
 
         tool_name: str = request.tool_call.get("name", "")
@@ -243,18 +243,18 @@ class MemoryFileGuardMiddleware(AgentMiddleware):
 
     def wrap_tool_call(
         self,
-        request: "ToolCallRequest",
-        handler: "Callable[[ToolCallRequest], ToolMessage | Command[Any]]",
-    ) -> "ToolMessage | Command[Any]":
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
         if (rejection := self._check(request)) is not None:
             return rejection
         return handler(request)
 
     async def awrap_tool_call(
         self,
-        request: "ToolCallRequest",
-        handler: "Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]]",
-    ) -> "ToolMessage | Command[Any]":
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
         if (rejection := self._check(request)) is not None:
             return rejection
         return await handler(request)
@@ -977,6 +977,8 @@ def create_cli_agent(
     if restrictive_shell_allow_list is not None:
         from deepagents.middleware.subagents import (
             GENERAL_PURPOSE_SUBAGENT,
+        )
+        from deepagents.middleware.subagents import (
             SubAgent as RuntimeSubAgent,
         )
 

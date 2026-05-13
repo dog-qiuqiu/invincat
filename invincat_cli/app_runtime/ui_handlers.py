@@ -15,9 +15,11 @@ from invincat_cli.app_runtime.state import DeferredAction
 from invincat_cli.app_runtime.theme_prefs import save_theme_preference
 from invincat_cli.app_runtime.ui_actions import (
     capture_chat_scroll_state,
-    resolve_memory_store_paths as resolve_memory_store_paths_runtime,
     restore_chat_scroll_state,
     should_defer_modal_action,
+)
+from invincat_cli.app_runtime.ui_actions import (
+    resolve_memory_store_paths as resolve_memory_store_paths_runtime,
 )
 from invincat_cli.i18n import t
 from invincat_cli.widgets.status import StatusBar

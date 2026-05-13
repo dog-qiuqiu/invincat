@@ -43,21 +43,27 @@ if TYPE_CHECKING:
         def __call__(self, *, approximate: bool = False) -> None: ...
 
 
+from invincat_cli.config import build_stream_config
 from invincat_cli.core.ask_user_types import AskUserRequest
 from invincat_cli.core.cli_context import CLIContext  # noqa: TC001
 from invincat_cli.core.debug import configure_debug_logging
 from invincat_cli.core.session_stats import (
     ModelStats as ModelStats,
+)
+from invincat_cli.core.session_stats import (
     SessionStats as SessionStats,
+)
+from invincat_cli.core.session_stats import (
     SpinnerStatus as SpinnerStatus,
+)
+from invincat_cli.core.session_stats import (
     format_token_count as format_token_count,
 )
-from invincat_cli.config import build_stream_config
-from invincat_cli.io.file_ops import FileOpTracker
 from invincat_cli.formatting import format_duration
 from invincat_cli.hooks import dispatch_hook
-from invincat_cli.io.input import MediaTracker, parse_file_mentions
 from invincat_cli.i18n import t
+from invincat_cli.io.file_ops import FileOpTracker
+from invincat_cli.io.input import MediaTracker, parse_file_mentions
 from invincat_cli.io.media_utils import create_multimodal_content
 from invincat_cli.plan_agent import PLANNER_ALLOWED_TOOLS
 from invincat_cli.tool_display import format_tool_message_content

@@ -6,27 +6,26 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-
 from invincat_cli.memory_agent import (
     _SYSTEM_PROMPT,
+    COLD_THRESHOLD,
     DEFAULT_SCORE,
     DEFAULT_TIER,
-    COLD_THRESHOLD,
     HOT_THRESHOLD,
     MAX_ITEM_CONTENT_CHARS,
     MemoryAgentMiddleware,
+    _apply_operations,
+    _atomic_write_text,
+    _backup_corrupt_store,
     _build_invalid_fact_cleanup_operations,
     _build_memory_snapshot,
     _derive_tier_from_score,
     _detect_target_language,
-    _apply_operations,
-    _atomic_write_text,
-    _backup_corrupt_store,
-    _is_trivial_turn,
     _is_explicit_memory_request,
+    _is_trivial_turn,
     _new_store,
-    _normalize_score,
     _normalize_and_validate_operations,
+    _normalize_score,
     _read_memory_store,
     _write_memory_store,
 )
@@ -797,7 +796,7 @@ class _Runtime:
 
 
 class _NoopMemoryModel:
-    def bind(self, **_kwargs: Any) -> "_NoopMemoryModel":
+    def bind(self, **_kwargs: Any) -> _NoopMemoryModel:
         return self
 
     async def ainvoke(self, *_args: Any, **_kwargs: Any) -> Any:
@@ -808,7 +807,7 @@ class _CapturingMemoryModel:
     def __init__(self) -> None:
         self.messages: list[Any] = []
 
-    def bind(self, **_kwargs: Any) -> "_CapturingMemoryModel":
+    def bind(self, **_kwargs: Any) -> _CapturingMemoryModel:
         return self
 
     async def ainvoke(self, messages: list[Any], **_kwargs: Any) -> Any:
@@ -817,7 +816,7 @@ class _CapturingMemoryModel:
 
 
 class _MalformedMemoryModel:
-    def bind(self, **_kwargs: Any) -> "_MalformedMemoryModel":
+    def bind(self, **_kwargs: Any) -> _MalformedMemoryModel:
         return self
 
     async def ainvoke(self, *_args: Any, **_kwargs: Any) -> Any:
@@ -825,7 +824,7 @@ class _MalformedMemoryModel:
 
 
 class _FailingMemoryModel:
-    def bind(self, **_kwargs: Any) -> "_FailingMemoryModel":
+    def bind(self, **_kwargs: Any) -> _FailingMemoryModel:
         return self
 
     async def ainvoke(self, *_args: Any, **_kwargs: Any) -> Any:

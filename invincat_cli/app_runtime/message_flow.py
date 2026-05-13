@@ -9,12 +9,12 @@ from textual.containers import Container, VerticalScroll
 from textual.css.query import NoMatches
 from textual.widget import Widget
 
-from invincat_cli.core.session_stats import SpinnerStatus
 from invincat_cli.app_runtime.thread_history import (
     is_in_flight_tool_widget,
     should_mark_missing_widget_pruned,
     tool_tracking_keys_for_widget,
 )
+from invincat_cli.core.session_stats import SpinnerStatus
 from invincat_cli.widgets.loading import LoadingWidget
 from invincat_cli.widgets.message_store import MessageData
 from invincat_cli.widgets.messages import AssistantMessage, QueuedUserMessage

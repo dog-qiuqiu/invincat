@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-
 MisfirePolicy = Literal["skip", "run_once"]
 ScheduleType = Literal["recurring", "once"]
 TaskStatus = Literal["never", "success", "failed", "running", "missed", "timeout"]

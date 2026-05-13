@@ -129,6 +129,7 @@ def resolve_offload_budget_str(app: Any) -> str | None:  # noqa: ANN401
         from deepagents.middleware.summarization import (
             compute_summarization_defaults,
         )
+
         from invincat_cli.offload import format_offload_limit
 
         model_spec = f"{settings.model_provider}:{settings.model_name}"
@@ -182,8 +183,9 @@ async def handle_offload(app: Any) -> None:  # noqa: ANN401
 
     app._agent_running = True
     try:
-        from invincat_cli.hooks import dispatch_hook
         from langchain_core.messages.utils import convert_to_messages
+
+        from invincat_cli.hooks import dispatch_hook
 
         await dispatch_hook("context.offload", {})
         await dispatch_hook("context.compact", {})

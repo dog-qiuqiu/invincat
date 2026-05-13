@@ -11,6 +11,7 @@ import logging
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -210,11 +211,15 @@ class HeadlessWeComHandler:
         on_content: Callable[[str], Awaitable[None]],
         runtime_context: dict[str, Any] | None = None,
     ) -> str:
-        from invincat_cli.config import build_stream_config
-        from invincat_cli.wecom.file import WECOM_FILE_TOOL_NAME, parse_wecom_file_request
-        from invincat_cli.wecom.media import send_wecom_file_from_tool_payload
         from langchain_core.messages import AIMessage, ToolMessage
         from langgraph.types import Command
+
+        from invincat_cli.config import build_stream_config
+        from invincat_cli.wecom.file import (
+            WECOM_FILE_TOOL_NAME,
+            parse_wecom_file_request,
+        )
+        from invincat_cli.wecom.media import send_wecom_file_from_tool_payload
 
         config = build_stream_config(thread_id, "agent")
         # WeComFileMiddleware reads context["wecom_enabled"] from the LangGraph runtime.
@@ -326,7 +331,9 @@ class HeadlessWeComHandler:
 
                             # Persist schedule management payloads that the TUI would
                             # normally handle via on_schedule_payload / _handle_schedule_tool_payload.
-                            from invincat_cli.scheduler.tool import parse_schedule_tool_result
+                            from invincat_cli.scheduler.tool import (
+                                parse_schedule_tool_result,
+                            )
                             sched_payload = parse_schedule_tool_result(message_obj.content)
                             if sched_payload is not None:
                                 try:
@@ -401,9 +408,13 @@ class HeadlessWeComHandler:
         """
         import re
         import uuid
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        from invincat_cli.scheduler.models import DeliverySpec, ReportSpec, ScheduledTask
+        from invincat_cli.scheduler.models import (
+            DeliverySpec,
+            ReportSpec,
+            ScheduledTask,
+        )
         from invincat_cli.scheduler.runner import _parse_dt, compute_next_run
         from invincat_cli.scheduler.store import SchedulerStore
         from invincat_cli.scheduler.tool import (
@@ -495,7 +506,7 @@ class HeadlessWeComHandler:
                         payload.get("task_id", ""),
                     )
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             next_run = _parse_dt(run_at) if schedule_type == "once" else compute_next_run(cron, now, tz)
             if next_run is None:
                 raise ValueError(
@@ -556,7 +567,7 @@ class HeadlessWeComHandler:
                 next_run = (
                     _parse_dt(task.run_at)
                     if task.schedule_type == "once"
-                    else compute_next_run(task.cron, datetime.now(timezone.utc), task.timezone)
+                    else compute_next_run(task.cron, datetime.now(UTC), task.timezone)
                 )
                 if next_run is None:
                     raise ValueError(
@@ -564,7 +575,7 @@ class HeadlessWeComHandler:
                         "Check the schedule, timezone, and once_at value."
                     )
                 task.next_run_at = next_run.isoformat() if next_run else None
-            task.updated_at = datetime.now(timezone.utc).isoformat()
+            task.updated_at = datetime.now(UTC).isoformat()
             store.save_task(task)
             logger.info("Scheduled task updated: %r id=%s", task.title, task_id)
 

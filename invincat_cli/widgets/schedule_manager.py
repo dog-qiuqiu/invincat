@@ -41,7 +41,7 @@ class TaskRow(Static):
 
     def __init__(
         self,
-        task: "ScheduledTask",
+        task: ScheduledTask,
         index: int,
         *,
         selected: bool = False,
@@ -98,11 +98,11 @@ class TaskRow(Static):
         self._selected = selected
         self._update_label()
 
-    def refresh_task(self, task: "ScheduledTask") -> None:
+    def refresh_task(self, task: ScheduledTask) -> None:
         self._task = task
         self._update_label()
 
-    def on_click(self, event: "Click") -> None:
+    def on_click(self, event: Click) -> None:
         event.stop()
         screen = self.screen
         if isinstance(screen, ScheduleManagerScreen):
@@ -215,14 +215,14 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
     }
     """
 
-    def __init__(self, store: "SchedulerStore") -> None:
+    def __init__(self, store: SchedulerStore) -> None:
         super().__init__()
         self._store = store
-        self._tasks: list["ScheduledTask"] = []
+        self._tasks: list[ScheduledTask] = []
         self._selected_index: int = 0
         self._confirm_delete: str | None = None
 
-    def compose(self) -> "ComposeResult":
+    def compose(self) -> ComposeResult:
         glyphs = get_glyphs()
         key_bindings = [
             (f"{glyphs.arrow_up} / {glyphs.arrow_down}", t("schedule.manager.key.navigate")),
@@ -362,7 +362,9 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
             if fail_label:
                 parts.append(f"[red]{fail_label}[/red]")
             if task.last_run_at:
-                from invincat_cli.scheduler.display import format_schedule_time_for_display
+                from invincat_cli.scheduler.display import (
+                    format_schedule_time_for_display,
+                )
 
                 local_last = format_schedule_time_for_display(
                     task.last_run_at,
@@ -444,7 +446,7 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
     def action_close(self) -> None:
         self.dismiss(None)
 
-    def on_key(self, event: "object") -> None:
+    def on_key(self, event: object) -> None:
         # Any key other than 'd' cancels a pending delete confirmation
         key = getattr(event, "key", "")
         if key != "d" and self._confirm_delete is not None:

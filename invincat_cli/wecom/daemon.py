@@ -70,7 +70,7 @@ class WeComDaemonConfig:
         return self.cwd / _LOCK_FILENAME
 
     @classmethod
-    def from_env(cls, cwd: Path) -> "WeComDaemonConfig":
+    def from_env(cls, cwd: Path) -> WeComDaemonConfig:
         bot_id = os.getenv("WECOM_BOT_ID", "").strip()
         secret = os.getenv("WECOM_BOT_SECRET", "").strip()
         if not bot_id or not secret:
@@ -762,7 +762,9 @@ async def _bridge_send_request(
 
 def _make_build_agent_input(cwd: Path):
     async def _build(frame: dict[str, Any]) -> str:
-        from invincat_cli.wecom.media import build_wecom_agent_input_with_media_downloads
+        from invincat_cli.wecom.media import (
+            build_wecom_agent_input_with_media_downloads,
+        )
         return await build_wecom_agent_input_with_media_downloads(frame, cwd=cwd)
     return _build
 
@@ -812,7 +814,7 @@ async def _run_scheduler(
     # Live rows owned by another TUI/daemon process are preserved so starting
     # the daemon cannot falsely fail an in-flight TUI scheduled task.
     try:
-        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        now_iso = datetime.datetime.now(datetime.UTC).isoformat()
         reconciled = store.reconcile_orphan_runs(
             str(config.cwd),
             finished_at=now_iso,
@@ -1010,7 +1012,7 @@ async def _run_scheduler(
                 try:
                     await asyncio.wait_for(bridge_holder[0].ready.wait(), timeout=_BRIDGE_READY_TIMEOUT)
                     logger.info("Scheduler: WeCom bridge ready, starting first tick")
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.warning(
                         "Scheduler: WeCom bridge not ready after %ds, proceeding anyway",
                         _BRIDGE_READY_TIMEOUT,
@@ -1025,7 +1027,7 @@ async def _run_scheduler(
             try:
                 await runner.tick()
                 await asyncio.wait_for(asyncio.shield(stop_event.wait()), timeout=60)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
             except asyncio.CancelledError:
                 return
@@ -1099,7 +1101,7 @@ async def _deliver_scheduled_text(
         # ready-timeout caps it without consuming the whole retry budget.
         try:
             await asyncio.wait_for(bridge.ready.wait(), timeout=_DELIVERY_READY_TIMEOUT)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "wecom scheduled delivery (%s) bridge not ready after %ds (attempt %d/%d, task=%r)",
                 label, _DELIVERY_READY_TIMEOUT, attempt, _DELIVERY_RETRIES, task_title,
@@ -1129,7 +1131,7 @@ async def _deliver_scheduled_text(
                 "wecom scheduled delivery (%s) offline (attempt %d/%d, chatid=%s task=%r)",
                 label, attempt, _DELIVERY_RETRIES, chatid, task_title,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "wecom scheduled delivery (%s) timed out (attempt %d/%d, chatid=%s task=%r)",
                 label, attempt, _DELIVERY_RETRIES, chatid, task_title,

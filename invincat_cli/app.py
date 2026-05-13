@@ -24,14 +24,15 @@ def _patch_textual_utf8_decoder() -> None:
     preserving all normal keyboard and mouse input.
     """
     try:
-        import textual.drivers.linux_driver as _ld
         from codecs import getincrementaldecoder as _orig_get
+
+        import textual.drivers.linux_driver as _ld
 
         def _tolerant_getincrementaldecoder(encoding: str):  # type: ignore[return]
             decoder_cls = _orig_get(encoding)
             if encoding.lower().replace("-", "") == "utf8":
 
-                class _TolerantDecoder(decoder_cls):  # type: ignore[valid-type]
+                class _TolerantDecoder(decoder_cls):  # type: ignore[misc, valid-type]
                     def __init__(self, errors: str = "replace") -> None:
                         super().__init__(errors)
 
@@ -55,23 +56,22 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
-from invincat_cli.model_config import ModelTarget
+from invincat_cli.app_runtime.agent import AgentTurnRequest
+from invincat_cli.app_runtime.approval import (
+    TYPING_IDLE_THRESHOLD_SECONDS,
+    user_is_typing,
+)
+from invincat_cli.app_runtime.model_runtime import ResolvedModelSpec
+from invincat_cli.app_runtime.services import AppServices
+from invincat_cli.app_runtime.startup import (
+    create_startup_session_state,
+)
 from invincat_cli.app_runtime.state import (
     AppResult,
     DeferredAction,
     InputMode,
 )
 from invincat_cli.app_runtime.state import QueuedMessage as QueuedMessage  # noqa: F401
-from invincat_cli.app_runtime.approval import (
-    TYPING_IDLE_THRESHOLD_SECONDS,
-    user_is_typing,
-)
-from invincat_cli.app_runtime.model_runtime import ResolvedModelSpec
-from invincat_cli.app_runtime.agent import AgentTurnRequest
-from invincat_cli.app_runtime.services import AppServices
-from invincat_cli.app_runtime.startup import (
-    create_startup_session_state,
-)
 from invincat_cli.app_runtime.terminal import disable_cursor_guide, restore_cursor_guide
 from invincat_cli.app_runtime.thread_runtime import ThreadSwitchSnapshot
 from invincat_cli.core.debug import configure_debug_logging
@@ -79,7 +79,7 @@ from invincat_cli.core.session_stats import (
     SpinnerStatus,
 )
 from invincat_cli.i18n import t
-
+from invincat_cli.model_config import ModelTarget
 from invincat_cli.widgets.chat_input import ChatInput
 from invincat_cli.widgets.messages import (
     AssistantMessage,
@@ -92,6 +92,7 @@ configure_debug_logging(logger)
 _monotonic = time.monotonic
 
 if TYPE_CHECKING:
+    from collections import deque
     from collections.abc import Awaitable, Callable
 
     from deepagents.backends import CompositeBackend
@@ -110,12 +111,107 @@ if TYPE_CHECKING:
     from invincat_cli.skills.load import ExtendedSkillMetadata
     from invincat_cli.widgets.approval import ApprovalMenu
     from invincat_cli.widgets.ask_user import AskUserMenu
+    from invincat_cli.widgets.schedule_manager import ScheduleAction
 
 disable_cursor_guide()
 
 
 class DeepAgentsApp(App):
     """Main Textual application for deepagents-cli."""
+
+    # Runtime attributes initialized by app_runtime.initialization.initialize_app().
+    # Keeping the declarations on the Textual app class makes the implicit
+    # cross-module contract visible to type checkers and future refactors.
+    _agent: Any
+    _assistant_id: str | None
+    _backend: Any
+    _auto_approve: bool
+    _cwd: str
+    _lc_thread_id: str | None
+    _resume_thread_intent: str | None
+    _initial_prompt: str | None
+    _mcp_server_info: list[Any] | None
+    _profile_override: dict[str, Any] | None
+    _server_proc: Any
+    _server_kwargs: dict[str, Any] | None
+    _mcp_preload_kwargs: dict[str, Any] | None
+    _model_kwargs: dict[str, Any] | None
+    _defer_server_start: bool
+    _services: AppServices
+    _connecting: bool
+    _sandbox_type: str | None
+
+    _model_override: str | None
+    _model_params_override: dict[str, Any] | None
+    _memory_model_override: str | None
+    _memory_model_params_override: dict[str, Any] | None
+    _model: BaseChatModel | None
+    _mcp_tool_count: int
+
+    _status_bar: Any | None
+    _chat_input: ChatInput | None
+    _quit_pending: bool
+    _session_state: Any | None
+    _ui_adapter: Any | None
+    _pending_approval_widget: Any | None
+    _pending_ask_user_widget: Any | None
+
+    _agent_worker: Worker | None
+    _agent_running: bool
+    _active_turn_is_planner: bool
+    _agent_generation: int
+
+    _shell_process: Any | None
+    _shell_worker: Worker | None
+    _shell_running: bool
+
+    _loading_widget: Any | None
+    _memory_status_clear_timer: Any | None
+    _planner_agent: Any | None
+    _planner_thread_id: str | None
+    _main_thread_before_plan: str | None
+    _planner_last_todos_fingerprint: str | None
+    _planner_prompted_todos_fingerprint: str | None
+
+    _context_tokens: int
+    _tokens_approximate: bool
+    _auto_offload_cooldown_until: float
+    _offload_budget_cache: Any | None
+    _last_typed_at: float | None
+    _approval_placeholder: Any | None
+
+    _update_available: tuple[bool, str | None]
+    _session_stats: Any
+    _inflight_turn_stats: Any | None
+    _inflight_turn_start: float
+
+    _pending_messages: deque[QueuedMessage]
+    _queued_widgets: deque[Any]
+    _processing_pending: bool
+    _thread_switching: bool
+    _model_switching: bool
+    _deferred_actions: list[DeferredAction]
+    _pending_plan_handoff_prompt: str | None
+
+    _message_store: Any
+    _startup_task: Any | None
+    _discovered_skills: list[Any]
+    _skill_allowed_roots: list[Path]
+    _image_tracker: Any
+
+    _wecom_task: Any | None
+    _wecom_bridge: Any | None
+    _wecom_lock: asyncio.Lock
+    _current_wecom_inbound_frame: Any | None
+
+    _scheduler_store: Any
+    _scheduler_runner: Any | None
+    _scheduler_interval_handle: Any | None
+    _active_scheduled_run: Any | None
+    _scheduled_run_message_offset: int
+    _scheduled_turn_status: str
+    _scheduled_turn_error: str | None
+    _scheduled_turn_retry_used: bool
 
     TITLE = "Deep Agents"
     """Textual application title."""
@@ -1216,7 +1312,7 @@ class DeepAgentsApp(App):
 
         await show_schedule_manager(self)
 
-    async def _execute_schedule_action(self, action: "ScheduleAction") -> None:  # noqa: F821
+    async def _execute_schedule_action(self, action: ScheduleAction) -> None:  # noqa: F821
         """Execute a schedule action returned by the manager modal."""
         from invincat_cli.app_runtime.schedule_handlers import execute_schedule_action
 

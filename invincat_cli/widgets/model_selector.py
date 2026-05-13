@@ -29,9 +29,9 @@ from invincat_cli import theme
 from invincat_cli.config import Glyphs, get_glyphs, is_ascii_mode
 from invincat_cli.i18n import t
 from invincat_cli.model_config import (
-    ModelProfileEntry,
-    ModelConfig,
     PROVIDER_API_KEY_ENV,
+    ModelConfig,
+    ModelProfileEntry,
     get_available_models,
     get_model_profiles,
     has_provider_credentials,
@@ -753,8 +753,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str, ModelTarget] | None]):
         Returns:
             Styled `Content` for the 4-line footer.
         """
-        from invincat_cli.textual_adapter import format_token_count
         from invincat_cli.model_config import ModelConfig
+        from invincat_cli.textual_adapter import format_token_count
 
         if profile_entry is None:
             return Content.styled(f"{t('model.profile_not_available')}\n\n\n", "dim")

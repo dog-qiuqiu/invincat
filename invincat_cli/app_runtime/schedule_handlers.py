@@ -110,7 +110,7 @@ async def show_schedule_manager(app: Any) -> None:  # noqa: ANN401
 
     screen = ScheduleManagerScreen(store=app._scheduler_store)
 
-    def handle_result(result: "ScheduleAction | None") -> None:
+    def handle_result(result: ScheduleAction | None) -> None:
         if app._chat_input:
             app._chat_input.focus_input()
         if result is None:

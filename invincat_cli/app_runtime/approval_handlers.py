@@ -10,26 +10,25 @@ from contextlib import suppress
 from typing import Any
 
 from textual.app import ScreenStackError
-from textual.containers import Container
-from textual.containers import VerticalScroll
+from textual.containers import Container, VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import Static
 
 from invincat_cli.app_runtime.approval import (
     APPROVAL_PLACEHOLDER_CLASS,
     APPROVAL_PLACEHOLDER_TEXT,
-    INTERACTION_POLL_SECONDS,
     DEFERRED_APPROVAL_POLL_SECONDS,
     DEFERRED_APPROVAL_TIMEOUT_SECONDS,
+    INTERACTION_POLL_SECONDS,
     build_approve_plan_action_request,
     build_auto_approved_shell_message,
     build_interaction_widget_id,
     deadline_expired,
     map_raw_approval_to_plan_decision,
-    plan_interrupt_guard_disallowed_tools,
-    plan_todos_fingerprint,
     pending_interaction_timeout_log,
     pending_widget_deadline,
+    plan_interrupt_guard_disallowed_tools,
+    plan_todos_fingerprint,
     resolve_auto_approved_shell_commands,
     should_cancel_detached_placeholder,
 )

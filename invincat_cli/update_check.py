@@ -348,8 +348,8 @@ def is_auto_update_enabled() -> bool:
 
     Always disabled for editable installs.
     """
-    from invincat_cli.core.env_vars import AUTO_UPDATE
     from invincat_cli.config import _is_editable_install
+    from invincat_cli.core.env_vars import AUTO_UPDATE
 
     if _is_editable_install():
         return False

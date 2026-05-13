@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-import asyncio
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated, Any, NotRequired
@@ -18,6 +18,7 @@ from langchain.agents.middleware.types import (
     PrivateStateAttr,
 )
 from langchain_core.messages import SystemMessage
+
 from invincat_cli.memory_agent import (
     MAX_HOT_ITEMS_PER_SCOPE as _MAX_HOT_ITEMS_PER_SCOPE,
 )

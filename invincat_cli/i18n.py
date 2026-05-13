@@ -1120,6 +1120,7 @@ def save_language_to_config(
         True if save succeeded, False otherwise.
     """
     import tomllib
+
     import tomli_w
 
     if config_path is None:

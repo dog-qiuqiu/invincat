@@ -9,6 +9,7 @@ from typing import Any, cast
 
 from textual.css.query import NoMatches
 
+from invincat_cli.app_runtime.input_handlers import handle_user_message
 from invincat_cli.app_runtime.server import (
     count_mcp_tools,
     normalize_server_start_error,
@@ -20,7 +21,6 @@ from invincat_cli.app_runtime.server import (
     should_drain_queue_on_server_ready,
     should_update_default_agent_from_thread,
 )
-from invincat_cli.app_runtime.input_handlers import handle_user_message
 from invincat_cli.app_runtime.startup import resolve_startup_followup
 from invincat_cli.app_runtime.thread_handlers import load_thread_history
 from invincat_cli.i18n import t

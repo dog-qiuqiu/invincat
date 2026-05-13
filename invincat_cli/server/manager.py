@@ -31,8 +31,8 @@ if TYPE_CHECKING:
     from invincat_cli.server.app_server import ServerProcess
 
 from invincat_cli.core.env_vars import SERVER_ENV_PREFIX
-from invincat_cli.server.config import ServerConfig
 from invincat_cli.project_utils import ProjectContext
+from invincat_cli.server.config import ServerConfig
 
 logger = logging.getLogger(__name__)
 

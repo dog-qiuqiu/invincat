@@ -288,7 +288,7 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             )
         )
 
-    def _reject_if_wecom(self, request: "ToolCallRequest") -> ToolMessage | None:
+    def _reject_if_wecom(self, request: ToolCallRequest) -> ToolMessage | None:
         if request.tool_call.get("name") != ASK_USER_TOOL_NAME:
             return None
         if not _is_wecom_context(getattr(request, "runtime", None)):
@@ -318,8 +318,8 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
     def wrap_tool_call(
         self,
-        request: "ToolCallRequest",
-        handler: "Callable[[ToolCallRequest], ToolMessage]",
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage],
     ) -> ToolMessage:
         if (rejection := self._reject_if_wecom(request)) is not None:
             return rejection
@@ -327,8 +327,8 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
     async def awrap_tool_call(
         self,
-        request: "ToolCallRequest",
-        handler: "Callable[[ToolCallRequest], Awaitable[ToolMessage]]",
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage]],
     ) -> ToolMessage:
         if (rejection := self._reject_if_wecom(request)) is not None:
             return rejection

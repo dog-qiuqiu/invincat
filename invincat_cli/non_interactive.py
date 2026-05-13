@@ -38,7 +38,6 @@ from rich.spinner import Spinner as RichSpinner
 from rich.style import Style
 from rich.text import Text
 
-from invincat_cli.core.version import __version__
 from invincat_cli.agent import DEFAULT_AGENT_NAME
 from invincat_cli.config import (
     SHELL_ALLOW_ALL,
@@ -48,8 +47,9 @@ from invincat_cli.config import (
     is_shell_command_allowed,
     settings,
 )
-from invincat_cli.io.file_ops import FileOpTracker
+from invincat_cli.core.version import __version__
 from invincat_cli.hooks import dispatch_hook, dispatch_hook_fire_and_forget
+from invincat_cli.io.file_ops import FileOpTracker
 from invincat_cli.model_config import ModelConfigError
 from invincat_cli.sessions import generate_thread_id
 from invincat_cli.textual_adapter import SessionStats, print_usage_table

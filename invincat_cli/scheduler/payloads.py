@@ -7,7 +7,7 @@ import re
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -85,7 +85,7 @@ def build_schedule_create_payload_result(
         except Exception:
             logger.warning("Could not resolve WeCom delivery target", exc_info=True)
 
-    effective_now = now or datetime.now(timezone.utc)
+    effective_now = now or datetime.now(UTC)
     next_run = (
         _parse_dt(run_at)
         if schedule_type == "once"
@@ -161,7 +161,7 @@ def apply_schedule_update_payload(
         task.timezone = validate_timezone_name(updates["timezone"])
 
     if "cron" in updates or "timezone" in updates:
-        effective_now = now or datetime.now(timezone.utc)
+        effective_now = now or datetime.now(UTC)
         next_run = (
             _parse_dt(task.run_at)
             if task.schedule_type == "once"
@@ -175,7 +175,7 @@ def apply_schedule_update_payload(
             raise ValueError(msg)
         task.next_run_at = next_run.isoformat()
 
-    task.updated_at = (now or datetime.now(timezone.utc)).isoformat()
+    task.updated_at = (now or datetime.now(UTC)).isoformat()
     return task
 
 

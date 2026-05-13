@@ -9,7 +9,7 @@ import re
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -24,7 +24,7 @@ _MISFIRE_MAX_SECONDS = 86400  # 24 hours — older misfires are not recovered
 
 @dataclass
 class _PendingRun:
-    task: "ScheduledTask"
+    task: ScheduledTask
     scheduled_for: datetime
     expected_next_run_at: str | None
     manual: bool = False
@@ -34,19 +34,20 @@ class _PendingRun:
 def compute_next_run(cron: str, after: datetime, tz_name: str) -> datetime | None:
     """Return the next fire time for *cron* after *after* in *tz_name*."""
     try:
-        from croniter import croniter  # type: ignore[import-untyped]
         import zoneinfo
+
+        from croniter import croniter  # type: ignore[import-untyped]
 
         tz = zoneinfo.ZoneInfo(tz_name)
         local_after = after.astimezone(tz)
         it = croniter(cron, local_after)
-        return it.get_next(datetime).replace(tzinfo=tz).astimezone(timezone.utc)
+        return it.get_next(datetime).replace(tzinfo=tz).astimezone(UTC)
     except Exception:
         logger.warning("Failed to compute next_run for cron %r tz %r", cron, tz_name, exc_info=True)
         return None
 
 
-def task_next_run(task: "ScheduledTask", after: datetime) -> datetime | None:
+def task_next_run(task: ScheduledTask, after: datetime) -> datetime | None:
     """Return the next run time for recurring or one-shot tasks."""
     if getattr(task, "schedule_type", "recurring") == "once":
         return _parse_dt(getattr(task, "run_at", None))
@@ -57,7 +58,7 @@ def _slug(title: str) -> str:
     return re.sub(r"[^\w\-]", "-", title.lower())[:40].strip("-")
 
 
-def _build_scheduled_prompt(task: "ScheduledTask", scheduled_for: datetime) -> str:
+def _build_scheduled_prompt(task: ScheduledTask, scheduled_for: datetime) -> str:
     """Wrap the user prompt in a structured header that prevents recursive task creation."""
     from zoneinfo import ZoneInfo
 
@@ -119,7 +120,7 @@ class SchedulerRunner:
 
     def __init__(
         self,
-        store: "SchedulerStore",
+        store: SchedulerStore,
         *,
         inject_message: Callable[[str, str, str], Awaitable[None]],
         notify: Callable[[str], None],
@@ -149,7 +150,7 @@ class SchedulerRunner:
         try:
             reconciled = self._store.reconcile_orphan_runs(
                 self._cwd,
-                finished_at=datetime.now(timezone.utc).isoformat(),
+                finished_at=datetime.now(UTC).isoformat(),
                 status="failed",
                 error=f"{self._runner_kind} startup recovered stale scheduled run",
             )
@@ -167,7 +168,7 @@ class SchedulerRunner:
 
     async def tick(self) -> None:
         """Check for due or missed tasks and enqueue them."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         try:
             tasks = self._store.list_tasks(enabled_only=True, cwd=self._cwd)
         except Exception:
@@ -182,7 +183,7 @@ class SchedulerRunner:
         # Drain pending runs if TUI is now idle
         await self._drain_pending(now)
 
-    async def _evaluate_task(self, task: "ScheduledTask", now: datetime) -> None:
+    async def _evaluate_task(self, task: ScheduledTask, now: datetime) -> None:
         next_run = _parse_dt(task.next_run_at)
         if next_run is None:
             # First-ever tick: compute and save next_run_at
@@ -268,11 +269,11 @@ class SchedulerRunner:
 
     async def drain_pending_now(self) -> None:
         """Attempt to fire queued runs immediately if the TUI is idle."""
-        await self._drain_pending(datetime.now(timezone.utc))
+        await self._drain_pending(datetime.now(UTC))
 
-    async def fire_now(self, task: "ScheduledTask") -> None:
+    async def fire_now(self, task: ScheduledTask) -> None:
         """Trigger a task to run immediately, bypassing the cron schedule."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if task.id in self._running_task_ids:
             return
         if self._is_busy():
@@ -292,7 +293,7 @@ class SchedulerRunner:
 
     async def _fire(
         self,
-        task: "ScheduledTask",
+        task: ScheduledTask,
         scheduled_for: datetime,
         now: datetime,
         *,
@@ -380,7 +381,7 @@ class SchedulerRunner:
         run_id: str,
         task_id: str,
         *,
-        status: "TaskStatus",
+        status: TaskStatus,
         report_path: str | None = None,
         error: str | None = None,
         thread_id: str | None = None,
@@ -400,7 +401,7 @@ class SchedulerRunner:
         run_id: str,
         task_id: str,
         *,
-        status: "TaskStatus",
+        status: TaskStatus,
         report_path: str | None = None,
         error: str | None = None,
         thread_id: str | None = None,
@@ -411,7 +412,7 @@ class SchedulerRunner:
         if timeout_task is not None:
             timeout_task.cancel()
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         run = self._store.load_run(run_id)
         if run is None:
             # Run record missing — release lock without touching stats to avoid
@@ -457,7 +458,7 @@ def _parse_dt(iso: str | None) -> datetime | None:
     try:
         dt = datetime.fromisoformat(iso)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt
     except ValueError:
         return None

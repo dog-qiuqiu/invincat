@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
-import errno
 import os
 import sqlite3
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from invincat_cli.scheduler.schema import DDL, migrate
 
 if TYPE_CHECKING:
     from invincat_cli.scheduler.models import ScheduledTask, TaskRun
@@ -29,72 +31,6 @@ def get_scheduler_db_path() -> Path:
     return _DB_PATH
 
 
-_DDL = """
-CREATE TABLE IF NOT EXISTS scheduled_tasks (
-    id          TEXT PRIMARY KEY,
-    title       TEXT NOT NULL,
-    enabled     INTEGER NOT NULL DEFAULT 1,
-    prompt      TEXT NOT NULL,
-    cron        TEXT NOT NULL,
-    timezone    TEXT NOT NULL DEFAULT 'UTC',
-    cwd         TEXT NOT NULL,
-    delivery    TEXT NOT NULL DEFAULT '{}',
-    report      TEXT NOT NULL DEFAULT '{}',
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL,
-    next_run_at TEXT,
-    last_run_at TEXT,
-    last_status TEXT NOT NULL DEFAULT 'never',
-    last_error  TEXT,
-    run_count   INTEGER NOT NULL DEFAULT 0,
-    failure_count INTEGER NOT NULL DEFAULT 0,
-    misfire_policy TEXT NOT NULL DEFAULT 'run_once',
-    schedule_type TEXT NOT NULL DEFAULT 'recurring',
-    run_at TEXT,
-    delete_after_run INTEGER NOT NULL DEFAULT 0,
-    timeout_seconds INTEGER NOT NULL DEFAULT 600
-);
-
-CREATE TABLE IF NOT EXISTS scheduled_task_runs (
-    id           TEXT PRIMARY KEY,
-    task_id      TEXT NOT NULL,
-    scheduled_for TEXT NOT NULL,
-    started_at   TEXT,
-    finished_at  TEXT,
-    status       TEXT NOT NULL DEFAULT 'running',
-    report_path  TEXT,
-    error        TEXT,
-    thread_id    TEXT,
-    cwd          TEXT NOT NULL,
-    delivery_status TEXT NOT NULL DEFAULT 'none',
-    delivery_error TEXT,
-    delivered_at TEXT,
-    delivery_attempts INTEGER NOT NULL DEFAULT 0,
-    runner_id TEXT,
-    runner_kind TEXT,
-    runner_pid INTEGER,
-    FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id)
-);
-"""
-
-_RUN_COLUMN_MIGRATIONS = {
-    "delivery_status": "ALTER TABLE scheduled_task_runs ADD COLUMN delivery_status TEXT NOT NULL DEFAULT 'none'",
-    "delivery_error": "ALTER TABLE scheduled_task_runs ADD COLUMN delivery_error TEXT",
-    "delivered_at": "ALTER TABLE scheduled_task_runs ADD COLUMN delivered_at TEXT",
-    "delivery_attempts": "ALTER TABLE scheduled_task_runs ADD COLUMN delivery_attempts INTEGER NOT NULL DEFAULT 0",
-    "runner_id": "ALTER TABLE scheduled_task_runs ADD COLUMN runner_id TEXT",
-    "runner_kind": "ALTER TABLE scheduled_task_runs ADD COLUMN runner_kind TEXT",
-    "runner_pid": "ALTER TABLE scheduled_task_runs ADD COLUMN runner_pid INTEGER",
-}
-
-_TASK_COLUMN_MIGRATIONS = {
-    "schedule_type": "ALTER TABLE scheduled_tasks ADD COLUMN schedule_type TEXT NOT NULL DEFAULT 'recurring'",
-    "run_at": "ALTER TABLE scheduled_tasks ADD COLUMN run_at TEXT",
-    "delete_after_run": "ALTER TABLE scheduled_tasks ADD COLUMN delete_after_run INTEGER NOT NULL DEFAULT 0",
-    "timeout_seconds": "ALTER TABLE scheduled_tasks ADD COLUMN timeout_seconds INTEGER NOT NULL DEFAULT 600",
-}
-
-
 def _connect(path: Path | None = None) -> sqlite3.Connection:
     db_path = path or get_scheduler_db_path()
     try:
@@ -109,27 +45,9 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
         raise sqlite3.OperationalError(msg) from exc
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(_DDL)
-    _migrate(conn)
+    conn.executescript(DDL)
+    migrate(conn)
     return conn
-
-
-def _migrate(conn: sqlite3.Connection) -> None:
-    task_columns = {
-        row["name"]
-        for row in conn.execute("PRAGMA table_info(scheduled_tasks)").fetchall()
-    }
-    for column, sql in _TASK_COLUMN_MIGRATIONS.items():
-        if column not in task_columns:
-            conn.execute(sql)
-
-    run_columns = {
-        row["name"]
-        for row in conn.execute("PRAGMA table_info(scheduled_task_runs)").fetchall()
-    }
-    for column, sql in _RUN_COLUMN_MIGRATIONS.items():
-        if column not in run_columns:
-            conn.execute(sql)
 
 
 def _pid_is_alive(pid: int | None) -> bool:
@@ -159,8 +77,8 @@ def _parse_iso_datetime(value: str | None) -> datetime | None:
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _running_row_is_stale(
@@ -206,7 +124,7 @@ class SchedulerStore:
     # Tasks
     # ------------------------------------------------------------------
 
-    def save_task(self, task: "ScheduledTask") -> None:  # noqa: F821
+    def save_task(self, task: ScheduledTask) -> None:  # noqa: F821
         from invincat_cli.scheduler.models import ScheduledTask
 
         assert isinstance(task, ScheduledTask)
@@ -251,7 +169,7 @@ class SchedulerStore:
             )
             conn.commit()
 
-    def load_task(self, task_id: str) -> "ScheduledTask | None":  # noqa: F821
+    def load_task(self, task_id: str) -> ScheduledTask | None:  # noqa: F821
         with _connect(self._db_path) as conn:
             row = conn.execute(
                 "SELECT * FROM scheduled_tasks WHERE id = ?", (task_id,)
@@ -263,7 +181,7 @@ class SchedulerStore:
         *,
         enabled_only: bool = False,
         cwd: str | None = None,
-    ) -> list["ScheduledTask"]:  # noqa: F821
+    ) -> list[ScheduledTask]:  # noqa: F821
         with _connect(self._db_path) as conn:
             clauses: list[str] = []
             params: list[Any] = []
@@ -282,7 +200,7 @@ class SchedulerStore:
     def try_start_run(
         self,
         task_id: str,
-        run: "TaskRun",  # noqa: F821
+        run: TaskRun,  # noqa: F821
         *,
         expected_next_run_at: str | None = None,
         next_run_at: str | None = None,
@@ -300,7 +218,7 @@ class SchedulerStore:
         from invincat_cli.scheduler.models import TaskRun
 
         assert isinstance(run, TaskRun)
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with _connect(self._db_path) as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
@@ -331,7 +249,7 @@ class SchedulerStore:
                 if not _running_row_is_stale(
                     active,
                     task_timeout_seconds=int(row["timeout_seconds"] or 600),
-                    now=datetime.now(timezone.utc),
+                    now=datetime.now(UTC),
                 )
             ]
             if live_rows:
@@ -423,7 +341,7 @@ class SchedulerStore:
         run_count_delta: int = 0,
         failure_count_delta: int = 0,
     ) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with _connect(self._db_path) as conn:
             conn.execute(
                 """
@@ -452,7 +370,7 @@ class SchedulerStore:
             conn.commit()
 
     def set_task_enabled(self, task_id: str, enabled: bool) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with _connect(self._db_path) as conn:
             conn.execute(
                 "UPDATE scheduled_tasks SET enabled=?, updated_at=? WHERE id=?",
@@ -461,7 +379,7 @@ class SchedulerStore:
             conn.commit()
 
     def disable_task_after_run(self, task_id: str) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with _connect(self._db_path) as conn:
             conn.execute(
                 "UPDATE scheduled_tasks SET enabled=0, next_run_at=NULL, updated_at=? WHERE id=?",
@@ -481,7 +399,7 @@ class SchedulerStore:
     # Runs
     # ------------------------------------------------------------------
 
-    def save_run(self, run: "TaskRun") -> None:  # noqa: F821
+    def save_run(self, run: TaskRun) -> None:  # noqa: F821
         from invincat_cli.scheduler.models import TaskRun
 
         assert isinstance(run, TaskRun)
@@ -535,14 +453,14 @@ class SchedulerStore:
             )
             conn.commit()
 
-    def load_run(self, run_id: str) -> "TaskRun | None":  # noqa: F821
+    def load_run(self, run_id: str) -> TaskRun | None:  # noqa: F821
         with _connect(self._db_path) as conn:
             row = conn.execute(
                 "SELECT * FROM scheduled_task_runs WHERE id = ?", (run_id,)
             ).fetchone()
         return _row_to_run(row) if row else None
 
-    def list_runs(self, task_id: str, limit: int = 20) -> list["TaskRun"]:  # noqa: F821
+    def list_runs(self, task_id: str, limit: int = 20) -> list[TaskRun]:  # noqa: F821
         with _connect(self._db_path) as conn:
             rows = conn.execute(
                 """
@@ -609,7 +527,7 @@ class SchedulerStore:
             select_params.append(cwd)
         with _connect(self._db_path) as conn:
             rows = conn.execute(select_sql, tuple(select_params)).fetchall()
-            finished_dt = _parse_iso_datetime(finished_at) or datetime.now(timezone.utc)
+            finished_dt = _parse_iso_datetime(finished_at) or datetime.now(UTC)
             stale_rows = [
                 row
                 for row in rows
@@ -669,12 +587,12 @@ class CwdScopedSchedulerStore(SchedulerStore):
         *,
         enabled_only: bool = False,
         cwd: str | None = None,
-    ) -> list["ScheduledTask"]:  # noqa: F821
+    ) -> list[ScheduledTask]:  # noqa: F821
         if cwd is not None and cwd != self._scope_cwd:
             return []
         return super().list_tasks(enabled_only=enabled_only, cwd=self._scope_cwd)
 
-    def load_task(self, task_id: str) -> "ScheduledTask | None":  # noqa: F821
+    def load_task(self, task_id: str) -> ScheduledTask | None:  # noqa: F821
         task = super().load_task(task_id)
         if task is None or task.cwd != self._scope_cwd:
             return None
@@ -705,7 +623,7 @@ class FilteredSchedulerStore(SchedulerStore):
         *,
         enabled_only: bool = False,
         cwd: str | None = None,
-    ) -> list["ScheduledTask"]:  # noqa: F821
+    ) -> list[ScheduledTask]:  # noqa: F821
         return [
             task for task in super().list_tasks(enabled_only=enabled_only, cwd=cwd)
             if not self._is_excluded(task)
@@ -760,7 +678,7 @@ def _task_to_row(task: Any) -> dict:
     }
 
 
-def _row_to_task(row: sqlite3.Row) -> "ScheduledTask":  # noqa: F821
+def _row_to_task(row: sqlite3.Row) -> ScheduledTask:  # noqa: F821
     from invincat_cli.scheduler.models import DeliverySpec, ReportSpec, ScheduledTask
 
     delivery_d = json.loads(row["delivery"] or "{}")
@@ -791,7 +709,7 @@ def _row_to_task(row: sqlite3.Row) -> "ScheduledTask":  # noqa: F821
     )
 
 
-def _row_to_run(row: sqlite3.Row) -> "TaskRun":  # noqa: F821
+def _row_to_run(row: sqlite3.Row) -> TaskRun:  # noqa: F821
     from invincat_cli.scheduler.models import TaskRun
 
     return TaskRun(

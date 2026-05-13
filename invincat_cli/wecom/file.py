@@ -130,7 +130,7 @@ class WeComFileMiddleware(AgentMiddleware):
             raise ValueError("File is larger than the WeCom 20 MB limit")
         return resolved
 
-    def _reject_if_disabled(self, request: "ToolCallRequest") -> ToolMessage | None:
+    def _reject_if_disabled(self, request: ToolCallRequest) -> ToolMessage | None:
         if request.tool_call.get("name") != WECOM_FILE_TOOL_NAME:
             return None
         if _is_wecom_context(getattr(request, "runtime", None)):
@@ -144,9 +144,9 @@ class WeComFileMiddleware(AgentMiddleware):
 
     def wrap_model_call(
         self,
-        request: "ModelRequest",
-        handler: "Callable[[ModelRequest], ModelResponse]",
-    ) -> "ModelResponse":
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
         tools = list(getattr(request, "tools", []))
         if not _is_wecom_context(request.runtime):
             tools = [t for t in tools if _tool_name(t) != WECOM_FILE_TOOL_NAME]
@@ -154,9 +154,9 @@ class WeComFileMiddleware(AgentMiddleware):
 
     async def awrap_model_call(
         self,
-        request: "ModelRequest",
-        handler: "Callable[[ModelRequest], Awaitable[ModelResponse]]",
-    ) -> "ModelResponse":
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
         tools = list(getattr(request, "tools", []))
         if not _is_wecom_context(request.runtime):
             tools = [t for t in tools if _tool_name(t) != WECOM_FILE_TOOL_NAME]
@@ -164,8 +164,8 @@ class WeComFileMiddleware(AgentMiddleware):
 
     def wrap_tool_call(
         self,
-        request: "ToolCallRequest",
-        handler: "Callable[[ToolCallRequest], ToolMessage]",
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage],
     ) -> ToolMessage:
         if (rejection := self._reject_if_disabled(request)) is not None:
             return rejection
@@ -173,8 +173,8 @@ class WeComFileMiddleware(AgentMiddleware):
 
     async def awrap_tool_call(
         self,
-        request: "ToolCallRequest",
-        handler: "Callable[[ToolCallRequest], Awaitable[ToolMessage]]",
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage]],
     ) -> ToolMessage:
         if (rejection := self._reject_if_disabled(request)) is not None:
             return rejection

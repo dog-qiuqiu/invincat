@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from typing import Any
 
+from invincat_cli.app_runtime.input_handlers import handle_user_message
 from invincat_cli.app_runtime.wecom import (
     WeComTurnContext,
     create_wecom_message_responder,
@@ -21,9 +22,8 @@ from invincat_cli.app_runtime.wecom import (
     wecom_bridge_offline_error,
     wecom_turn_is_busy,
 )
-from invincat_cli.app_runtime.input_handlers import handle_user_message
-from invincat_cli.wecom.media import build_wecom_agent_input_with_media_downloads
 from invincat_cli.wecom.bridge import WeComBridge
+from invincat_cli.wecom.media import build_wecom_agent_input_with_media_downloads
 from invincat_cli.wecom.session import WECOM_AGENT_TIMEOUT
 from invincat_cli.wecom.turn import WeComTurnRunner
 from invincat_cli.widgets.messages import AppMessage, ErrorMessage, UserMessage
