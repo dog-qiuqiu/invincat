@@ -144,9 +144,6 @@ from invincat_cli.app_runtime.server import (
     should_drain_queue_on_server_ready,
     should_update_default_agent_from_thread,
 )
-from invincat_cli.app_runtime.skill import (
-    discover_skills_and_roots,
-)
 from invincat_cli.app_runtime.startup import (
     build_startup_slash_commands,
     create_startup_session_state,
@@ -973,34 +970,11 @@ class DeepAgentsApp(App):
 
     async def _check_optional_tools_background(self) -> None:
         """Check for optional tools in a thread and notify if missing."""
-        try:
-            from invincat_cli.main import (
-                check_optional_tools,
-                format_tool_warning_tui,
-            )
-        except ImportError:
-            logger.warning(
-                "Could not import optional tools checker",
-                exc_info=True,
-            )
-            return
+        from invincat_cli.app_runtime.startup_handlers import (
+            check_optional_tools_background,
+        )
 
-        try:
-            missing = await asyncio.to_thread(check_optional_tools)
-        except (OSError, FileNotFoundError):
-            logger.debug("Failed to check for optional tools", exc_info=True)
-            return
-        except Exception:
-            logger.warning("Unexpected error checking optional tools", exc_info=True)
-            return
-
-        for tool in missing:
-            self.notify(
-                format_tool_warning_tui(tool),
-                severity="warning",
-                timeout=15,
-                markup=False,
-            )
+        await check_optional_tools_background(self)
 
     async def _discover_skills(self) -> None:
         """Discover skills, cache metadata, and update autocomplete.
@@ -1011,47 +985,9 @@ class DeepAgentsApp(App):
 
         Runs filesystem I/O in a thread to avoid blocking the event loop.
         """
-        from invincat_cli.command_registry import SLASH_COMMANDS, build_skill_commands
+        from invincat_cli.app_runtime.startup_handlers import discover_skills
 
-        try:
-            skills, roots = await asyncio.to_thread(self._discover_skills_and_roots)
-            self._discovered_skills = skills
-            self._skill_allowed_roots = roots
-        except OSError:
-            # Clear stale cache so /reload failures don't silently
-            # leave old data in place.
-            self._discovered_skills = []
-            self._skill_allowed_roots = []
-            logger.warning(
-                "Filesystem error during skill discovery",
-                exc_info=True,
-            )
-            self.notify(
-                t("app.skill_scan_failed"),
-                severity="warning",
-                timeout=6,
-                markup=False,
-            )
-        except Exception:
-            self._discovered_skills = []
-            self._skill_allowed_roots = []
-            logger.exception("Unexpected error during skill discovery")
-            self.notify(
-                t("app.skill_discovery_failed"),
-                severity="warning",
-                timeout=8,
-                markup=False,
-            )
-        if self._chat_input:
-            skill_commands = build_skill_commands(self._discovered_skills)
-            merged = list(SLASH_COMMANDS) + skill_commands
-            self._chat_input.update_slash_commands(merged)
-        else:
-            logger.debug(
-                "Skill discovery completed (%d skills) but chat input "
-                "not yet mounted; autocomplete deferred",
-                len(self._discovered_skills),
-            )
+        await discover_skills(self)
 
     def _discover_skills_and_roots(
         self,
@@ -1065,10 +1001,9 @@ class DeepAgentsApp(App):
         Returns:
             Tuple of `(skill metadata list, pre-resolved containment roots)`.
         """
-        from invincat_cli.config import settings
+        from invincat_cli.app_runtime.startup_handlers import discover_skills_and_roots
 
-        assistant_id = self._assistant_id or "agent"
-        return discover_skills_and_roots(settings=settings, assistant_id=assistant_id)
+        return discover_skills_and_roots(self)
 
     async def _resolve_resume_thread(self) -> None:
         """Resolve a `-r` resume intent into a concrete thread ID.
@@ -1310,269 +1245,45 @@ class DeepAgentsApp(App):
         Populates `sys.modules` so the first user-triggered inline import
         is a cheap dict lookup instead of a cold module load.
         """
-        # Internal modules moved from top-level to local imports — a failure
-        # here indicates a packaging or code bug, not a missing optional dep, so
-        # we let the exception propagate (the worker catches it and logs
-        # at WARNING). textual_adapter and update_check are included so
-        # _post_paint_init's inline imports are dict lookups.
-        from invincat_cli.io.clipboard import (
-            copy_selection_to_clipboard,  # noqa: F401
-        )
-        from invincat_cli.command_registry import ALWAYS_IMMEDIATE  # noqa: F401
-        from invincat_cli.config import settings  # noqa: F401
-        from invincat_cli.hooks import dispatch_hook  # noqa: F401
-        from invincat_cli.model_config import ModelSpec  # noqa: F401
-        from invincat_cli.textual_adapter import TextualUIAdapter  # noqa: F401
-        from invincat_cli.update_check import is_update_check_enabled  # noqa: F401
+        from invincat_cli.app_runtime.startup_handlers import prewarm_deferred_imports
 
-        try:
-            # Heavy third-party deps deferred from textual_adapter /
-            # tool_display — hit on first message send and first tool
-            # approval. Best-effort: missing optional deps should not block the
-            # TUI from rendering.
-            from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT  # noqa: F401
-            from langchain.agents.middleware.human_in_the_loop import (  # noqa: F401
-                ApproveDecision,
-            )
-            from langchain_core.messages import AIMessage  # noqa: F401
-            from langgraph.types import Command  # noqa: F401
-        except Exception:
-            logger.warning("Could not prewarm third-party imports", exc_info=True)
-
-        # Markdown rendering stack — ~170 ms cold (textual._markdown pulls in
-        # markdown_it, pygments, linkify_it — 438 modules).  Hit on first
-        # SkillMessage compose() and first code-fence highlight.  Warming
-        # here makes the first expand/Ctrl+O instant.
-        import markdown_it  # noqa: F401
-        from pygments.lexers import get_lexer_by_name as _get_lexer
-        from textual.widgets import Markdown  # noqa: F401
-
-        # Instantiate the Python lexer to populate Pygments' internal
-        # lexer cache (~12 ms cold).  Python is the most common fence
-        # language in skill bodies.
-        _get_lexer("python")
-
-        # Widgets deferred from app.py module level — a failure here indicates
-        # a packaging or code bug (same as the block above), so we let
-        # exceptions propagate.
-        from invincat_cli.widgets.approval import ApprovalMenu  # noqa: F401
-        from invincat_cli.widgets.ask_user import AskUserMenu  # noqa: F401
-        from invincat_cli.widgets.model_selector import (
-            ModelSelectorScreen,  # noqa: F401
-        )
-        from invincat_cli.widgets.memory_viewer import MemoryViewerScreen  # noqa: F401
-        from invincat_cli.widgets.thread_selector import (  # noqa: F401
-            DeleteThreadConfirmScreen,
-            ThreadSelectorScreen,
-        )
+        prewarm_deferred_imports()
 
     async def _prewarm_threads_cache(self) -> None:  # noqa: PLR6301  # Worker hook kept as instance method
         """Prewarm thread selector cache without blocking app startup."""
-        from invincat_cli.sessions import (
-            get_thread_limit,
-            prewarm_thread_message_counts,
-        )
+        from invincat_cli.app_runtime.startup_handlers import prewarm_threads_cache
 
-        await prewarm_thread_message_counts(limit=get_thread_limit())
+        await prewarm_threads_cache()
 
     async def _prewarm_model_caches(self) -> None:
         """Prewarm model discovery and profile caches without blocking startup."""
-        try:
-            from invincat_cli.model_config import (
-                get_available_models,
-                get_model_profiles,
-            )
+        from invincat_cli.app_runtime.startup_handlers import prewarm_model_caches
 
-            await asyncio.to_thread(get_available_models)
-            await asyncio.to_thread(
-                get_model_profiles, cli_override=self._profile_override
-            )
-        except Exception:
-            logger.warning("Could not prewarm model caches", exc_info=True)
+        await prewarm_model_caches(self)
 
     async def _check_for_updates(self) -> None:
         """Check PyPI for a newer version and optionally auto-update."""
-        # Phase 1: version check (benign failure)
-        try:
-            from invincat_cli.update_check import (
-                is_auto_update_enabled,
-                is_update_available,
-                upgrade_command,
-            )
+        from invincat_cli.app_runtime.update_handlers import check_for_updates
 
-            available, latest = await asyncio.to_thread(is_update_available)
-            if not available:
-                return
-
-            self._update_available = (True, latest)
-        except Exception:
-            logger.debug("Background update check failed", exc_info=True)
-            return
-
-        # Phase 2: auto-update or notify (failures surfaced to user)
-        try:
-            from invincat_cli.core.version import __version__ as cli_version
-
-            if is_auto_update_enabled():
-                from invincat_cli.update_check import perform_upgrade
-
-                self.notify(
-                    t("app.updating_to", version=latest),
-                    severity="information",
-                    timeout=5,
-                )
-                success, _output = await perform_upgrade()
-                if success:
-                    self.notify(
-                        t("app.updated_to", version=latest),
-                        severity="information",
-                        timeout=10,
-                    )
-                else:
-                    cmd = upgrade_command()
-                    self.notify(
-                        t("app.auto_update_failed", command=cmd),
-                        severity="warning",
-                        timeout=15,
-                        markup=False,
-                    )
-            else:
-                cmd = upgrade_command()
-                self.notify(
-                    t("app.update_available", latest=latest, current=cli_version, command=cmd),
-                    severity="information",
-                    timeout=15,
-                    markup=False,
-                )
-        except Exception:
-            logger.warning("Auto-update failed unexpectedly", exc_info=True)
-            self.notify(
-                t("app.update_failed"),
-                severity="warning",
-                timeout=10,
-            )
+        await check_for_updates(self)
 
     async def _show_whats_new(self) -> None:
         """Show a 'what's new' banner on the first launch after an upgrade."""
-        try:
-            from invincat_cli.update_check import should_show_whats_new
+        from invincat_cli.app_runtime.update_handlers import show_whats_new
 
-            if not await asyncio.to_thread(should_show_whats_new):
-                return
-        except Exception:
-            logger.debug("What's new check failed", exc_info=True)
-            return
-
-        try:
-            from invincat_cli.core.version import __version__ as cli_version
-
-            await self._mount_message(
-                AppMessage(
-                    f"Updated to v{cli_version}\nSee what's new: {CHANGELOG_URL}"
-                )
-            )
-        except Exception:
-            logger.debug("What's new banner display failed", exc_info=True)
-            return
-
-        try:
-            from invincat_cli.core.version import __version__ as cli_version
-            from invincat_cli.update_check import mark_version_seen
-
-            await asyncio.to_thread(mark_version_seen, cli_version)
-        except Exception:
-            logger.warning("Failed to persist seen-version marker", exc_info=True)
+        await show_whats_new(self)
 
     async def _handle_update_command(self) -> None:
         """Handle the `/update` slash command — check for and install updates."""
-        await self._mount_message(UserMessage("/update"))
-        try:
-            from invincat_cli.update_check import (
-                is_update_available,
-                perform_upgrade,
-                upgrade_command,
-            )
+        from invincat_cli.app_runtime.update_handlers import handle_update_command
 
-            await self._mount_message(AppMessage(t("update.checking")))
-            available, latest = await asyncio.to_thread(
-                is_update_available, bypass_cache=True
-            )
-            if not available:
-                await self._mount_message(AppMessage(t("success.up_to_date")))
-                return
-
-            from invincat_cli.core.version import __version__ as cli_version
-
-            await self._mount_message(
-                AppMessage(
-                    t("app.update_available_upgrading").format(
-                        latest=latest,
-                        current=cli_version,
-                    )
-                )
-            )
-            success, output = await perform_upgrade()
-            if success:
-                self._update_available = (False, None)
-                await self._mount_message(
-                    AppMessage(t("app.updated_to").format(version=latest))
-                )
-            else:
-                cmd = upgrade_command()
-                detail = f": {output[:200]}" if output else ""
-                await self._mount_message(
-                    AppMessage(
-                        t("app.auto_update_failed_with_detail").format(
-                            detail=detail,
-                            command=cmd,
-                        )
-                    )
-                )
-        except Exception as exc:
-            logger.warning("/update command failed", exc_info=True)
-            await self._mount_message(
-                ErrorMessage(
-                    t("app.update_failed_with_error").format(
-                        error=f"{type(exc).__name__}: {exc}",
-                    )
-                )
-            )
+        await handle_update_command(self)
 
     async def _handle_auto_update_toggle(self) -> None:
         """Handle the `/auto-update` slash command — persist toggle immediately."""
-        try:
-            from invincat_cli.config import _is_editable_install
-            from invincat_cli.update_check import (
-                is_auto_update_enabled,
-                set_auto_update,
-            )
+        from invincat_cli.app_runtime.update_handlers import handle_auto_update_toggle
 
-            if await asyncio.to_thread(_is_editable_install):
-                self.notify(
-                    t("app.auto_update_not_available"),
-                    severity="warning",
-                    timeout=5,
-                )
-                return
-
-            currently_enabled = await asyncio.to_thread(is_auto_update_enabled)
-            new_state = not currently_enabled
-            await asyncio.to_thread(set_auto_update, new_state)
-            label = t("app.auto_updates_enabled") if new_state else t("app.auto_updates_disabled")
-            self.notify(
-                label,
-                severity="information",
-                timeout=5,
-                markup=False,
-            )
-        except Exception as exc:
-            logger.warning("/auto-update command failed", exc_info=True)
-            self.notify(
-                t("app.auto_update_toggle_failed", error=f"{type(exc).__name__}: {exc}"),
-                severity="warning",
-                timeout=5,
-                markup=False,
-            )
+        await handle_auto_update_toggle(self)
 
     def on_scroll_up(self, _event: ScrollUp) -> None:
         """Handle scroll up to check if we need to hydrate older messages."""
