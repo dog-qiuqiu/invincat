@@ -907,20 +907,9 @@ class DeepAgentsApp(App):
             container: The `#messages` container to mount into.
             widget: The widget to mount.
         """
-        if not container.is_attached:
-            return
-        first_queued = self._queued_widgets[0] if self._queued_widgets else None
-        if first_queued is not None and first_queued.parent is container:
-            try:
-                await container.mount(widget, before=first_queued)
-            except Exception:
-                logger.warning(
-                    "Stale queued-widget reference; appending at end",
-                    exc_info=True,
-                )
-            else:
-                return
-        await container.mount(widget)
+        from invincat_cli.app_runtime.message_flow import mount_before_queued
+
+        await mount_before_queued(self, container, widget)
 
     def _is_spinner_at_correct_position(self, container: Container) -> bool:
         """Check whether the loading spinner is already correctly positioned.
@@ -934,19 +923,9 @@ class DeepAgentsApp(App):
         Returns:
             `True` if the spinner is already in the correct position.
         """
-        children = list(container.children)
-        if not children or self._loading_widget not in children:
-            return False
+        from invincat_cli.app_runtime.message_flow import is_spinner_at_correct_position
 
-        if self._queued_widgets:
-            first_queued = self._queued_widgets[0]
-            if first_queued not in children:
-                return False
-            return children.index(self._loading_widget) == (
-                children.index(first_queued) - 1
-            )
-
-        return children[-1] == self._loading_widget
+        return is_spinner_at_correct_position(self, container)
 
     async def _set_spinner(self, status: SpinnerStatus) -> None:
         """Show, update, or hide the loading spinner.
@@ -954,28 +933,9 @@ class DeepAgentsApp(App):
         Args:
             status: The spinner status to display, or `None` to hide.
         """
-        if status is None:
-            # Hide
-            if self._loading_widget:
-                await self._loading_widget.remove()
-                self._loading_widget = None
-            return
+        from invincat_cli.app_runtime.message_flow import set_spinner
 
-        messages = self.query_one("#messages", Container)
-
-        if self._loading_widget is None:
-            # Create new
-            self._loading_widget = LoadingWidget(status)
-            await self._mount_before_queued(messages, self._loading_widget)
-        else:
-            # Update existing
-            self._loading_widget.set_status(status)
-            # Reposition if not already at the correct location
-            if not self._is_spinner_at_correct_position(messages):
-                await self._loading_widget.remove()
-                await self._mount_before_queued(messages, self._loading_widget)
-        # NOTE: Don't call anchor() here - it would re-anchor and drag user back
-        # to bottom if they've scrolled away during streaming
+        await set_spinner(self, status)
 
     async def _request_approval(
         self,
