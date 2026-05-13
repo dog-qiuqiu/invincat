@@ -6,8 +6,6 @@ import asyncio
 import json
 import logging
 import os
-import signal
-import sys
 import time
 import uuid
 import webbrowser
@@ -172,12 +170,6 @@ from invincat_cli.app_runtime.server import (
     should_drain_deferred_on_server_ready,
     should_drain_queue_on_server_ready,
     should_update_default_agent_from_thread,
-)
-from invincat_cli.app_runtime.shell import (
-    format_shell_output,
-    is_interactive_command,
-    shell_termination_strategy,
-    should_start_new_shell_session,
 )
 from invincat_cli.app_runtime.skill import (
     discover_skills_and_roots,
@@ -2838,23 +2830,9 @@ class DeepAgentsApp(App):
         Args:
             command: The shell command to execute.
         """
-        await self._mount_message(UserMessage(f"!{command}"))
-        self._shell_running = True
+        from invincat_cli.app_runtime.shell_handlers import handle_shell_command
 
-        if self._chat_input:
-            self._chat_input.set_cursor_active(active=False)
-
-        # Use suspend() for interactive commands (vi, top, etc.)
-        if is_interactive_command(command):
-            self._shell_worker = self.run_worker(
-                self._run_interactive_shell_task(command),
-                exclusive=False,
-            )
-        else:
-            self._shell_worker = self.run_worker(
-                self._run_shell_task(command),
-                exclusive=False,
-            )
+        await handle_shell_command(self, command)
 
     async def _run_interactive_shell_task(self, command: str) -> None:
         """Run an interactive shell command using suspend().
@@ -2865,41 +2843,9 @@ class DeepAgentsApp(App):
         Args:
             command: The interactive shell command to execute.
         """
-        import subprocess  # noqa: S404
+        from invincat_cli.app_runtime.shell_handlers import run_interactive_shell_task
 
-        try:
-            with self.suspend():
-                result = subprocess.run(  # noqa: S603
-                    command,
-                    shell=True,
-                    cwd=self._cwd,
-                    check=False,
-                )
-
-            if result.returncode != 0:
-                await self._mount_message(
-                    ErrorMessage(
-                        t("shell.exit_code").format(code=result.returncode)
-                    )
-                )
-            else:
-                await self._mount_message(AppMessage(t("shell.command_completed")))
-
-            # Anchor to bottom so output stays visible
-            with suppress(NoMatches, ScreenStackError):
-                self.query_one("#chat", VerticalScroll).anchor()
-
-        except FileNotFoundError:
-            await self._mount_message(
-                ErrorMessage(t("shell.command_not_found").format(command=command))
-            )
-        except OSError as e:
-            logger.exception("Failed to execute interactive shell command: %s", command)
-            await self._mount_message(
-                ErrorMessage(t("shell.command_failed").format(error=str(e)))
-            )
-        finally:
-            await self._cleanup_shell_task()
+        await run_interactive_shell_task(self, command)
 
     async def _run_shell_task(self, command: str) -> None:
         """Run a shell command in a background worker.
@@ -2914,82 +2860,15 @@ class DeepAgentsApp(App):
         Raises:
             CancelledError: If the command is interrupted by the user.
         """
-        try:
-            proc = await asyncio.create_subprocess_shell(
-                command,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=self._cwd,
-                start_new_session=should_start_new_shell_session(sys.platform),
-            )
-            self._shell_process = proc
+        from invincat_cli.app_runtime.shell_handlers import run_shell_task
 
-            try:
-                stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    proc.communicate(), timeout=60
-                )
-            except TimeoutError:
-                await self._kill_shell_process()
-                await self._mount_message(
-                    ErrorMessage(t("shell.command_timeout").format(seconds=60))
-                )
-                return
-            except asyncio.CancelledError:
-                await self._kill_shell_process()
-                raise
-
-            output = format_shell_output(stdout_bytes, stderr_bytes)
-
-            if output:
-                msg = AssistantMessage(f"```\n{output}\n```")
-                await self._mount_message(msg)
-                await msg.write_initial_content()
-            else:
-                await self._mount_message(
-                    AppMessage(t("shell.command_completed_no_output"))
-                )
-
-            if proc.returncode and proc.returncode != 0:
-                await self._mount_message(
-                    ErrorMessage(t("shell.exit_code").format(code=proc.returncode))
-                )
-
-            # Anchor to bottom so shell output stays visible
-            with suppress(NoMatches, ScreenStackError):
-                self.query_one("#chat", VerticalScroll).anchor()
-
-        except OSError as e:
-            logger.exception("Failed to execute shell command: %s", command)
-            err_msg = t("shell.command_failed").format(error=str(e))
-            await self._mount_message(ErrorMessage(err_msg))
-        finally:
-            await self._cleanup_shell_task()
+        await run_shell_task(self, command)
 
     async def _cleanup_shell_task(self) -> None:
         """Clean up after shell command task completes or is cancelled."""
-        was_interrupted = self._shell_process is not None and (
-            self._shell_worker is not None and self._shell_worker.is_cancelled
-        )
-        self._shell_process = None
-        self._shell_running = False
-        self._shell_worker = None
-        if was_interrupted:
-            await self._mount_message(AppMessage(t("shell.command_interrupted")))
-        if self._chat_input:
-            self._chat_input.set_cursor_active(active=True)
-        try:
-            await self._maybe_drain_deferred()
-        except Exception:
-            logger.exception("Failed to drain deferred actions during shell cleanup")
-            with suppress(Exception):
-                await self._mount_message(
-                    ErrorMessage(
-                        "A deferred action failed after task completion. "
-                        "You may need to retry the operation."
-                    )
-                )
-        await self._process_next_from_queue()
+        from invincat_cli.app_runtime.shell_handlers import cleanup_shell_task
+
+        await cleanup_shell_task(self)
 
     async def _kill_shell_process(self) -> None:
         """Terminate the running shell command process.
@@ -2999,40 +2878,9 @@ class DeepAgentsApp(App):
         already exited. Waits up to 5s for clean shutdown, then escalates
         to SIGKILL.
         """
-        proc = self._shell_process
-        if proc is None or proc.returncode is not None:
-            return
+        from invincat_cli.app_runtime.shell_handlers import kill_shell_process
 
-        try:
-            strategy = shell_termination_strategy(sys.platform)
-            if strategy == "process_group":
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            else:
-                proc.terminate()
-        except ProcessLookupError:
-            return
-        except OSError:
-            logger.warning(
-                "Failed to terminate shell process (pid=%s)", proc.pid, exc_info=True
-            )
-            return
-
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5)
-        except TimeoutError:
-            logger.warning(
-                "Shell process (pid=%s) did not exit after SIGTERM; sending SIGKILL",
-                proc.pid,
-            )
-            with suppress(ProcessLookupError, OSError):
-                if strategy == "process_group":
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                else:
-                    proc.kill()
-            with suppress(ProcessLookupError, OSError):
-                await proc.wait()
-        except (ProcessLookupError, OSError):
-            pass
+        await kill_shell_process(self)
 
     async def _open_url_command(self, command: str, cmd: str) -> None:
         """Open a URL in the browser and display a clickable link.
