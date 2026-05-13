@@ -147,6 +147,7 @@ from invincat_cli.app_runtime.scheduler import (
     resolve_scheduled_wecom_file_path,
     scheduled_run_matches,
     should_deliver_scheduled_result,
+    wecom_daemon_claims_scheduled_task,
 )
 from invincat_cli.app_runtime.agent import (
     AgentThreadOverrideContext,
@@ -285,19 +286,6 @@ configure_debug_logging(logger)
 _monotonic = time.monotonic
 
 _SCHEDULED_TRANSIENT_RETRY_DELAY_SECONDS = 3.0
-
-
-def _wecom_daemon_claims_scheduled_task(task: Any, cwd: str | Path) -> bool:
-    """Return True when a running WeCom daemon should own this scheduled task."""
-    from invincat_cli.scheduler.delivery import scheduled_task_wecom_chatid
-    from invincat_cli.wecom.daemon import is_daemon_running
-
-    cwd_str = str(cwd)
-    if getattr(task, "cwd", None) != cwd_str:
-        return False
-    if not scheduled_task_wecom_chatid(task):
-        return False
-    return is_daemon_running(Path(cwd_str))
 
 
 if TYPE_CHECKING:
@@ -3204,7 +3192,7 @@ class DeepAgentsApp(App):
 
         runner_store = FilteredSchedulerStore(
             db_path=getattr(self._scheduler_store, "_db_path", None),
-            exclude_task=lambda task: _wecom_daemon_claims_scheduled_task(
+            exclude_task=lambda task: wecom_daemon_claims_scheduled_task(
                 task, self._cwd
             ),
         )
@@ -3481,97 +3469,11 @@ class DeepAgentsApp(App):
 
     async def _handle_schedule_tool_payload(self, payload: dict) -> None:
         """Handle a structured schedule tool payload from the agent."""
-        from invincat_cli.i18n import t
-        from invincat_cli.scheduler.payloads import (
-            apply_schedule_update_payload,
-            build_schedule_create_payload_result,
-            format_schedule_list_item,
+        from invincat_cli.app_runtime.schedule_handlers import (
+            handle_schedule_tool_payload,
         )
 
-        ptype = payload.get("type")
-
-        if ptype == "schedule_create":
-            try:
-                result = build_schedule_create_payload_result(
-                    payload,
-                    cwd=self._cwd,
-                    active_wecom_frame=self._current_wecom_inbound_frame,
-                )
-            except ValueError as exc:
-                await self._mount_message(ErrorMessage(str(exc)))
-                return
-            self._scheduler_store.save_task(result.task)
-            await self._mount_message(
-                AppMessage(
-                    t("schedule.created").format(
-                        title=result.task.title,
-                        schedule=result.schedule_description,
-                        timezone=result.task.timezone,
-                        next_run=result.next_run_display,
-                        report_path=result.report_path_display,
-                    )
-                )
-            )
-
-        elif ptype == "schedule_update":
-            task_id = payload.get("task_id", "")
-            task = self._scheduler_store.load_task(task_id)
-            if task is None:
-                await self._mount_message(
-                    AppMessage(t("schedule.not_found").format(task_id=task_id))
-                )
-                return
-            updates = payload.get("updates", {})
-            try:
-                task = apply_schedule_update_payload(task, updates)
-            except ValueError as exc:
-                await self._mount_message(ErrorMessage(str(exc)))
-                return
-            self._scheduler_store.save_task(task)
-            await self._mount_message(
-                AppMessage(t("schedule.updated").format(title=task.title))
-            )
-
-        elif ptype == "schedule_cancel":
-            task_id = payload.get("task_id", "")
-            task = self._scheduler_store.load_task(task_id)
-            title = task.title if task else task_id
-            self._scheduler_store.delete_task(task_id)
-            await self._mount_message(
-                AppMessage(t("schedule.deleted").format(title=title))
-            )
-
-        elif ptype == "schedule_run_now":
-            task_id = payload.get("task_id", "")
-            title = payload.get("title", task_id)
-            task = self._scheduler_store.load_task(task_id)
-            if task is None:
-                await self._mount_message(
-                    AppMessage(t("schedule.not_found").format(task_id=task_id))
-                )
-                return
-            if _wecom_daemon_claims_scheduled_task(task, self._cwd):
-                await self._mount_message(
-                    AppMessage(
-                        "WeCom daemon is running; this scheduled task is handled by the daemon."
-                    )
-                )
-                return
-            await self._mount_message(
-                AppMessage(t("schedule.run_queued").format(title=title))
-            )
-            if self._scheduler_runner is not None:
-                await self._scheduler_runner.fire_now(task)
-
-        elif ptype == "schedule_list":
-            tasks = payload.get("tasks", [])
-            if not tasks:
-                await self._mount_message(AppMessage(t("schedule.list_empty")))
-            else:
-                lines = [t("schedule.list_header").format(count=len(tasks))]
-                for task_info in tasks:
-                    lines.append(format_schedule_list_item(task_info))
-                await self._mount_message(AppMessage("\n".join(lines)))
+        await handle_schedule_tool_payload(self, payload)
 
     async def _handle_schedule_command(self, command: str) -> None:
         """Open the schedule manager modal screen."""
@@ -3579,62 +3481,15 @@ class DeepAgentsApp(App):
 
     async def _show_schedule_manager(self) -> None:
         """Push the ScheduleManagerScreen modal."""
-        from invincat_cli.widgets.schedule_manager import ScheduleManagerScreen, ScheduleAction
+        from invincat_cli.app_runtime.schedule_handlers import show_schedule_manager
 
-        screen = ScheduleManagerScreen(store=self._scheduler_store)
-
-        def handle_result(result: "ScheduleAction | None") -> None:
-            if self._chat_input:
-                self._chat_input.focus_input()
-            if result is None:
-                return
-            # Execute the chosen action after the modal closes
-            self.call_later(self._execute_schedule_action, result)
-
-        self.push_screen(screen, handle_result)
+        await show_schedule_manager(self)
 
     async def _execute_schedule_action(self, action: "ScheduleAction") -> None:  # noqa: F821
         """Execute a schedule action returned by the manager modal."""
-        from invincat_cli.i18n import t
+        from invincat_cli.app_runtime.schedule_handlers import execute_schedule_action
 
-        task = self._scheduler_store.load_task(action.task_id)
-        if task is None:
-            await self._mount_message(
-                AppMessage(t("schedule.not_found").format(task_id=action.task_id))
-            )
-            return
-
-        if action.kind == "run_now":
-            if _wecom_daemon_claims_scheduled_task(task, self._cwd):
-                await self._mount_message(
-                    AppMessage(
-                        "WeCom daemon is running; this scheduled task is handled by the daemon."
-                    )
-                )
-                return
-            await self._mount_message(
-                AppMessage(t("schedule.run_queued").format(title=task.title))
-            )
-            if self._scheduler_runner is not None:
-                await self._scheduler_runner.fire_now(task)
-
-        elif action.kind == "pause":
-            self._scheduler_store.set_task_enabled(task.id, False)
-            await self._mount_message(
-                AppMessage(t("schedule.paused").format(title=task.title))
-            )
-
-        elif action.kind == "resume":
-            self._scheduler_store.set_task_enabled(task.id, True)
-            await self._mount_message(
-                AppMessage(t("schedule.resumed").format(title=task.title))
-            )
-
-        elif action.kind == "delete":
-            self._scheduler_store.delete_task(task.id)
-            await self._mount_message(
-                AppMessage(t("schedule.deleted").format(title=task.title))
-            )
+        await execute_schedule_action(self, action)
 
     async def _handle_wecombot_command(self, command: str, *, action: str) -> None:
         """Manage WeCom bridge lifecycle in current CLI session.

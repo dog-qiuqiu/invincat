@@ -12,6 +12,7 @@ from invincat_cli.app_runtime.scheduler import (
     resolve_scheduled_wecom_file_path,
     scheduled_run_matches,
     should_deliver_scheduled_result,
+    wecom_daemon_claims_scheduled_task,
 )
 from invincat_cli.app_runtime.state import QueuedMessage
 
@@ -65,6 +66,25 @@ def test_should_deliver_scheduled_result() -> None:
     assert should_deliver_scheduled_result(None)
     assert should_deliver_scheduled_result(Run(None))
     assert not should_deliver_scheduled_result(Run("2026-05-13T00:00:00+00:00"))
+
+
+def test_wecom_daemon_claims_scheduled_task_requires_same_cwd(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class Task:
+        cwd = str(tmp_path / "other")
+
+    monkeypatch.setattr(
+        "invincat_cli.scheduler.delivery.scheduled_task_wecom_chatid",
+        lambda _task: "chat-1",
+    )
+    monkeypatch.setattr(
+        "invincat_cli.wecom.daemon.is_daemon_running",
+        lambda _cwd: True,
+    )
+
+    assert not wecom_daemon_claims_scheduled_task(Task(), tmp_path)
 
 
 def test_resolve_scheduled_wecom_file_path_accepts_project_file(tmp_path: Path) -> None:

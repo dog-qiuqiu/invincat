@@ -9,6 +9,19 @@ from pathlib import Path
 from invincat_cli.app_runtime.state import QueuedMessage
 
 
+def wecom_daemon_claims_scheduled_task(task: object, cwd: str | Path) -> bool:
+    """Return whether a running WeCom daemon should own a scheduled task."""
+    from invincat_cli.scheduler.delivery import scheduled_task_wecom_chatid
+    from invincat_cli.wecom.daemon import is_daemon_running
+
+    cwd_str = str(cwd)
+    if getattr(task, "cwd", None) != cwd_str:
+        return False
+    if not scheduled_task_wecom_chatid(task):
+        return False
+    return is_daemon_running(Path(cwd_str))
+
+
 def remove_scheduled_messages(
     messages: Iterable[QueuedMessage],
     *,

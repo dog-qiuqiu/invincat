@@ -1155,7 +1155,7 @@ def test_tui_delegates_wecom_delivery_tasks_to_running_daemon(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from invincat_cli.app import _wecom_daemon_claims_scheduled_task
+    from invincat_cli.app_runtime.scheduler import wecom_daemon_claims_scheduled_task
 
     monkeypatch.setattr(
         "invincat_cli.wecom.daemon.is_daemon_running",
@@ -1171,9 +1171,9 @@ def test_tui_delegates_wecom_delivery_tasks_to_running_daemon(
         channels=[{"type": "wecom", "chatid": "chat-1"}]
     )
 
-    assert _wecom_daemon_claims_scheduled_task(tui_task, tmp_path) is False
-    assert _wecom_daemon_claims_scheduled_task(wecom_task, tmp_path) is True
-    assert _wecom_daemon_claims_scheduled_task(other_cwd_task, tmp_path) is False
+    assert wecom_daemon_claims_scheduled_task(tui_task, tmp_path) is False
+    assert wecom_daemon_claims_scheduled_task(wecom_task, tmp_path) is True
+    assert wecom_daemon_claims_scheduled_task(other_cwd_task, tmp_path) is False
 
 
 def test_schedule_middleware_delete_tool_alias_returns_cancel_payload(tmp_path: Path) -> None:
