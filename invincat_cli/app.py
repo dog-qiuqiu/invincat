@@ -45,7 +45,6 @@ def _patch_textual_utf8_decoder() -> None:
 
 
 _patch_textual_utf8_decoder()
-from collections import deque
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -63,11 +62,10 @@ from invincat_cli.app_runtime.state import (
     AppResult,
     DeferredAction,
     InputMode,
-    QueuedMessage,
-    TextualSessionState,
     ThreadHistoryPayload,
     new_thread_id,
 )
+from invincat_cli.app_runtime.state import QueuedMessage as QueuedMessage  # noqa: F401
 from invincat_cli.app_runtime.approval import (
     TYPING_IDLE_THRESHOLD_SECONDS,
     user_is_typing,
@@ -81,33 +79,24 @@ from invincat_cli.app_runtime.services import AppServices
 from invincat_cli.app_runtime.startup import (
     create_startup_session_state,
 )
-from invincat_cli.app_runtime.theme_prefs import (
-    load_theme_preference,
-)
 from invincat_cli.app_runtime.thread_runtime import (
     ThreadSwitchSnapshot,
 )
 from invincat_cli.core.debug import configure_debug_logging
 from invincat_cli.core.session_stats import (
-    SessionStats,
     SpinnerStatus,
 )
 from invincat_cli.i18n import t
 
 from invincat_cli.widgets.chat_input import ChatInput
-from invincat_cli.widgets.loading import LoadingWidget
-from invincat_cli.widgets.message_store import MessageStore
 from invincat_cli.widgets.messages import (
     AppMessage,
     AssistantMessage,
     ErrorMessage,
-    QueuedUserMessage,
     SkillMessage,
     ToolCallMessage,
     UserMessage,
 )
-from invincat_cli.widgets.status import StatusBar
-from invincat_cli.wecom.bridge import WeComBridge
 from invincat_cli.wecom.session import (
     WECOM_AGENT_TIMEOUT,
 )
@@ -133,7 +122,6 @@ if TYPE_CHECKING:
     from invincat_cli.remote_client import RemoteAgent
     from invincat_cli.server.app_server import ServerProcess
     from invincat_cli.skills.load import ExtendedSkillMetadata
-    from invincat_cli.textual_adapter import TextualUIAdapter
     from invincat_cli.widgets.approval import ApprovalMenu
     from invincat_cli.widgets.ask_user import AskUserMenu
 
@@ -355,212 +343,27 @@ class DeepAgentsApp(App):
         """
         super().__init__(**kwargs)
 
-        self._register_custom_themes()
-
-        from invincat_cli.i18n import load_language_from_config, set_language
-
-        language = load_language_from_config()
-        set_language(language)
-
-        self.theme = load_theme_preference()
-
-        self._agent = agent
-
-        self._assistant_id = assistant_id
-
-        self._backend = backend
-
-        self._auto_approve = auto_approve
-
-        self._cwd = str(cwd) if cwd else str(Path.cwd())
-
-        self._lc_thread_id = thread_id
-        """LangChain thread identifier.
-
-        Named `_lc_thread_id` to avoid collision with Textual's `App._thread_id`.
-        """
-
-        self._resume_thread_intent = resume_thread
-
-        self._initial_prompt = initial_prompt
-
-        self._mcp_server_info = mcp_server_info
-
-        self._profile_override = profile_override
-
-        self._server_proc = server_proc
-
-        self._server_kwargs = server_kwargs
-
-        self._mcp_preload_kwargs = mcp_preload_kwargs
-
-        self._model_kwargs = model_kwargs
-
-        self._defer_server_start = defer_server_start
-
-        self._services = services or AppServices()
-
-        self._connecting = server_kwargs is not None and not defer_server_start
-        # Extract sandbox type from server kwargs for trace metadata.
-        # ServerConfig.__post_init__ normalizes "none" → None, but server_kwargs carries
-        # the raw argparse value, so guard against both.
-
-        raw = (server_kwargs or {}).get("sandbox_type")
-
-        self._sandbox_type: str | None = raw if raw and raw != "none" else None
-
-        self._model_override: str | None = None
-
-        self._model_params_override: dict[str, Any] | None = None
-
-        self._memory_model_override: str | None = None
-
-        self._memory_model_params_override: dict[str, Any] | None = None
-
-        self._model: BaseChatModel | None = None
-
-        self._mcp_tool_count = sum(len(s.tools) for s in (mcp_server_info or []))
-
-        self._status_bar: StatusBar | None = None
-
-        self._chat_input: ChatInput | None = None
-
-        self._quit_pending = False
-
-        self._session_state: TextualSessionState | None = None
-
-        self._ui_adapter: TextualUIAdapter | None = None
-
-        self._pending_approval_widget: ApprovalMenu | None = None
-
-        self._pending_ask_user_widget: AskUserMenu | None = None
-        # Agent task tracking for interruption
-
-        self._agent_worker: Worker[None] | None = None
-
-        self._agent_running = False
-        self._active_turn_is_planner = False
-
-        self._agent_generation: int = 0
-        """Monotonically-increasing counter incremented each time a new agent task starts.
-
-        Used by _cleanup_agent_task() to guard against stale cleanup from a
-        previously-cancelled worker clobbering the running flags of a newer
-        concurrent worker.  When _cancel_worker() eagerly clears _agent_running
-        so the user can send a new message immediately, the old (shielded)
-        cleanup goroutine can still be alive. Without the generation check it
-        would reset _agent_running=False / _agent_worker=None for the NEW agent.
-        """
-
-        self._shell_process: asyncio.subprocess.Process | None = None
-        """Shell command process tracking for interruption (! commands)."""
-
-        self._shell_worker: Worker[None] | None = None
-
-        self._shell_running = False
-
-        self._loading_widget: LoadingWidget | None = None
-        self._memory_status_clear_timer: Any | None = None
-        self._planner_agent: Pregel | None = None
-        self._planner_thread_id: str | None = None
-        self._main_thread_before_plan: str | None = None
-        self._planner_last_todos_fingerprint: str | None = None
-        self._planner_prompted_todos_fingerprint: str | None = None
-
-        self._context_tokens: int = 0
-        """Local cache of the last total-context token count.
-
-        Source of truth is `_context_tokens` in graph state; this is a sync
-        copy for the status bar.
-        """
-
-        self._tokens_approximate: bool = False
-        """Whether the cached token count is stale (interrupted generation)."""
-
-        self._auto_offload_cooldown_until: float = 0.0
-        """Monotonic timestamp before which auto-offload must not fire again."""
-
-        self._offload_budget_cache: tuple[tuple[Any, ...], str | None] | None = None
-        """(cache_key, result) for `_resolve_offload_budget_str`."""
-
-        self._last_typed_at: float | None = None
-        """Typing-aware approval deferral state."""
-
-        self._approval_placeholder: Static | None = None
-
-        self._update_available: tuple[bool, str | None] = (False, None)
-        """Update availability state — set by _check_for_updates, read on exit."""
-
-        self._session_stats: SessionStats = SessionStats()
-        """Cumulative usage stats across all turns in this session."""
-
-        self._inflight_turn_stats: SessionStats | None = None
-        """Stats for the currently executing turn.
-
-        Held here so `exit()` can merge them synchronously before the event loop
-        tears down (e.g. `Ctrl+D` during a pending tool call).
-        """
-
-        self._inflight_turn_start: float = 0.0
-        """Monotonic timestamp when the current turn started."""
-
-        self._pending_messages: deque[QueuedMessage] = deque()
-        """User message queue for sequential processing."""
-
-        self._queued_widgets: deque[QueuedUserMessage] = deque()
-
-        self._processing_pending = False
-
-        self._thread_switching = False
-
-        self._model_switching = False
-
-        self._deferred_actions: list[DeferredAction] = []
-        """Deferred actions executed after the current busy state resolves."""
-        self._pending_plan_handoff_prompt: str | None = None
-        """Approved plan handoff prompt waiting to run on the main agent."""
-
-        self._message_store = MessageStore()
-        """Message virtualization store."""
-
-        self._startup_task: asyncio.Task[None] | None = None
-        """Startup task reference (set in on_mount)."""
-
-        self._discovered_skills: list[ExtendedSkillMetadata] = []
-        """Cached skill metadata (populated by startup discovery worker,
-        refreshed on `/reload`).
-
-        Used by `_handle_skill_command` to skip re-walking all skill directories
-        on every invocation.
-        """
-
-        self._skill_allowed_roots: list[Path] = []
-        """Pre-resolved skill root directories for containment checks in
-        `load_skill_content`.
-
-        Built alongside `_discovered_skills`.
-        """
-
-        # Lazily imported here to avoid pulling image dependencies into
-        # argument parsing paths.
-        from invincat_cli.io.input import MediaTracker
-
-        self._image_tracker = MediaTracker()
-        self._wecom_task: asyncio.Task[None] | None = None
-        self._wecom_bridge: WeComBridge | None = None
-        self._wecom_lock = asyncio.Lock()
-        self._current_wecom_inbound_frame: dict[str, Any] | None = None
-
-        from invincat_cli.scheduler.runner import SchedulerRunner
-
-        self._scheduler_store = self._services.lazy_scheduler_store()
-        self._scheduler_runner: SchedulerRunner | None = None
-        self._scheduler_interval_handle: Any | None = None
-        self._active_scheduled_run: tuple[str, str] | None = None  # (run_id, task_id)
-        self._scheduled_run_message_offset: int = 0  # message count before this scheduled turn started
-        self._scheduled_turn_status: str = "success"
-        self._scheduled_turn_error: str | None = None
-        self._scheduled_turn_retry_used: bool = False
+        from invincat_cli.app_runtime.initialization import initialize_app
+
+        initialize_app(
+            self,
+            agent=agent,
+            assistant_id=assistant_id,
+            backend=backend,
+            auto_approve=auto_approve,
+            cwd=cwd,
+            thread_id=thread_id,
+            resume_thread=resume_thread,
+            initial_prompt=initial_prompt,
+            mcp_server_info=mcp_server_info,
+            profile_override=profile_override,
+            server_proc=server_proc,
+            server_kwargs=server_kwargs,
+            mcp_preload_kwargs=mcp_preload_kwargs,
+            model_kwargs=model_kwargs,
+            defer_server_start=defer_server_start,
+            services=services,
+        )
 
     def _remote_agent(self) -> RemoteAgent | None:
         """Return the agent narrowed to `RemoteAgent`, or `None`.
