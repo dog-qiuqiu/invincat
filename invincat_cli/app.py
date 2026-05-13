@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import time
@@ -2463,49 +2462,12 @@ class DeepAgentsApp(App):
             return_code: Exit code (non-zero for errors).
             message: Optional message to display on exit.
         """
-        # Merge in-flight turn stats before any cleanup that might raise.
-        # When the agent worker is cancelled (e.g. Ctrl+D during a pending tool
-        # call), the worker's finally block will see _inflight_turn_stats is
-        # already None and skip the merge.
-        inflight = self._inflight_turn_stats
-        if inflight is not None:
-            self._inflight_turn_stats = None
-            if not inflight.wall_time_seconds:
-                inflight.wall_time_seconds = (
-                    time.monotonic() - self._inflight_turn_start
-                )
-            self._session_stats.merge(inflight)
+        from invincat_cli.app_runtime.exit_handlers import prepare_exit
 
-        # Discard queued messages so _cleanup_agent_task won't try to
-        # process them after the event loop is torn down, and cancel
-        # active workers so their subprocesses are terminated
-        # (SIGTERM → SIGKILL) instead of being orphaned.
-        self._discard_queue()
-
-        if self._shell_running and self._shell_worker:
-            self._shell_worker.cancel()
-        if self._agent_running and self._agent_worker:
-            self._agent_worker.cancel()
-        if self._wecom_task and not self._wecom_task.done():
-            if self._wecom_bridge is not None:
-                self._wecom_bridge.stop()
-            self._wecom_task.cancel()
-
-        # Dispatch synchronously — the event loop is about to be torn down by
-        # super().exit(), so an async task would never complete.
-        from invincat_cli.hooks import _dispatch_hook_sync, _load_hooks
-
-        hooks = _load_hooks()
-        if hooks:
-            payload = json.dumps(
-                {
-                    "event": "session.end",
-                    "thread_id": getattr(self, "_lc_thread_id", ""),
-                }
-            ).encode()
-            _dispatch_hook_sync("session.end", payload, hooks)
-
-        _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
+        prepare_exit(
+            self,
+            restore_cursor_guide=lambda: _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON),
+        )
         super().exit(result=result, return_code=return_code, message=message)
 
     def action_toggle_auto_approve(self) -> None:
