@@ -81,6 +81,15 @@ def scheduled_report_path_for_wecom(
         return None
 
 
+def should_send_scheduled_report_file(
+    *,
+    status: str,
+    report_path: str | None,
+) -> bool:
+    """Return whether a report file should be sent after the text update."""
+    return status == "success" and bool(report_path)
+
+
 def build_scheduled_wecom_text(
     *,
     title: str,

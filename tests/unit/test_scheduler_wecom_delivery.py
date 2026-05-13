@@ -9,6 +9,7 @@ from invincat_cli.scheduler.wecom_delivery import (
     latest_assistant_summary,
     scheduled_report_path_for_wecom,
     scheduled_wecom_delivery_target,
+    should_send_scheduled_report_file,
 )
 from invincat_cli.widgets.message_store import MessageData, MessageType
 
@@ -84,3 +85,15 @@ def test_scheduled_report_path_for_wecom_skips_message_only_task() -> None:
         )
         is None
     )
+
+
+def test_should_send_scheduled_report_file() -> None:
+    assert should_send_scheduled_report_file(
+        status="success",
+        report_path="reports/daily.md",
+    )
+    assert not should_send_scheduled_report_file(
+        status="failed",
+        report_path="reports/daily.md",
+    )
+    assert not should_send_scheduled_report_file(status="success", report_path=None)

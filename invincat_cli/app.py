@@ -3468,19 +3468,12 @@ class DeepAgentsApp(App):
         error: str | None,
     ) -> None:
         """Best-effort active WeCom delivery for a completed scheduled run."""
-        from datetime import datetime, timezone
-        from pathlib import Path
-
         from invincat_cli.scheduler.wecom_delivery import (
             build_scheduled_wecom_text,
             latest_assistant_summary,
             scheduled_report_path_for_wecom,
             scheduled_wecom_delivery_target,
-        )
-        from invincat_cli.wecom.media import upload_wecom_outbound_media
-        from invincat_cli.wecom.protocol import (
-            build_wecom_file_frame_for_chat,
-            build_wecom_text_frame,
+            should_send_scheduled_report_file,
         )
 
         task = self._scheduler_store.load_task(task_id)
@@ -3521,49 +3514,21 @@ class DeepAgentsApp(App):
         )
 
         try:
-            if not wecom_bridge_is_online(self._wecom_bridge):
-                self._scheduler_store.update_run_delivery(
-                    run_id,
-                    status="failed",
-                    error=wecom_bridge_offline_message(),
-                )
-                await self._mount_message(
-                    ErrorMessage("Scheduled task WeCom delivery failed: WeCom bridge is offline.")
-                )
+            text_sent = await self._send_scheduled_wecom_text(
+                chatid=chatid,
+                content=content,
+                run_id=run_id,
+            )
+            if not text_sent:
                 return
-            self._wecom_enqueue(build_wecom_text_frame(chatid, content))
-            flushed = await self._wecom_flush_outbox()
-            if not flushed:
-                self._scheduler_store.update_run_delivery(
-                    run_id,
-                    status="queued",
-                    error="waiting for bridge reconnect",
+            if should_send_scheduled_report_file(
+                status=status,
+                report_path=report_path,
+            ):
+                await self._send_scheduled_wecom_report_file(
+                    chatid=chatid,
+                    report_path=report_path,
                 )
-                await self._mount_message(
-                    AppMessage(
-                        "Scheduled task WeCom delivery queued; waiting for bridge reconnect."
-                    )
-                )
-            else:
-                self._scheduler_store.update_run_delivery(
-                    run_id,
-                    status="success",
-                    error=None,
-                    delivered_at=datetime.now(timezone.utc).isoformat(),
-                )
-            if status == "success" and report_path:
-                if not wecom_bridge_is_online(self._wecom_bridge):
-                    await self._mount_message(
-                        ErrorMessage(
-                            "Scheduled task WeCom file delivery skipped: WeCom bridge is offline."
-                        )
-                    )
-                    return
-                media_id = await upload_wecom_outbound_media(
-                    Path(report_path),
-                    send_request=self._wecom_send_request,
-                )
-                await self._wecom_send_request(build_wecom_file_frame_for_chat(chatid, media_id))
         except Exception as exc:
             self._scheduler_store.update_run_delivery(
                 run_id,
@@ -3574,6 +3539,80 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 ErrorMessage(f"Scheduled task WeCom delivery failed: {exc}")
             )
+
+    async def _send_scheduled_wecom_text(
+        self,
+        *,
+        chatid: str,
+        content: str,
+        run_id: str,
+    ) -> bool:
+        """Send scheduled WeCom text and update delivery status."""
+        from datetime import datetime, timezone
+
+        from invincat_cli.wecom.protocol import build_wecom_text_frame
+
+        if not wecom_bridge_is_online(self._wecom_bridge):
+            self._scheduler_store.update_run_delivery(
+                run_id,
+                status="failed",
+                error=wecom_bridge_offline_message(),
+            )
+            await self._mount_message(
+                ErrorMessage(
+                    "Scheduled task WeCom delivery failed: WeCom bridge is offline."
+                )
+            )
+            return False
+        self._wecom_enqueue(build_wecom_text_frame(chatid, content))
+        flushed = await self._wecom_flush_outbox()
+        if not flushed:
+            self._scheduler_store.update_run_delivery(
+                run_id,
+                status="queued",
+                error="waiting for bridge reconnect",
+            )
+            await self._mount_message(
+                AppMessage(
+                    "Scheduled task WeCom delivery queued; waiting for bridge reconnect."
+                )
+            )
+            return False
+
+        self._scheduler_store.update_run_delivery(
+            run_id,
+            status="success",
+            error=None,
+            delivered_at=datetime.now(timezone.utc).isoformat(),
+        )
+        return True
+
+    async def _send_scheduled_wecom_report_file(
+        self,
+        *,
+        chatid: str,
+        report_path: str | None,
+    ) -> None:
+        """Send the scheduled report file to WeCom when available."""
+        from pathlib import Path
+
+        from invincat_cli.wecom.media import upload_wecom_outbound_media
+        from invincat_cli.wecom.protocol import build_wecom_file_frame_for_chat
+
+        if report_path is None:
+            return
+        if not wecom_bridge_is_online(self._wecom_bridge):
+            await self._mount_message(
+                ErrorMessage(
+                    "Scheduled task WeCom file delivery skipped: WeCom bridge is offline."
+                )
+            )
+            return
+        media_id = await upload_wecom_outbound_media(
+            Path(report_path),
+            send_request=self._wecom_send_request,
+        )
+        await self._wecom_send_request(build_wecom_file_frame_for_chat(chatid, media_id))
 
     def _active_scheduled_wecom_chat_id(self) -> str | None:
         """Return the WeCom chat id for the active scheduled run, if any."""
