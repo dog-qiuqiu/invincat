@@ -56,10 +56,8 @@ from textual.containers import Container, VerticalScroll
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.theme import Theme
 from textual.widgets import Static
 
-from invincat_cli import theme
 from invincat_cli.model_config import ModelTarget
 from invincat_cli.app_runtime.state import (
     AppResult,
@@ -109,7 +107,6 @@ from invincat_cli.widgets.messages import (
     UserMessage,
 )
 from invincat_cli.widgets.status import StatusBar
-from invincat_cli.widgets.welcome import WelcomeBanner
 from invincat_cli.wecom.bridge import WeComBridge
 from invincat_cli.wecom.session import (
     WECOM_AGENT_TIMEOUT,
@@ -596,8 +593,9 @@ class DeepAgentsApp(App):
         Returns:
             Dict of CSS variable names to hex color values.
         """
-        colors = theme.get_theme_colors(self)
-        return theme.get_css_variable_defaults(colors=colors)
+        from invincat_cli.app_runtime.layout import get_theme_variable_defaults
+
+        return get_theme_variable_defaults(self)
 
     def compose(self) -> ComposeResult:
         """Compose the application layout.
@@ -605,27 +603,9 @@ class DeepAgentsApp(App):
         Yields:
             UI components for the main chat area and status bar.
         """
-        # Main chat area with scrollable messages
-        # VerticalScroll tracks user scroll intent for better auto-scroll behavior
-        with VerticalScroll(id="chat"):
-            yield WelcomeBanner(
-                thread_id=self._lc_thread_id,
-                mcp_tool_count=self._mcp_tool_count,
-                connecting=self._connecting,
-                resuming=self._resume_thread_intent is not None,
-                local_server=self._server_kwargs is not None,
-                id="welcome-banner",
-            )
-            yield Container(id="messages")
-        with Container(id="bottom-app-container"):
-            yield ChatInput(
-                cwd=self._cwd,
-                image_tracker=self._image_tracker,
-                id="input-area",
-            )
+        from invincat_cli.app_runtime.layout import compose_layout
 
-        # Status bar at bottom
-        yield StatusBar(cwd=self._cwd, id="status-bar")
+        yield from compose_layout(self)
 
     async def on_mount(self) -> None:
         """Initialize components after mount.
@@ -2558,35 +2538,9 @@ class DeepAgentsApp(App):
 
     def _register_custom_themes(self) -> None:
         """Register all custom themes (built-in LC + user-defined) with Textual."""
-        for name, entry in theme.ThemeEntry.REGISTRY.items():
-            if entry.custom:
-                c = entry.colors
-                try:
-                    self.register_theme(
-                        Theme(
-                            name=name,
-                            primary=c.primary,
-                            secondary=c.secondary,
-                            accent=c.accent,
-                            foreground=c.foreground,
-                            background=c.background,
-                            surface=c.surface,
-                            panel=c.panel,
-                            warning=c.warning,
-                            error=c.error,
-                            success=c.success,
-                            dark=entry.dark,
-                            variables={
-                                "footer-key-foreground": c.primary,
-                            },
-                        )
-                    )
-                except Exception:
-                    logger.warning(
-                        "Failed to register theme '%s'; skipping",
-                        name,
-                        exc_info=True,
-                    )
+        from invincat_cli.app_runtime.layout import register_custom_themes
+
+        register_custom_themes(self)
 
     async def _show_theme_selector(self) -> None:
         """Show interactive theme selector as a modal screen."""
