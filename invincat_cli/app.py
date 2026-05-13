@@ -132,9 +132,12 @@ from invincat_cli.app_runtime.model_runtime import (
     missing_credentials_detail,
     model_switch_requires_server_error,
     model_switch_target_kwargs,
+    model_status_fields,
     model_target_translation_key,
     normalize_default_model_spec,
     resolve_model_spec,
+    should_primary_switch_update_memory_status,
+    should_start_server_after_primary_model_switch,
 )
 from invincat_cli.app_runtime.queueing import can_bypass_busy_queue
 from invincat_cli.app_runtime.reload import build_reload_report
@@ -6446,19 +6449,29 @@ class DeepAgentsApp(App):
                 if remote_agent is None:
                     self._model = model_result.model
 
+                status_model = model_status_fields(
+                    provider=model_result.provider,
+                    model_name=model_result.model_name,
+                )
                 if self._status_bar:
                     self._status_bar.set_model(
-                        provider=model_result.provider or "",
-                        model=model_result.model_name or "",
+                        provider=status_model.provider,
+                        model=status_model.model,
                     )
-                    if self._memory_model_override is None:
+                    if should_primary_switch_update_memory_status(
+                        memory_model_override=self._memory_model_override,
+                    ):
                         self._status_bar.set_memory_model(
-                            provider=model_result.provider or "",
-                            model=model_result.model_name or "",
+                            provider=status_model.provider,
+                            model=status_model.model,
                             follow_primary=True,
                         )
 
-                if remote_agent is None and self._server_kwargs is not None:
+                if should_start_server_after_primary_model_switch(
+                    has_remote_agent=remote_agent is not None,
+                    has_server_kwargs=self._server_kwargs is not None,
+                ):
+                    assert self._server_kwargs is not None
                     self._server_kwargs["model_name"] = resolved.display
                     self._server_kwargs["model_params"] = target_kwargs
                     self._model_kwargs = None
@@ -6489,10 +6502,14 @@ class DeepAgentsApp(App):
             else:
                 self._memory_model_override = resolved.display
                 self._memory_model_params_override = target_kwargs
+                status_model = model_status_fields(
+                    provider=model_result.provider,
+                    model_name=model_result.model_name,
+                )
                 if self._status_bar:
                     self._status_bar.set_memory_model(
-                        provider=model_result.provider or "",
-                        model=model_result.model_name or "",
+                        provider=status_model.provider,
+                        model=status_model.model,
                         follow_primary=False,
                     )
                 await self._mount_message(

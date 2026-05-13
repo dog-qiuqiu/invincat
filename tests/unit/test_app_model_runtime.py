@@ -12,9 +12,12 @@ from invincat_cli.app_runtime.model_runtime import (
     missing_credentials_detail,
     model_switch_requires_server_error,
     model_switch_target_kwargs,
+    model_status_fields,
     model_target_translation_key,
     normalize_default_model_spec,
     resolve_model_spec,
+    should_primary_switch_update_memory_status,
+    should_start_server_after_primary_model_switch,
 )
 
 
@@ -203,6 +206,38 @@ def test_already_using_model_display() -> None:
             current_model_name="gpt-test",
         )
         == "gpt-test"
+    )
+
+
+def test_model_status_fields() -> None:
+    fields = model_status_fields(provider="openai", model_name="gpt-test")
+    assert fields.provider == "openai"
+    assert fields.model == "gpt-test"
+
+    missing = model_status_fields(provider=None, model_name=None)
+    assert missing.provider == ""
+    assert missing.model == ""
+
+
+def test_should_primary_switch_update_memory_status() -> None:
+    assert should_primary_switch_update_memory_status(memory_model_override=None)
+    assert not should_primary_switch_update_memory_status(
+        memory_model_override="anthropic:claude",
+    )
+
+
+def test_should_start_server_after_primary_model_switch() -> None:
+    assert should_start_server_after_primary_model_switch(
+        has_remote_agent=False,
+        has_server_kwargs=True,
+    )
+    assert not should_start_server_after_primary_model_switch(
+        has_remote_agent=True,
+        has_server_kwargs=True,
+    )
+    assert not should_start_server_after_primary_model_switch(
+        has_remote_agent=False,
+        has_server_kwargs=False,
     )
 
 

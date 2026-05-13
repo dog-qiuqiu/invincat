@@ -20,6 +20,14 @@ class ResolvedModelSpec:
     parsed: bool
 
 
+@dataclass(frozen=True, slots=True)
+class ModelStatusFields:
+    """Normalized model fields shown in the app status bar."""
+
+    provider: str
+    model: str
+
+
 def resolve_model_spec(
     model_spec: str,
     *,
@@ -151,6 +159,32 @@ def already_using_model_display(
             or resolved.display
         )
     return resolved.display
+
+
+def model_status_fields(
+    *,
+    provider: str | None,
+    model_name: str | None,
+) -> ModelStatusFields:
+    """Normalize optional provider/model fields for status bar calls."""
+    return ModelStatusFields(provider=provider or "", model=model_name or "")
+
+
+def should_primary_switch_update_memory_status(
+    *,
+    memory_model_override: str | None,
+) -> bool:
+    """Return whether memory status should keep following the primary model."""
+    return memory_model_override is None
+
+
+def should_start_server_after_primary_model_switch(
+    *,
+    has_remote_agent: bool,
+    has_server_kwargs: bool,
+) -> bool:
+    """Return whether a primary switch should start a deferred local server."""
+    return not has_remote_agent and has_server_kwargs
 
 
 def model_target_translation_key(target: ModelTarget) -> str:
