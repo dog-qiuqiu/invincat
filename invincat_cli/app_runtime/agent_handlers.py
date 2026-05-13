@@ -6,10 +6,18 @@ import logging
 from contextlib import suppress
 from typing import Any
 
+from textual.app import ScreenStackError
+from textual.containers import VerticalScroll
+from textual.css.query import NoMatches
+
 from invincat_cli.app_runtime.agent import (
+    AgentTurnRequest,
     build_agent_error_detail,
+    can_start_agent_turn,
+    next_agent_turn_start_state,
     resolve_agent_cleanup_start_state,
     resolve_agent_task_exception_decision,
+    should_clear_scheduled_run_before_send,
     should_continue_after_deferred_actions,
 )
 from invincat_cli.i18n import t
@@ -18,6 +26,69 @@ from invincat_cli.widgets.messages import AppMessage, ErrorMessage
 logger = logging.getLogger(__name__)
 
 SCHEDULED_TRANSIENT_RETRY_DELAY_SECONDS = 3.0
+
+
+async def send_to_agent(
+    app: Any,  # noqa: ANN401
+    message: str,
+    *,
+    message_kwargs: dict[str, Any] | None = None,
+    agent_override: Any | None = None,
+    thread_id_override: str | None = None,
+    post_turn_hook: Any | None = None,  # noqa: ANN401
+    on_text_delta: Any | None = None,  # noqa: ANN401
+    on_wecom_file_request: Any | None = None,  # noqa: ANN401
+) -> bool:
+    """Send a message to the agent and start execution."""
+    with suppress(NoMatches, ScreenStackError):
+        app.query_one("#chat", VerticalScroll).anchor()
+
+    if should_clear_scheduled_run_before_send(
+        processing_pending=app._processing_pending
+    ):
+        app._active_scheduled_run = None
+
+    target_agent = agent_override or app._agent
+    if not can_start_agent_turn(
+        target_agent=target_agent,
+        ui_adapter=app._ui_adapter,
+        session_state=app._session_state,
+    ):
+        app._finish_active_scheduled_run_as_failed("Agent not available")
+        await app._mount_message(AppMessage(t("agent.not_configured_session")))
+        return False
+
+    start_state = next_agent_turn_start_state(
+        current_generation=app._agent_generation,
+        agent_override=agent_override,
+        target_agent=target_agent,
+        planner_agent=app._planner_agent,
+        thread_id_override=thread_id_override,
+        planner_thread_id=app._planner_thread_id,
+    )
+    app._agent_generation = start_state.generation
+    app._agent_running = True
+    app._active_turn_is_planner = start_state.active_turn_is_planner
+
+    if app._chat_input:
+        app._chat_input.set_cursor_active(active=False)
+
+    app._agent_worker = app.run_worker(
+        app._run_agent_task(
+            AgentTurnRequest(
+                message=message,
+                message_kwargs=message_kwargs,
+                generation=start_state.generation,
+                agent_override=target_agent,
+                thread_id_override=thread_id_override,
+                post_turn_hook=post_turn_hook,
+                on_text_delta=on_text_delta,
+                on_wecom_file_request=on_wecom_file_request,
+            )
+        ),
+        exclusive=False,
+    )
+    return True
 
 
 async def handle_agent_task_exception(app: Any, exc: BaseException) -> bool:  # noqa: ANN401

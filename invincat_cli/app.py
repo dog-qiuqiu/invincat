@@ -51,7 +51,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from textual.app import App, ScreenStackError
+from textual.app import App
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.css.query import NoMatches
@@ -100,10 +100,7 @@ from invincat_cli.app_runtime.agent import (
     AgentThreadOverrideContext,
     AgentTurnRequest,
     build_agent_cli_context,
-    can_start_agent_turn,
-    next_agent_turn_start_state,
     resolve_wecom_file_request_handler,
-    should_clear_scheduled_run_before_send,
     should_route_message_to_planner,
 )
 from invincat_cli.app_runtime.services import AppServices
@@ -2384,64 +2381,18 @@ class DeepAgentsApp(App):
             on_text_delta: Optional callback for each real assistant text chunk.
             on_wecom_file_request: Optional callback for WeCom file-send requests.
         """
-        # Anchor to bottom so streaming response stays visible
-        with suppress(NoMatches, ScreenStackError):
-            self.query_one("#chat", VerticalScroll).anchor()
+        from invincat_cli.app_runtime.agent_handlers import send_to_agent
 
-        # If this is a direct user message (not dequeued from the scheduled
-        # queue), discard any stale scheduled-run context that may have been
-        # left from an interrupted scheduled turn.
-        if should_clear_scheduled_run_before_send(
-            processing_pending=self._processing_pending
-        ):
-            self._active_scheduled_run = None
-
-        # Check if agent is available
-        target_agent = agent_override or self._agent
-        if can_start_agent_turn(
-            target_agent=target_agent,
-            ui_adapter=self._ui_adapter,
-            session_state=self._session_state,
-        ):
-            start_state = next_agent_turn_start_state(
-                current_generation=self._agent_generation,
-                agent_override=agent_override,
-                target_agent=target_agent,
-                planner_agent=self._planner_agent,
-                thread_id_override=thread_id_override,
-                planner_thread_id=self._planner_thread_id,
-            )
-            self._agent_generation = start_state.generation
-            self._agent_running = True
-            self._active_turn_is_planner = start_state.active_turn_is_planner
-
-            if self._chat_input:
-                self._chat_input.set_cursor_active(active=False)
-
-            # Use run_worker to avoid blocking the main event loop
-            # This allows the UI to remain responsive during agent execution
-            self._agent_worker = self.run_worker(
-                self._run_agent_task(
-                    AgentTurnRequest(
-                        message=message,
-                        message_kwargs=message_kwargs,
-                        generation=start_state.generation,
-                        agent_override=target_agent,
-                        thread_id_override=thread_id_override,
-                        post_turn_hook=post_turn_hook,
-                        on_text_delta=on_text_delta,
-                        on_wecom_file_request=on_wecom_file_request,
-                    )
-                ),
-                exclusive=False,
-            )
-            return True
-        else:
-            self._finish_active_scheduled_run_as_failed("Agent not available")
-            await self._mount_message(
-                AppMessage(t("agent.not_configured_session"))
-            )
-            return False
+        return await send_to_agent(
+            self,
+            message,
+            message_kwargs=message_kwargs,
+            agent_override=agent_override,
+            thread_id_override=thread_id_override,
+            post_turn_hook=post_turn_hook,
+            on_text_delta=on_text_delta,
+            on_wecom_file_request=on_wecom_file_request,
+        )
 
     def _finish_active_scheduled_run_as_failed(self, error: str) -> None:
         """Finish the active scheduled run as failed, if one is active."""
