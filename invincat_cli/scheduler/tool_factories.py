@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 from langchain_core.tools import InjectedToolCallId, tool
 
@@ -22,9 +22,15 @@ from invincat_cli.scheduler.tool_validation import (
     validate_timezone_name,
 )
 
+if TYPE_CHECKING:
+    from invincat_cli.scheduler.store import SchedulerStore
+
 
 class ScheduleToolFactoryMixin:
     """Build scheduler management tools bound to ``self._store``."""
+
+    if TYPE_CHECKING:
+        _store: SchedulerStore
 
     def _make_create_tool(self):  # noqa: ANN202
         @tool

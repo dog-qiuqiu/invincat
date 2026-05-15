@@ -14,6 +14,8 @@ from invincat_cli.core.session_stats import SpinnerStatus
 from invincat_cli.i18n import t
 
 if TYPE_CHECKING:
+    from typing import Any
+
     from textual.app import ComposeResult
     from textual.scrollbar import ScrollTo, ScrollUp
     from textual.widget import Widget
@@ -26,6 +28,25 @@ logger = logging.getLogger(__name__)
 
 class AppRuntimeDelegateMixin:
     """Lifecycle, status, and message-flow delegators for ``DeepAgentsApp``."""
+
+    if TYPE_CHECKING:
+        _agent: Any
+        _auto_approve: bool
+        _context_tokens: int
+        _lc_thread_id: str | None
+        _status_bar: Any | None
+        _tokens_approximate: bool
+
+        def notify(
+            self,
+            message: object,
+            *,
+            severity: str = "information",
+            timeout: float | None = None,
+            markup: bool = True,
+        ) -> None: ...
+
+        def query_one(self, *args: object, **kwargs: object) -> Any: ...
 
     def _remote_agent(self) -> RemoteAgent | None:
         from invincat_cli.remote.client import RemoteAgent

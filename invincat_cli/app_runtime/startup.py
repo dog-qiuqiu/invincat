@@ -116,7 +116,7 @@ def build_startup_slash_commands(
 def create_startup_session_state(
     *,
     auto_approve: bool,
-    thread_id: str,
+    thread_id: str | None,
 ) -> TextualSessionState:
     """Create the initial Textual session state."""
     return TextualSessionState(auto_approve=auto_approve, thread_id=thread_id)

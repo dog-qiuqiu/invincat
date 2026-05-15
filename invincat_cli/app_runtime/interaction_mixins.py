@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from textual.screen import ModalScreen
 
@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from typing import Any
 
+    from textual.app import App
     from textual.events import Click, MouseUp, Paste
 
     from invincat_cli.app_runtime.model_runtime import ResolvedModelSpec
@@ -20,6 +21,16 @@ if TYPE_CHECKING:
 
 class AppInputEventMixin:
     """Prompt input, focus, paste, and mouse event hooks for the app."""
+
+    if TYPE_CHECKING:
+        _chat_input: Any | None
+        _pending_approval_widget: Any | None
+        _pending_ask_user_widget: Any | None
+        screen: Any
+
+        def _is_input_focused(self) -> bool: ...
+
+        def call_after_refresh(self, callback: object, *args: object) -> object: ...
 
     async def action_open_editor(self) -> None:
         """Open the current prompt text in an external editor ($VISUAL/$EDITOR)."""
@@ -66,7 +77,7 @@ class AppInputEventMixin:
         """Copy selection to clipboard on mouse release."""
         from invincat_cli.io.clipboard import copy_selection_to_clipboard
 
-        copy_selection_to_clipboard(self)
+        copy_selection_to_clipboard(cast("App[Any]", self))
 
 
 class AppSelectionMixin:

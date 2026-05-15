@@ -24,6 +24,15 @@ if TYPE_CHECKING:
 class AppApprovalPlanMixin:
     """Approval widgets, plan mode, ask_user, and prompt input routing."""
 
+    if TYPE_CHECKING:
+        _chat_input: ChatInput | None
+        _last_typed_at: float | None
+        _pending_approval_widget: Any | None
+        _status_bar: Any | None
+        focused: Any | None
+
+        def call_after_refresh(self, callback: object, *args: object) -> object: ...
+
     async def _request_approval(
         self,
         action_requests: Any,

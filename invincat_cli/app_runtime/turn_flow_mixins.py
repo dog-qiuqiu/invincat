@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from invincat_cli.app_runtime.terminal import restore_cursor_guide
 from invincat_cli.i18n import t
@@ -16,6 +16,8 @@ if TYPE_CHECKING:
 
     from invincat_cli.app_runtime.agent import AgentTurnRequest
     from invincat_cli.app_runtime.state import DeferredAction
+    from invincat_cli.scheduler.runner import SchedulerRunner
+    from invincat_cli.widgets.message_store import MessageStore
     from invincat_cli.widgets.messages import (
         AssistantMessage,
         SkillMessage,
@@ -25,6 +27,26 @@ if TYPE_CHECKING:
 
 class AppTurnFlowMixin:
     """Turn execution, memory/offload, queue, and message lifecycle hooks."""
+
+    if TYPE_CHECKING:
+        _active_turn_is_planner: bool
+        _agent_running: bool
+        _agent_worker: Worker[None] | None
+        _message_store: MessageStore
+        _quit_pending: bool
+        _scheduler_runner: SchedulerRunner | None
+        _shell_running: bool
+
+        def notify(
+            self,
+            message: object,
+            *,
+            severity: str = "information",
+            timeout: float | None = None,
+            markup: bool = True,
+        ) -> None: ...
+
+        def set_timer(self, delay: float, callback: object) -> object: ...
 
     async def _get_conversation_token_count(self) -> int | None:
         """Return the approximate conversation-only token count."""
@@ -275,4 +297,4 @@ class AppTurnFlowMixin:
             self,
             restore_cursor_guide=restore_cursor_guide,
         )
-        super().exit(result=result, return_code=return_code, message=message)
+        cast(Any, super()).exit(result=result, return_code=return_code, message=message)
