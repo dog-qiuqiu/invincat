@@ -8,19 +8,45 @@ import json
 import logging
 import os
 import re
-import shlex
 import sys
 import threading
 from dataclasses import dataclass
-from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlparse
 
+from invincat_cli import display_glyphs as _display_glyphs
+from invincat_cli import langsmith_links as _langsmith_links
+from invincat_cli import shell_security as _shell_security
 from invincat_cli.core.version import __version__
 
 logger = logging.getLogger(__name__)
+
+ASCII_GLYPHS = _display_glyphs.ASCII_GLYPHS
+UNICODE_GLYPHS = _display_glyphs.UNICODE_GLYPHS
+CharsetMode = _display_glyphs.CharsetMode
+Glyphs = _display_glyphs.Glyphs
+detect_charset_mode = _display_glyphs.detect_charset_mode
+newline_shortcut = _display_glyphs.newline_shortcut
+render_banner = _display_glyphs.render_banner
+
+DANGEROUS_SHELL_PATTERNS = _shell_security.DANGEROUS_SHELL_PATTERNS
+PATH_SCOPED_READ_COMMANDS = _shell_security.PATH_SCOPED_READ_COMMANDS
+RECOMMENDED_SAFE_SHELL_COMMANDS = _shell_security.RECOMMENDED_SAFE_SHELL_COMMANDS
+SHELL_ALLOW_ALL = _shell_security.SHELL_ALLOW_ALL
+SHELL_TOOL_NAMES = _shell_security.SHELL_TOOL_NAMES
+_ShellAllowAll = _shell_security._ShellAllowAll
+_path_arg_stays_within_cwd = _shell_security._path_arg_stays_within_cwd
+contains_dangerous_patterns = _shell_security.contains_dangerous_patterns
+is_shell_command_allowed = _shell_security.is_shell_command_allowed
+parse_shell_allow_list = _shell_security.parse_shell_allow_list
+
+_LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS = (
+    _langsmith_links.LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS
+)
+_fetch_langsmith_project_url = _langsmith_links.fetch_project_url
+_reset_langsmith_project_url_cache = _langsmith_links.reset_project_url_cache
 
 # ---------------------------------------------------------------------------
 # Lazy bootstrap: dotenv loading, LANGSMITH_PROJECT override, and start-path
@@ -268,119 +294,11 @@ PREFIX_TO_MODE: dict[str, str] = {v: k for k, v in MODE_PREFIXES.items()}
 """Reverse lookup: trigger character -> mode name."""
 
 
-class CharsetMode(StrEnum):
-    """Character set mode for TUI display."""
-
-    UNICODE = "unicode"
-    """Always use Unicode glyphs (e.g. `⏺`, `✓`, `…`)."""
-
-    ASCII = "ascii"
-    """Always use ASCII-safe fallbacks (e.g. `(*)`, `[OK]`, `...`)."""
-
-    AUTO = "auto"
-    """Detect charset support at runtime and pick Unicode or ASCII."""
-
-
-@dataclass(frozen=True)
-class Glyphs:
-    """Character glyphs for TUI display."""
-
-    tool_prefix: str  # ⏺ vs (*)
-    ellipsis: str  # … vs ...
-    checkmark: str  # ✓ vs [OK]
-    error: str  # ✗ vs [X]
-    circle_empty: str  # ○ vs [ ]
-    circle_filled: str  # ● vs [*]
-    output_prefix: str  # ⎿ vs L
-    spinner_frames: tuple[str, ...]  # Braille vs ASCII spinner
-    pause: str  # ⏸ vs ||
-    newline: str  # ⏎ vs \\n
-    warning: str  # ⚠ vs [!]
-    question: str  # ? vs [?]
-    arrow_up: str  # up arrow vs ^
-    arrow_down: str  # down arrow vs v
-    bullet: str  # bullet vs -
-    cursor: str  # cursor vs >
-
-    # Box-drawing characters
-    box_vertical: str  # │ vs |
-    box_horizontal: str  # ─ vs -
-    box_double_horizontal: str  # ═ vs =
-
-    # Diff-specific
-    gutter_bar: str  # ▌ vs |
-
-    # Status bar
-    git_branch: str  # "↗" vs "git:"
-
-
-UNICODE_GLYPHS = Glyphs(
-    tool_prefix="⏺",
-    ellipsis="…",
-    checkmark="✓",
-    error="✗",
-    circle_empty="○",
-    circle_filled="●",
-    output_prefix="⎿",
-    spinner_frames=("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"),
-    pause="⏸",
-    newline="⏎",
-    warning="⚠",
-    question="?",
-    arrow_up="↑",
-    arrow_down="↓",
-    bullet="•",
-    cursor="›",  # noqa: RUF001  # Intentional Unicode glyph
-    # Box-drawing characters
-    box_vertical="│",
-    box_horizontal="─",
-    box_double_horizontal="═",
-    gutter_bar="▌",
-    git_branch="↗",
-)
-"""Glyph set for terminals with full Unicode support."""
-
-ASCII_GLYPHS = Glyphs(
-    tool_prefix="(*)",
-    ellipsis="...",
-    checkmark="[OK]",
-    error="[X]",
-    circle_empty="[ ]",
-    circle_filled="[*]",
-    output_prefix="L",
-    spinner_frames=("(-)", "(\\)", "(|)", "(/)"),
-    pause="||",
-    newline="\\n",
-    warning="[!]",
-    question="[?]",
-    arrow_up="^",
-    arrow_down="v",
-    bullet="-",
-    cursor=">",
-    # Box-drawing characters
-    box_vertical="|",
-    box_horizontal="-",
-    box_double_horizontal="=",
-    gutter_bar="|",
-    git_branch="git:",
-)
-"""Glyph set for terminals limited to 7-bit ASCII."""
-
 _glyphs_cache: Glyphs | None = None
 """Module-level cache for detected glyphs."""
 
 _editable_cache: tuple[bool, str | None] | None = None
 """Module-level cache for editable install info: (is_editable, source_path)."""
-
-_langsmith_url_cache: tuple[str, str] | None = None
-"""Module-level cache for successful LangSmith project URL lookups."""
-
-_LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS = 2.0
-"""Max seconds to wait for LangSmith project URL lookup.
-
-Kept short so tracing metadata can never stall CLI flows.
-"""
-
 
 def _resolve_editable_info() -> tuple[bool, str | None]:
     """Parse PEP 610 `direct_url.json` once and cache both results.
@@ -446,20 +364,7 @@ def _detect_charset_mode() -> CharsetMode:
     Returns:
         The detected CharsetMode based on environment and terminal encoding.
     """
-    env_mode = os.environ.get("UI_CHARSET_MODE", "auto").lower()
-    if env_mode == "unicode":
-        return CharsetMode.UNICODE
-    if env_mode == "ascii":
-        return CharsetMode.ASCII
-
-    # Auto: check stdout encoding and LANG
-    encoding = getattr(sys.stdout, "encoding", "") or ""
-    if "utf" in encoding.lower():
-        return CharsetMode.UNICODE
-    lang = os.environ.get("LANG", "") or os.environ.get("LC_ALL", "")
-    if "utf" in lang.lower():
-        return CharsetMode.UNICODE
-    return CharsetMode.ASCII
+    return detect_charset_mode()
 
 
 def get_glyphs() -> Glyphs:
@@ -495,37 +400,6 @@ def is_ascii_mode() -> bool:
     return _detect_charset_mode() == CharsetMode.ASCII
 
 
-def newline_shortcut() -> str:
-    """Return the platform-native label for the newline keyboard shortcut.
-
-    Ctrl+J is the most reliable cross-terminal shortcut for inserting a newline,
-    as Shift+Enter/Alt+Enter are not supported by many terminals.
-
-    Returns:
-        A human-readable shortcut string, e.g. `'Ctrl+J'`.
-    """
-    return "Ctrl+J"
-
-
-_UNICODE_BANNER = f"""
-▒▓█▒░░▒▓█▒░▒▓█▒░▒▓█▒░▒▓█▒░▒▓█▒░▒▓█▒░▒▓█▒░▒▓█▒░▒▓█▒░▒▓█▒░▒░▒▓█▒░▒▓█▒░▒░▒▓█▒░▒▓█▒
-╔═════════════════════════════════════════════════════════════════════════════╗
-║                                                                             ║
-║   ██╗  ███╗  ██╗  ██╗   ██╗  ██╗  ███╗  ██╗   ██████╗   █████╗   ████████╗  ║
-║   ██║  ████╗ ██║  ██║   ██║  ██║  ████╗ ██║  ██╔════╝  ██╔══██╗  ╚══██╔══╝  ║
-║   ██║  ██╔██╗██║  ██║   ██║  ██║  ██╔██╗██║  ██║       ███████║     ██║     ║
-║   ██║  ██║╚████║  ██║   ██║  ██║  ██║╚████║  ██║       ██╔══██║     ██║     ║
-║   ██║  ██║ ╚███║  ╚██████╔╝  ██║  ██║ ╚███║  ╚██████╗  ██║  ██║     ██║     ║
-║   ╚═╝  ╚═╝  ╚══╝   ╚═════╝   ╚═╝  ╚═╝  ╚══╝   ╚═════╝  ╚═╝  ╚═╝     ╚═╝     ║
-║                                                                             ║  
-╚═════════════════════════════════════════════════════════════════════════════╝
-░▒▓█▒░▒▓█▒░▒▓█▒░▒▓█▒░▒▓█▒░▒▓█▒░▒▓█▒░▒▓█▒░▒▓█▒░▒▓█▒░▒▓█▒░▒░▒▓█▒░▒▓█▒░▒░▒▓█▒░▒▓█▒
-
-version: {__version__}
-"""
-_ASCII_BANNER = _UNICODE_BANNER
-
-
 def get_banner() -> str:
     """Get the appropriate banner for the current charset mode.
 
@@ -534,15 +408,7 @@ def get_banner() -> str:
 
             Includes "(local)" suffix when installed in editable mode.
     """
-    if _detect_charset_mode() == CharsetMode.ASCII:
-        banner = _ASCII_BANNER
-    else:
-        banner = _UNICODE_BANNER
-
-    if _is_editable_install():
-        banner = banner.replace(f"v{__version__}", f"v{__version__} (local)")
-
-    return banner
+    return render_banner(__version__, editable=_is_editable_install())
 
 
 MAX_ARG_LENGTH = 150
@@ -677,79 +543,6 @@ def build_stream_config(
         "configurable": {"thread_id": thread_id},
         "metadata": metadata,
     }
-
-
-class _ShellAllowAll(list):  # noqa: FURB189  # sentinel type, not a general-purpose list subclass
-    """Sentinel subclass for unrestricted shell access.
-
-    Using a dedicated type instead of a plain list lets consumers use
-    `isinstance` checks, which survive serialization/copy unlike identity
-    checks (`is`).
-    """
-
-
-SHELL_ALLOW_ALL: list[str] = _ShellAllowAll(["__ALL__"])
-"""Sentinel value returned by `parse_shell_allow_list` for `--shell-allow-list=all`."""
-
-
-def parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
-    """Parse shell allow-list from string.
-
-    Args:
-        allow_list_str: Comma-separated list of commands, `'recommended'` for
-            safe defaults, or `'all'` to allow any command.
-
-            `'all'` must be the sole value — it is not recognized inside a
-            comma-separated list (unlike `'recommended'`).
-
-            Can also include `'recommended'` in the list to merge with custom
-            commands.
-
-    Returns:
-        List of allowed commands, `SHELL_ALLOW_ALL` if `'all'` was specified,
-            or `None` if no allow-list configured.
-
-    Raises:
-        ValueError: If `'all'` is combined with other commands.
-    """
-    if not allow_list_str:
-        return None
-
-    # Special value 'all' allows any shell command
-    if allow_list_str.strip().lower() == "all":
-        return SHELL_ALLOW_ALL
-
-    # Special value 'recommended' uses our curated safe list
-    if allow_list_str.strip().lower() == "recommended":
-        return list(RECOMMENDED_SAFE_SHELL_COMMANDS)
-
-    # Split by comma and strip whitespace
-    commands = [cmd.strip() for cmd in allow_list_str.split(",") if cmd.strip()]
-
-    # Reject ambiguous input: 'all' mixed with other commands
-    if any(cmd.lower() == "all" for cmd in commands):
-        msg = (
-            "Cannot combine 'all' with other commands in --shell-allow-list. "
-            "Use '--shell-allow-list all' alone to allow any command."
-        )
-        raise ValueError(msg)
-
-    # If "recommended" is in the list, merge with recommended commands
-    result = []
-    for cmd in commands:
-        if cmd.lower() == "recommended":
-            result.extend(RECOMMENDED_SAFE_SHELL_COMMANDS)
-        else:
-            result.append(cmd)
-
-    # Remove duplicates while preserving order
-    seen: set[str] = set()
-    unique: list[str] = []
-    for cmd in result:
-        if cmd not in seen:
-            seen.add(cmd)
-            unique.append(cmd)
-    return unique
 
 
 def _read_config_toml_skills_dirs() -> list[str] | None:
@@ -1374,220 +1167,6 @@ class SessionState:
         return self.auto_approve
 
 
-SHELL_TOOL_NAMES: frozenset[str] = frozenset({"bash", "shell", "execute"})
-"""Tool names recognized as shell/command-execution tools.
-
-Only `'execute'` is registered by the SDK and CLI backends in practice.
-`'bash'` and `'shell'` are legacy names carried over and kept as
-backwards-compatible aliases.
-"""
-
-DANGEROUS_SHELL_PATTERNS = (
-    "$(",  # Command substitution
-    "`",  # Backtick command substitution
-    "$'",  # ANSI-C quoting (can encode dangerous chars via escape sequences)
-    "\n",  # Newline (command injection)
-    "\r",  # Carriage return (command injection)
-    "\t",  # Tab (can be used for injection in some shells)
-    "<(",  # Process substitution (input)
-    ">(",  # Process substitution (output)
-    "<<<",  # Here-string
-    "<<",  # Here-doc (can embed commands)
-    ">>",  # Append redirect
-    ">",  # Output redirect
-    "<",  # Input redirect
-    "${",  # Variable expansion with braces (can run commands via ${var:-$(cmd)})
-)
-"""Literal substrings that indicate shell injection risk.
-
-Used by `contains_dangerous_patterns` to reject commands that embed arbitrary
-execution via redirects, substitution operators, or control characters — even
-when the base command is on the allow-list.
-"""
-
-RECOMMENDED_SAFE_SHELL_COMMANDS = (
-    # Directory listing
-    "ls",
-    "dir",
-    # File content viewing (read-only)
-    "cat",
-    "head",
-    "tail",
-    # Text searching (read-only)
-    "grep",
-    "wc",
-    "strings",
-    # Text processing (read-only, no shell execution)
-    "cut",
-    "tr",
-    "diff",
-    "md5sum",
-    "sha256sum",
-    # Path utilities
-    "pwd",
-    "which",
-    # System info (read-only)
-    "uname",
-    "hostname",
-    "whoami",
-    "id",
-    "groups",
-    "uptime",
-    "nproc",
-    "lscpu",
-    "lsmem",
-    # Process viewing (read-only)
-    "ps",
-)
-"""Read-only commands auto-approved in non-interactive mode.
-
-Only includes readers and formatters — shells, editors, interpreters, package
-managers, network tools, archivers, and anything on GTFOBins/LOOBins is
-intentionally excluded. File-write and injection vectors are blocked separately
-by `DANGEROUS_SHELL_PATTERNS`.
-"""
-
-PATH_SCOPED_READ_COMMANDS = frozenset(
-    {
-        "cat",
-        "head",
-        "tail",
-        "grep",
-        "wc",
-        "strings",
-        "md5sum",
-        "sha256sum",
-    }
-)
-"""Allow-listed commands whose file path arguments must stay under cwd."""
-
-
-def contains_dangerous_patterns(command: str) -> bool:
-    """Check if a command contains dangerous shell patterns.
-
-    These patterns can be used to bypass allow-list validation by embedding
-    arbitrary commands within seemingly safe commands. The check includes
-    both literal substring patterns (redirects, substitution operators, etc.)
-    and regex patterns for bare variable expansion (`$VAR`) and the background
-    operator (`&`).
-
-    Args:
-        command: The shell command to check.
-
-    Returns:
-        True if dangerous patterns are found, False otherwise.
-    """
-    if any(pattern in command for pattern in DANGEROUS_SHELL_PATTERNS):
-        return True
-
-    # Bare variable expansion ($VAR without braces) can leak sensitive paths.
-    # We already block ${ and $( above; this catches plain $HOME, $IFS, etc.
-    if re.search(r"\$[A-Za-z_]", command):
-        return True
-
-    # Standalone & (background execution) changes the execution model and
-    # should not be allowed.  We check for & that is NOT part of &&.
-    return bool(re.search(r"(?<![&])&(?![&])", command))
-
-
-def _path_arg_stays_within_cwd(arg: str, cwd: Path) -> bool:
-    if arg == "-" or arg.startswith("-"):
-        return True
-    # Treat glob/pattern-only tokens as non-paths unless they explicitly refer to
-    # directories. Shell expansion happens later, so absolute, home, and parent
-    # traversal are rejected before the shell can expand them.
-    if arg.startswith(("~", "/")) or ".." in Path(arg).parts:
-        return False
-    try:
-        candidate = (cwd / arg).expanduser().resolve()
-        if "/" not in arg and not arg.startswith(".") and not candidate.exists():
-            return True
-        candidate.relative_to(cwd)
-    except (OSError, ValueError):
-        return False
-    return True
-
-
-def is_shell_command_allowed(
-    command: str,
-    allow_list: list[str] | None,
-    *,
-    cwd: str | Path | None = None,
-) -> bool:
-    """Check if a shell command is in the allow-list.
-
-    The allow-list matches against the first token of the command (the executable
-    name). This allows read-only commands like ls, cat, grep, etc. to be
-    auto-approved.
-
-    When `allow_list` is the `SHELL_ALLOW_ALL` sentinel, all non-empty commands
-    are approved unconditionally — dangerous pattern checks are skipped.
-
-    SECURITY: For regular allow-lists, this function rejects commands containing
-    dangerous shell patterns (command substitution, redirects, process
-    substitution, etc.) BEFORE parsing, to prevent injection attacks that could
-    bypass the allow-list.
-
-    Args:
-        command: The full shell command to check.
-        allow_list: List of allowed command names (e.g., `["ls", "cat", "grep"]`),
-            the `SHELL_ALLOW_ALL` sentinel to allow any command, or `None`.
-        cwd: Working directory used to constrain read-command path arguments.
-
-    Returns:
-        `True` if the command is allowed, `False` otherwise.
-    """
-    if not allow_list or not command or not command.strip():
-        return False
-
-    # SHELL_ALLOW_ALL sentinel — skip pattern and token checks
-    if isinstance(allow_list, _ShellAllowAll):
-        return True
-
-    # SECURITY: Check for dangerous patterns BEFORE any parsing
-    # This prevents injection attacks like: ls "$(rm -rf /)"
-    if contains_dangerous_patterns(command):
-        return False
-
-    allow_set = set(allow_list)
-
-    # Extract the first command token
-    # Handle pipes and other shell operators by checking each command in the pipeline
-    # Split by compound operators first (&&, ||), then single-char operators (|, ;).
-    # Note: standalone & (background) is blocked by contains_dangerous_patterns above.
-    segments = re.split(r"&&|\|\||[|;]", command)
-
-    # Track if we found at least one valid command
-    found_command = False
-
-    for raw_segment in segments:
-        segment = raw_segment.strip()
-        if not segment:
-            continue
-
-        try:
-            # Try to parse as shell command to extract the executable name
-            tokens = shlex.split(segment)
-            if tokens:
-                found_command = True
-                cmd_name = tokens[0]
-                # Check if this command is in the allow set
-                if cmd_name not in allow_set:
-                    return False
-                if Path(cmd_name).name in PATH_SCOPED_READ_COMMANDS:
-                    root = Path(cwd).expanduser().resolve() if cwd else Path.cwd()
-                    if not all(
-                        _path_arg_stays_within_cwd(arg, root) for arg in tokens[1:]
-                    ):
-                        return False
-        except ValueError:
-            # If we can't parse it, be conservative and require approval
-            return False
-
-    # All segments are allowed (and we found at least one command)
-    return found_command
-
-
 def get_langsmith_project_name() -> str | None:
     """Resolve the LangSmith project name if tracing is configured.
 
@@ -1639,71 +1218,11 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
     Returns:
         Project URL string if found, None otherwise.
     """
-    global _langsmith_url_cache  # noqa: PLW0603  # Module-level cache requires global statement
-
-    if _langsmith_url_cache is not None:
-        cached_name, cached_url = _langsmith_url_cache
-        if cached_name == project_name:
-            return cached_url
-        # Different project name — fall through to fetch.
-
-    try:
-        from langsmith import Client
-    except ImportError:
-        logger.debug(
-            "Could not fetch LangSmith project URL for '%s'",
-            project_name,
-            exc_info=True,
-        )
-        return None
-
-    result: str | None = None
-    lookup_error: Exception | None = None
-    done = threading.Event()
-
-    def _lookup_url() -> None:
-        nonlocal result, lookup_error
-        try:
-            from invincat_cli.model_config import resolve_env_var
-
-            # Explicit api_key because Client() reads os.environ directly
-            # and doesn't know about the DEEPAGENTS_CLI_ prefix.
-            api_key = resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var(
-                "LANGCHAIN_API_KEY"
-            )
-            project = Client(api_key=api_key).read_project(project_name=project_name)
-            result = project.url or None
-        except Exception as exc:  # noqa: BLE001  # LangSmith SDK error types are not stable
-            lookup_error = exc
-        finally:
-            done.set()
-
-    thread = threading.Thread(target=_lookup_url, daemon=True)
-    thread.start()
-
-    if not done.wait(_LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS):
-        logger.debug(
-            "Timed out fetching LangSmith project URL for '%s' after %.1fs",
-            project_name,
-            _LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS,
-        )
-        return None
-
-    if lookup_error is not None:
-        logger.debug(
-            "Could not fetch LangSmith project URL for '%s'",
-            project_name,
-            exc_info=(
-                type(lookup_error),
-                lookup_error,
-                lookup_error.__traceback__,
-            ),
-        )
-        return None
-
-    if result is not None:
-        _langsmith_url_cache = (project_name, result)
-    return result
+    return _fetch_langsmith_project_url(
+        project_name,
+        threading_module=threading,
+        timeout_seconds=_LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS,
+    )
 
 
 def build_langsmith_thread_url(thread_id: str) -> str | None:
@@ -1732,8 +1251,7 @@ def build_langsmith_thread_url(thread_id: str) -> str | None:
 
 def reset_langsmith_url_cache() -> None:
     """Reset the LangSmith URL cache (for testing)."""
-    global _langsmith_url_cache  # noqa: PLW0603  # Module-level cache requires global statement
-    _langsmith_url_cache = None
+    _reset_langsmith_project_url_cache()
 
 
 def detect_provider(model_name: str) -> str | None:

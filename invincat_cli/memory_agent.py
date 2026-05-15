@@ -36,6 +36,7 @@ from langchain.agents.middleware.types import (
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.config import get_config
 
+from invincat_cli import memory_signals as _memory_signals
 from invincat_cli.core.debug import configure_debug_logging
 
 logger = logging.getLogger(__name__)
@@ -54,36 +55,14 @@ MAX_HOT_ITEMS_PER_SCOPE = 8
 MAX_WARM_ITEMS_PER_SCOPE = 6
 MAX_ARCHIVED_ITEMS_PER_SCOPE = 50
 
-_MEMORY_SIGNAL_RE = re.compile(
-    r"\b("
-    r"always|never|prefer|preference|style|convention|rule|guideline|"
-    r"remember|remember this|best practice|pattern|decision|constraint|"
-    r"architecture|workflow|tooling|framework|stack|pipeline|structure|"
-    r"we use|we always|our convention|by convention|standard|policy"
-    r")\b|"
-    r"(记住|偏好|规范|约定|规则|风格|最佳实践|约束|决策|"
-    r"架构|工作流|工具链|框架|技术栈|我们用|统一用|约定好的|标准做法)",
-    re.IGNORECASE,
-)
-
-_EXPLICIT_MEMORY_REQUEST_RE = re.compile(
-    r"\b("
-    r"remember this|save this|save it|add to memory|store this|"
-    r"please remember|record this|memorize"
-    r")\b|"
-    r"(请记住|记一下|存一下|写入记忆|保存到记忆|记到记忆|记住这条)",
-    re.IGNORECASE,
-)
-
-_TRIVIAL_RE = re.compile(
-    r"^\s*("
-    r"ok|okay|thanks|thank you|got it|sure|yes|no|confirmed|done|"
-    r"continue|go ahead|proceed|sounds good|great|perfect|nice|"
-    r"好的|谢谢|明白|知道了|好|嗯|是的|对|继续|好的好的|没问题|可以|"
-    r"收到|了解|行|嗯嗯|好的收到"
-    r")\s*[.!?。！？]?\s*$",
-    re.IGNORECASE,
-)
+_MEMORY_SIGNAL_RE = _memory_signals.MEMORY_SIGNAL_RE
+_env_int = _memory_signals.env_int
+_env_float = _memory_signals.env_float
+_is_trivial_turn = _memory_signals.is_trivial_turn
+_last_human_text = _memory_signals.last_human_text
+_is_explicit_memory_request = _memory_signals.is_explicit_memory_request
+_detect_target_language = _memory_signals.detect_target_language
+_is_task_complete = _memory_signals.is_task_complete
 
 
 _ITEM_ID_PATTERNS: dict[str, re.Pattern[str]] = {
@@ -249,88 +228,6 @@ turn_policy:
     Project facts are hard to re-derive each session; worth capturing proactively.
     Still avoid near-duplicates and transient runtime details.
 """
-
-
-def _env_int(name: str, default: int, minimum: int = 0) -> int:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        return max(minimum, int(raw))
-    except ValueError:
-        return default
-
-
-def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        return max(minimum, float(raw))
-    except ValueError:
-        return default
-
-
-def _is_trivial_turn(messages: list[Any]) -> bool:
-    """Return True when the last user message carries no extractable information."""
-    text = _last_human_text(messages)
-    if not text:
-        return True
-    # Short user messages can still be memory-worthy (especially in Chinese).
-    if _MEMORY_SIGNAL_RE.search(text):
-        return False
-    return bool(_TRIVIAL_RE.match(text))
-
-
-def _last_human_text(messages: list[Any]) -> str:
-    for msg in reversed(messages):
-        if getattr(msg, "type", "") != "human":
-            continue
-        content = getattr(msg, "content", "")
-        if isinstance(content, list):
-            parts = [
-                p.get("text", "") if isinstance(p, dict) else str(p) for p in content
-            ]
-            return " ".join(filter(None, parts)).strip()
-        return str(content).strip()
-    return ""
-
-
-def _is_explicit_memory_request(text: str) -> bool:
-    return bool(_EXPLICIT_MEMORY_REQUEST_RE.search(text or ""))
-
-
-def _detect_target_language(text: str) -> str:
-    """Return a coarse language label for memory-field generation."""
-    if not text:
-        return "the language of the last human message"
-    cjk_chars = len(re.findall(r"[\u4e00-\u9fff]", text))
-    latin_words = len(re.findall(r"[A-Za-z]{2,}", text))
-    if cjk_chars >= 2 and cjk_chars >= latin_words:
-        return "Chinese"
-    if latin_words > 0:
-        return "English"
-    return "the language of the last human message"
-
-
-def _is_task_complete(messages: list[Any]) -> bool:
-    """Return True when all tool calls have completed and AI has given final response."""
-    if not messages:
-        return False
-
-    last_msg = messages[-1]
-    msg_type = getattr(last_msg, "type", "")
-
-    if msg_type == "tool":
-        return False
-
-    if msg_type == "ai":
-        tool_calls = getattr(last_msg, "tool_calls", None)
-        if tool_calls:
-            return False
-        return True
-
-    return False
 
 
 def _iso_now() -> str:
