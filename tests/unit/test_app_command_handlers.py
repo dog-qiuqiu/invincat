@@ -56,8 +56,13 @@ class CommandApp:
     async def _handle_offload(self) -> None:
         self.actions.append(("offload", None))
 
-    async def _handle_plan_task(self) -> None:
-        self.actions.append(("plan", None))
+    async def _handle_plan_task(
+        self,
+        task: str | None = None,
+        *,
+        command: str = "/plan",
+    ) -> None:
+        self.actions.append(("plan", (task, command)))
 
     async def _exit_plan_mode(self) -> None:
         self.actions.append(("exit_plan", None))
@@ -179,6 +184,16 @@ def test_handle_tokens_command_skips_conversation_count_when_context_empty(
     asyncio.run(command_handlers.handle_tokens_command(app, "/tokens"))
 
     assert message_contents(app)[-1] == "tokens=None"
+
+
+def test_handle_plan_command_forwards_inline_task() -> None:
+    app = CommandApp()
+
+    asyncio.run(
+        command_handlers.handle_app_command(app, "/plan Refactor scheduler")
+    )
+
+    assert ("plan", ("Refactor scheduler", "/plan Refactor scheduler")) in app.actions
 
 
 def test_handle_url_command_mounts_now_or_defers(monkeypatch) -> None:
@@ -446,7 +461,7 @@ def test_handle_app_command_dispatches_routes(monkeypatch) -> None:
     assert app.exited is True
     assert ("editor", None) in app.actions
     assert ("offload", None) in app.actions
-    assert ("plan", None) in app.actions
+    assert ("plan", (None, "/plan")) in app.actions
     assert ("exit_plan", None) in app.actions
     assert ("threads", None) in app.actions
     assert ("update", None) in app.actions

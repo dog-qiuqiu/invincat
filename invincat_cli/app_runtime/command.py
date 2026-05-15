@@ -42,6 +42,7 @@ class CommandRoute:
     normalized: str
     wecom_action: str | None = None
     rewritten_command: str | None = None
+    plan_task: str | None = None
 
 
 _EXACT_COMMAND_ROUTES: dict[str, CommandRouteKind] = {
@@ -91,6 +92,12 @@ def route_slash_command(command: str) -> CommandRoute:
 
     if kind := _EXACT_COMMAND_ROUTES.get(cmd):
         return CommandRoute(kind=kind, normalized=cmd)
+    if cmd.startswith("/plan "):
+        return CommandRoute(
+            kind="plan",
+            normalized="/plan",
+            plan_task=command.strip()[len("/plan") :].strip(),
+        )
     if cmd == "/skill-creator" or cmd.startswith("/skill-creator "):
         return CommandRoute(
             kind="skill_creator",

@@ -172,11 +172,21 @@ Use planner mode when you want to discuss and approve a plan before execution:
 /plan
 ```
 
-Then describe your task in chat. The planner agent will:
+Then describe your task in chat. You can also start with an inline task:
+
+```bash
+/plan refactor the scheduler
+```
+
+The planner agent will:
 
 - analyze requirements with read-only tools
 - write a todo list (`write_todos`)
 - ask for explicit approval (`approve_plan`)
+
+It must not edit files, run commands, write code, or complete the requested
+deliverable itself. A planner response that does not produce an approval
+checklist is treated as planner drift and must be regenerated.
 
 After approval, planner mode exits and keeps the approved checklist visible.
 The approved checklist is then handed to the main agent for execution.

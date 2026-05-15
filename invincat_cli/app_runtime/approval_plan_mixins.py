@@ -114,11 +114,19 @@ class AppApprovalPlanMixin:
 
         enable_auto_approve(self)
 
-    async def _handle_plan_task(self) -> None:
+    async def _handle_plan_task(
+        self,
+        task: str | None = None,
+        *,
+        command: str = "/plan",
+    ) -> None:
         """Handle `/plan` mode entry."""
         from invincat_cli.app_runtime.plan_handlers import handle_plan_task
 
-        await handle_plan_task(self)
+        if task is None and command == "/plan":
+            await handle_plan_task(self)
+            return
+        await handle_plan_task(self, task, command=command)
 
     def _reset_plan_mode_state(self) -> None:
         """Restore main-thread state and clear planner bookkeeping."""

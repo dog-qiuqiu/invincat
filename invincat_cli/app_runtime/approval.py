@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 from invincat_cli.middleware.plan_agent import PLANNER_ALLOWED_TOOLS
+from invincat_cli.plan_mode.policy import (
+    normalize_plan_todos as _normalize_plan_todos,
+)
+from invincat_cli.plan_mode.policy import (
+    plan_todos_fingerprint as _plan_todos_fingerprint,
+)
 
 PLAN_MODE_ALLOWED_INTERRUPT_TOOLS: frozenset[str] = frozenset(PLANNER_ALLOWED_TOOLS)
 """Interrupt-gated tools allowed to proceed in `/plan` mode."""
@@ -165,19 +170,12 @@ def build_approve_plan_action_request(todos: list[dict[str, Any]]) -> dict[str, 
 
 def normalize_plan_todos(todos: list[dict[str, Any]]) -> list[dict[str, str]]:
     """Normalize todo items before fingerprinting or display handoff."""
-    return [
-        {
-            "content": str(item.get("content", "")).strip(),
-            "status": str(item.get("status", "pending")).strip() or "pending",
-        }
-        for item in todos
-        if isinstance(item, dict) and str(item.get("content", "")).strip()
-    ]
+    return _normalize_plan_todos(todos)
 
 
 def plan_todos_fingerprint(todos: list[dict[str, Any]]) -> str:
     """Return a stable fingerprint for plan approval dedupe."""
-    return json.dumps(normalize_plan_todos(todos), ensure_ascii=False, sort_keys=True)
+    return _plan_todos_fingerprint(todos)
 
 
 def map_raw_approval_to_plan_decision(raw: Mapping[str, Any]) -> dict[str, str]:

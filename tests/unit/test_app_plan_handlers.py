@@ -59,6 +59,9 @@ class PlanApp:
         self._mcp_server_info = None
         self._planner_last_todos_fingerprint: str | None = None
         self._planner_prompted_todos_fingerprint: str | None = None
+        self._planner_original_task: str | None = None
+        self._planner_refinement_notes: list[str] = []
+        self._planner_rejected_todos: list[dict[str, str]] = []
         self._main_thread_before_plan: str | None = None
         self._pending_plan_handoff_prompt: str | None = None
         self._agent_running = False
@@ -154,6 +157,9 @@ def test_handle_plan_task_enters_plan_mode_and_rejects_duplicate(
     assert app._main_thread_before_plan == "main-thread"
     assert app._session_state is not None
     assert app._session_state.plan_mode is True
+    assert app._planner_original_task is None
+    assert app._planner_refinement_notes == []
+    assert app._planner_rejected_todos == []
     assert app._status_bar is not None
     assert app._status_bar.plan_mode_states == [True]
     assert isinstance(app.messages[-2], UserMessage)
@@ -173,6 +179,9 @@ def test_reset_plan_mode_state_restores_main_thread_and_clears_state() -> None:
     app._session_state.plan_mode = True
     app._main_thread_before_plan = "main-before"
     app._pending_plan_handoff_prompt = "handoff"
+    app._planner_original_task = "task"
+    app._planner_refinement_notes = ["feedback"]
+    app._planner_rejected_todos = [todo("Rejected")]
 
     plan_handlers.reset_plan_mode_state(app)
 
@@ -181,6 +190,9 @@ def test_reset_plan_mode_state_restores_main_thread_and_clears_state() -> None:
     assert app._planner_thread_id is None
     assert app._main_thread_before_plan is None
     assert app._pending_plan_handoff_prompt is None
+    assert app._planner_original_task is None
+    assert app._planner_refinement_notes == []
+    assert app._planner_rejected_todos == []
     assert app._status_bar is not None
     assert app._status_bar.plan_mode_states == [False]
 
@@ -274,6 +286,24 @@ def test_run_planner_reports_unavailable_paths_and_sends_to_planner(
     assert kwargs["agent_override"] is app._planner_agent
     assert kwargs["thread_id_override"] == "new"
     assert kwargs["post_turn_hook"] == app._after_planner_turn
+
+
+def test_run_planner_includes_rejection_feedback_on_refinement() -> None:
+    app = PlanApp()
+    app._planner_original_task = "build feature"
+    app._planner_refinement_notes = ["keep API stable"]
+    app._planner_rejected_todos = [todo("Old plan")]
+
+    assert asyncio.run(plan_handlers.run_planner(app, "add tests")) is True
+
+    prompt, _kwargs = app.sent[0]
+    assert "Original task:" in prompt
+    assert "build feature" in prompt
+    assert "Previous rejected plan:" in prompt
+    assert "Old plan" in prompt
+    assert "User refinement feedback" in prompt
+    assert "keep API stable" in prompt
+    assert "add tests" in prompt
 
 
 def test_exit_plan_mode_handles_not_on_and_cancels_running_planner() -> None:
@@ -374,7 +404,7 @@ def test_after_planner_turn_reports_prose_only_planner_output() -> None:
     assert app.processed == []
 
 
-def test_after_planner_turn_processes_todos_and_finalizes_approved_tool() -> None:
+def test_after_planner_turn_requires_approve_plan_after_write_todos() -> None:
     app = PlanApp()
     app.state_values = {
         "messages": write_todos_messages(),
@@ -383,7 +413,8 @@ def test_after_planner_turn_processes_todos_and_finalizes_approved_tool() -> Non
 
     asyncio.run(plan_handlers.after_planner_turn(app))
 
-    assert app.processed == [[todo("Implement")]]
+    assert app.processed == []
+    assert any("write_todos" in content for content in message_contents(app))
 
     app = PlanApp()
     app.state_values = {
@@ -398,6 +429,8 @@ def test_after_planner_turn_processes_todos_and_finalizes_approved_tool() -> Non
 
     assert app.processed == []
 
+
+def test_after_planner_turn_finalizes_approved_tool() -> None:
     app = PlanApp()
     app.state_values = {
         "messages": [
@@ -410,7 +443,6 @@ def test_after_planner_turn_processes_todos_and_finalizes_approved_tool() -> Non
     asyncio.run(plan_handlers.after_planner_turn(app))
 
     assert app.finalized == [([todo("Ship")], app.state_values)]
-
 
 def test_after_planner_turn_falls_back_to_ai_text_todos_for_approval() -> None:
     app = PlanApp()
@@ -448,12 +480,14 @@ def test_after_planner_turn_mounts_refine_prompt_for_rejected_approve_plan() -> 
         "messages": [
             HumanMessage(content="plan this"),
             ToolMessage("rejected", tool_call_id="approve-1", name="approve_plan"),
-        ]
+        ],
+        "todos": [todo("Rejected")],
     }
 
     asyncio.run(plan_handlers.after_planner_turn(app))
 
     assert isinstance(app.messages[-1], AppMessage)
+    assert app._planner_rejected_todos == [todo("Rejected")]
 
     app = PlanApp()
     app.state_values = {
@@ -532,11 +566,13 @@ def test_finalize_planner_approval_builds_handoff_and_handles_state_fetch_failur
 ):
     app = PlanApp()
     app.state_values = {"messages": [HumanMessage(content="original request")]}
+    app._planner_refinement_notes = ["keep scope small"]
 
     asyncio.run(plan_handlers.finalize_planner_approval(app, [todo("Do")]))
 
     assert app._pending_plan_handoff_prompt is not None
     assert "Do" in app._pending_plan_handoff_prompt
+    assert "keep scope small" in app._pending_plan_handoff_prompt
     assert app.reset_called == 1
     assert isinstance(app.messages[-1], AppMessage)
 

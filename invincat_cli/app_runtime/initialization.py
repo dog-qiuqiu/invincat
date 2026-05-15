@@ -143,6 +143,9 @@ def _initialize_runtime_state(app: Any) -> None:  # noqa: ANN401
     app._main_thread_before_plan = None
     app._planner_last_todos_fingerprint = None
     app._planner_prompted_todos_fingerprint = None
+    app._planner_original_task = None
+    app._planner_refinement_notes = []
+    app._planner_rejected_todos = []
 
     app._context_tokens = 0
     app._tokens_approximate = False

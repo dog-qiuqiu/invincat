@@ -69,7 +69,7 @@ async def handle_app_command(app: Any, command: str) -> None:  # noqa: ANN401
         await app._mount_message(UserMessage(command))
         await app._handle_offload()
     elif route.kind == "plan":
-        await app._handle_plan_task()
+        await app._handle_plan_task(route.plan_task, command=command)
     elif route.kind == "exit_plan":
         await app._exit_plan_mode()
     elif route.kind == "threads":

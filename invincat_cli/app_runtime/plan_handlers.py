@@ -6,27 +6,32 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from invincat_cli.app_runtime.approval import plan_todos_fingerprint
 from invincat_cli.app_runtime.plan import (
     build_plan_handoff_prompt,
     build_plan_text,
     build_planner_system_prompt,
     build_planner_turn_input,
-    extract_latest_ai_text,
-    extract_todos_from_state,
-    latest_ai_text_after_latest_tool,
     normalize_state_messages,
-    planner_turn_approve_plan_decision,
-    planner_turn_has_write_todos,
 )
 from invincat_cli.i18n import t
+from invincat_cli.plan_mode.policy import (
+    extract_todos_from_state,
+    plan_todos_fingerprint,
+    turn_has_tool,
+)
+from invincat_cli.plan_mode.runtime import resolve_planner_turn
 from invincat_cli.widgets.messages import AppMessage, UserMessage
 
 logger = logging.getLogger(__name__)
 
 
-async def handle_plan_task(app: Any) -> None:  # noqa: ANN401
-    """Enter plan mode and wait for the user's planning task."""
+async def handle_plan_task(
+    app: Any,  # noqa: ANN401
+    task: str | None = None,
+    *,
+    command: str = "/plan",
+) -> None:
+    """Enter plan mode and optionally start planning an inline task."""
     from invincat_cli.app_runtime.state import new_thread_id
 
     if app._session_state and app._session_state.plan_mode:
@@ -35,13 +40,21 @@ async def handle_plan_task(app: Any) -> None:  # noqa: ANN401
     app._planner_thread_id = new_thread_id()
     app._planner_last_todos_fingerprint = None
     app._planner_prompted_todos_fingerprint = None
+    app._planner_original_task = None
+    app._planner_refinement_notes = []
+    app._planner_rejected_todos = []
     if app._session_state:
         app._main_thread_before_plan = app._session_state.thread_id
         app._session_state.plan_mode = True
     if app._status_bar:
         app._status_bar.set_plan_mode(enabled=True)
-    await app._mount_message(UserMessage("/plan"))
+    await app._mount_message(UserMessage(command))
     await app._mount_message(AppMessage(t("plan.entered")))
+    normalized_task = (task or "").strip()
+    if normalized_task:
+        planner_started = await app._run_planner(normalized_task)
+        if not planner_started:
+            app._reset_plan_mode_state()
 
 
 def reset_plan_mode_state(app: Any) -> None:  # noqa: ANN401
@@ -57,6 +70,9 @@ def reset_plan_mode_state(app: Any) -> None:  # noqa: ANN401
     app._planner_last_todos_fingerprint = None
     app._planner_prompted_todos_fingerprint = None
     app._pending_plan_handoff_prompt = None
+    app._planner_original_task = None
+    app._planner_refinement_notes = []
+    app._planner_rejected_todos = []
 
 
 async def ensure_planner_agent(app: Any) -> Any | None:  # noqa: ANN401
@@ -127,6 +143,8 @@ async def ensure_planner_agent(app: Any) -> Any | None:  # noqa: ANN401
 
 async def run_planner(app: Any, task: str) -> bool:  # noqa: ANN401
     """Send a user message to the planner agent session."""
+    from invincat_cli.middleware.plan_agent import build_planner_input
+
     if not app._agent or not app._session_state:
         await app._mount_message(AppMessage(t("plan.agent_not_configured")))
         return False
@@ -143,9 +161,23 @@ async def run_planner(app: Any, task: str) -> bool:  # noqa: ANN401
 
     app._planner_last_todos_fingerprint = None
     app._planner_prompted_todos_fingerprint = None
+    if not getattr(app, "_planner_original_task", None):
+        app._planner_original_task = task.strip()
+        app._planner_refinement_notes = []
+    else:
+        notes = list(getattr(app, "_planner_refinement_notes", []))
+        if task.strip():
+            notes.append(task.strip())
+        app._planner_refinement_notes = notes
+
+    planner_task = build_planner_input(
+        getattr(app, "_planner_original_task", task),
+        getattr(app, "_planner_refinement_notes", []),
+        rejected_plan=getattr(app, "_planner_rejected_todos", []),
+    )
 
     return await app._send_to_agent(
-        build_planner_turn_input(task=task, cwd=app._cwd),
+        build_planner_turn_input(task=planner_task, cwd=app._cwd),
         agent_override=planner,
         thread_id_override=app._planner_thread_id,
         post_turn_hook=app._after_planner_turn,
@@ -191,8 +223,6 @@ async def get_thread_state_values_for_agent(
 
 async def after_planner_turn(app: Any) -> None:  # noqa: ANN401
     """Check planner turn result and drive plan approval flow."""
-    from invincat_cli.middleware.plan_agent import extract_todos_from_message
-
     if not app._planner_agent or not app._planner_thread_id:
         return
 
@@ -203,48 +233,38 @@ async def after_planner_turn(app: Any) -> None:  # noqa: ANN401
         return
 
     messages = normalize_state_messages(state_values.get("messages", []))
-    approve_plan_decision = planner_turn_approve_plan_decision(messages)
-    if approve_plan_decision is not None:
-        if approve_plan_decision != "approved":
-            if not latest_ai_text_after_latest_tool(messages, "approve_plan"):
-                await app._mount_message(AppMessage(t("plan.refine_prompt")))
-            return
+    resolution = resolve_planner_turn(
+        state_values,
+        messages=messages,
+        prompted_todos_fingerprint=app._planner_prompted_todos_fingerprint,
+    )
 
-        todos = extract_todos_from_state(state_values)
-        if not todos:
-            latest_text = extract_latest_ai_text(messages)
-            todos = extract_todos_from_message(latest_text) or []
-        if not todos:
-            await app._mount_message(AppMessage(t("plan.approval_no_valid_todos")))
-            return
+    if resolution.kind == "noop":
+        return
+    if resolution.kind == "rejected":
+        app._planner_rejected_todos = extract_todos_from_state(state_values)
+        if not resolution.suppress_refine_prompt:
+            await app._mount_message(AppMessage(t("plan.refine_prompt")))
+        return
+    if resolution.kind == "approved":
         await app._finalize_planner_approval(
-            todos,
+            resolution.todos or [],
             planner_state_values=state_values,
         )
         return
-
-    if not planner_turn_has_write_todos(messages):
-        if (
-            app._session_state
-            and app._session_state.plan_mode
-            and extract_latest_ai_text(messages)
-        ):
-            await app._mount_message(AppMessage(t("plan.missing_checklist")))
+    if resolution.kind == "drifted":
+        await app._mount_message(AppMessage(t("plan.missing_checklist")))
         return
-
-    todos = extract_todos_from_state(state_values)
-    if not todos:
-        latest_text = extract_latest_ai_text(messages)
-        todos = extract_todos_from_message(latest_text) or []
-    if not todos:
+    if resolution.kind == "approval_no_valid_todos":
+        await app._mount_message(AppMessage(t("plan.approval_no_valid_todos")))
+        return
+    if resolution.kind == "ready_no_valid_todos":
         await app._mount_message(AppMessage(t("plan.ready_no_valid_todos")))
         return
-
-    todos_fingerprint = plan_todos_fingerprint(todos)
-    if todos_fingerprint == app._planner_prompted_todos_fingerprint:
+    if resolution.kind == "already_prompted":
         return
-
-    await app._process_planner_todos_approval(todos)
+    if resolution.kind == "prompt_todos":
+        await app._process_planner_todos_approval(resolution.todos or [])
 
 
 async def process_planner_todos_approval(
@@ -269,7 +289,7 @@ async def process_planner_todos_approval(
 
 async def maybe_approve_current_planner_todos(app: Any) -> bool:  # noqa: ANN401
     """Best-effort immediate approval when planner already has todo state."""
-    from invincat_cli.middleware.plan_agent import extract_todos_from_message
+    from invincat_cli.plan_mode.policy import extract_todos_from_message, latest_ai_text
 
     if not app._planner_agent or not app._planner_thread_id:
         return False
@@ -277,12 +297,11 @@ async def maybe_approve_current_planner_todos(app: Any) -> bool:  # noqa: ANN401
         app._planner_agent, app._planner_thread_id
     )
     messages = normalize_state_messages(state_values.get("messages", []))
-    if not planner_turn_has_write_todos(messages):
+    if not turn_has_tool(messages, "write_todos"):
         return False
     todos = extract_todos_from_state(state_values)
     if not todos:
-        latest_text = extract_latest_ai_text(messages)
-        todos = extract_todos_from_message(latest_text) or []
+        todos = extract_todos_from_message(latest_ai_text(messages)) or []
     if not todos:
         return False
     return await app._process_planner_todos_approval(todos)
@@ -313,6 +332,7 @@ async def finalize_planner_approval(
     handoff_prompt = build_plan_handoff_prompt(
         todos,
         planner_state_values=effective_state,
+        refinement_notes=getattr(app, "_planner_refinement_notes", []),
     )
     app._reset_plan_mode_state()
     app._pending_plan_handoff_prompt = handoff_prompt

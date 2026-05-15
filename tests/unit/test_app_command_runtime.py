@@ -26,6 +26,10 @@ def test_route_simple_commands() -> None:
 
 
 def test_route_prefix_commands() -> None:
+    route = route_slash_command("/plan Refactor scheduler")
+    assert route.kind == "plan"
+    assert route.normalized == "/plan"
+    assert route.plan_task == "Refactor scheduler"
     assert route_slash_command("/schedule list").kind == "schedule"
     assert route_slash_command("/model memory").kind == "model"
     assert route_slash_command("/skill:demo run").kind == "skill"

@@ -68,6 +68,7 @@ def test_after_planner_turn_ignores_stale_todos_without_write_todos() -> None:
     app._planner_agent = object()
     app._planner_thread_id = "planner-thread"
     approvals: list[list[dict[str, str]]] = []
+    mounted: list[str] = []
 
     async def _fake_get_state(_agent, _thread_id):  # noqa: ANN001
         return {
@@ -84,10 +85,12 @@ def test_after_planner_turn_ignores_stale_todos_without_write_todos() -> None:
 
     app._get_thread_state_values_for_agent = _fake_get_state  # type: ignore[method-assign]
     app._process_planner_todos_approval = _fake_process_todos  # type: ignore[method-assign]
+    app._mount_message = lambda widget: mounted.append(str(getattr(widget, "_content", ""))) or asyncio.sleep(0)  # type: ignore[method-assign]
 
     async def _run() -> None:
         await app._after_planner_turn()
         assert approvals == []
+        assert any("write_todos" in msg for msg in mounted)
 
     asyncio.run(_run())
 
@@ -164,6 +167,7 @@ def test_after_planner_turn_skips_second_prompt_after_rejected_approve_plan() ->
         '[{"content": "final todo", "status": "in_progress"}]'
     )
     approvals: list[list[dict[str, str]]] = []
+    mounted: list[str] = []
 
     async def _fake_get_state(_agent, _thread_id):  # noqa: ANN001
         return {
@@ -182,10 +186,12 @@ def test_after_planner_turn_skips_second_prompt_after_rejected_approve_plan() ->
 
     app._get_thread_state_values_for_agent = _fake_get_state  # type: ignore[method-assign]
     app._process_planner_todos_approval = _fake_process_todos  # type: ignore[method-assign]
+    app._mount_message = lambda widget: mounted.append(str(getattr(widget, "_content", ""))) or asyncio.sleep(0)  # type: ignore[method-assign]
 
     async def _run() -> None:
         await app._after_planner_turn()
         assert approvals == []
+        assert any("write_todos" in msg for msg in mounted)
 
     asyncio.run(_run())
 
@@ -504,7 +510,7 @@ def test_finalize_planner_approval_queues_plan_handoff_to_main_agent() -> None:
             "ask for approval again" in captured_send_prompts[0]
             or "不要重复请求审批" in captured_send_prompts[0]
         )
-        assert "approved_todos:" in captured_send_prompts[0]
+        assert "approved_plan:" in captured_send_prompts[0]
         assert "1. Implement API endpoint" in captured_send_prompts[0]
         assert "2. Add tests" in captured_send_prompts[0]
         assert captured_user_messages
@@ -555,7 +561,7 @@ def test_finalize_planner_approval_handoff_uses_user_context_only() -> None:
     assert "请立即执行以下已批准计划" in handoff_prompt
     assert "不要重新规划同一批工作" in handoff_prompt
     assert "不要重复请求审批" in handoff_prompt
-    assert "approved_todos:" in handoff_prompt
+    assert "approved_plan:" in handoff_prompt
     assert "规划阶段关键上下文" in handoff_prompt
     assert "请按性能优先，不要引入新依赖" in handoff_prompt
     assert "我会先做最小变更并补测试" not in handoff_prompt
@@ -690,7 +696,7 @@ def test_handle_plan_task_enters_plan_mode_without_starting_planner() -> None:
     assert status.flags == [True]
 
 
-def test_plan_command_with_inline_task_is_not_supported() -> None:
+def test_plan_command_with_inline_task_starts_planner() -> None:
     app = DeepAgentsApp(agent=None, assistant_id="agent", backend=None)
     app._session_state = SimpleNamespace(plan_mode=False, thread_id="main-thread")
     called: list[str] = []
@@ -710,8 +716,8 @@ def test_plan_command_with_inline_task_is_not_supported() -> None:
         await app._handle_command("/plan 生成计划")
 
     asyncio.run(_run())
-    assert called == []
-    assert app._session_state.plan_mode is False
+    assert called == ["生成计划"]
+    assert app._session_state.plan_mode is True
     assert any("/plan 生成计划" in msg for msg in mounted)
 
 
