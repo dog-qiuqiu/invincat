@@ -199,6 +199,19 @@ def test_handle_url_command_mounts_now_or_defers(monkeypatch) -> None:
     assert busy._deferred_actions[-1].kind == "chat_output"
 
 
+def test_handle_url_command_survives_browser_launch_failure(monkeypatch) -> None:
+    def fail_open(_url: str) -> None:
+        raise RuntimeError("browser failed")
+
+    monkeypatch.setattr(command_handlers.webbrowser, "open", fail_open)
+    app = CommandApp()
+
+    asyncio.run(command_handlers.handle_url_command(app, "/docs", "/docs"))
+
+    assert len(app.messages) == 2
+    assert command_handlers.COMMAND_URLS["/docs"] in str(message_contents(app)[-1])
+
+
 def test_deferred_url_output_replaces_placeholder(monkeypatch) -> None:
     opened: list[str] = []
     monkeypatch.setattr(command_handlers.webbrowser, "open", opened.append)
@@ -247,9 +260,9 @@ def test_handle_trace_command_mounts_resolve_failure(monkeypatch) -> None:
 
 def test_handle_trace_command_mounts_success_and_defers_when_busy(monkeypatch) -> None:
     class Loop:
-        def run_in_executor(self, _executor: object, callback: object) -> None:
+        def run_in_executor(self, _executor: object, callback: object, url: str) -> None:
             assert callable(callback)
-            callback()
+            callback(url)
 
     monkeypatch.setattr(
         "invincat_cli.config.build_langsmith_thread_url",

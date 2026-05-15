@@ -44,6 +44,41 @@ class CommandRoute:
     rewritten_command: str | None = None
 
 
+_EXACT_COMMAND_ROUTES: dict[str, CommandRouteKind] = {
+    "/quit": "quit",
+    "/q": "quit",
+    "/help": "help",
+    "/changelog": "url",
+    "/docs": "url",
+    "/feedback": "url",
+    "/version": "version",
+    "/clear": "clear",
+    "/editor": "editor",
+    "/offload": "offload",
+    "/compact": "offload",
+    "/plan": "plan",
+    "/exit-plan": "exit_plan",
+    "/threads": "threads",
+    "/trace": "trace",
+    "/update": "update",
+    "/auto-update": "auto_update",
+    "/tokens": "tokens",
+    "/mcp": "mcp",
+    "/memory": "memory",
+    "/schedule": "schedule",
+    "/theme": "theme",
+    "/language": "language",
+    "/model": "model",
+    "/reload": "reload",
+}
+
+_WECOM_COMMAND_ACTIONS = {
+    "/wecombot-start": "start",
+    "/wecombot-status": "status",
+    "/wecombot-stop": "stop",
+}
+
+
 def rewrite_skill_creator_command(command: str) -> str:
     """Rewrite `/skill-creator` alias to the canonical skill command."""
     args = command.strip()[len("/skill-creator") :].strip()
@@ -54,60 +89,20 @@ def route_slash_command(command: str) -> CommandRoute:
     """Classify a slash command without executing side effects."""
     cmd = command.lower().strip()
 
-    if cmd in {"/quit", "/q"}:
-        return CommandRoute(kind="quit", normalized=cmd)
-    if cmd == "/help":
-        return CommandRoute(kind="help", normalized=cmd)
-    if cmd in {"/changelog", "/docs", "/feedback"}:
-        return CommandRoute(kind="url", normalized=cmd)
-    if cmd == "/version":
-        return CommandRoute(kind="version", normalized=cmd)
-    if cmd == "/clear":
-        return CommandRoute(kind="clear", normalized=cmd)
-    if cmd == "/editor":
-        return CommandRoute(kind="editor", normalized=cmd)
-    if cmd in {"/offload", "/compact"}:
-        return CommandRoute(kind="offload", normalized=cmd)
-    if cmd == "/plan":
-        return CommandRoute(kind="plan", normalized=cmd)
-    if cmd == "/exit-plan":
-        return CommandRoute(kind="exit_plan", normalized=cmd)
-    if cmd == "/threads":
-        return CommandRoute(kind="threads", normalized=cmd)
-    if cmd == "/trace":
-        return CommandRoute(kind="trace", normalized=cmd)
-    if cmd == "/update":
-        return CommandRoute(kind="update", normalized=cmd)
-    if cmd == "/auto-update":
-        return CommandRoute(kind="auto_update", normalized=cmd)
-    if cmd == "/tokens":
-        return CommandRoute(kind="tokens", normalized=cmd)
+    if kind := _EXACT_COMMAND_ROUTES.get(cmd):
+        return CommandRoute(kind=kind, normalized=cmd)
     if cmd == "/skill-creator" or cmd.startswith("/skill-creator "):
         return CommandRoute(
             kind="skill_creator",
             normalized=cmd,
             rewritten_command=rewrite_skill_creator_command(command),
         )
-    if cmd == "/mcp":
-        return CommandRoute(kind="mcp", normalized=cmd)
-    if cmd == "/memory":
-        return CommandRoute(kind="memory", normalized=cmd)
-    if cmd == "/wecombot-start":
-        return CommandRoute(kind="wecom", normalized=cmd, wecom_action="start")
-    if cmd == "/wecombot-status":
-        return CommandRoute(kind="wecom", normalized=cmd, wecom_action="status")
-    if cmd == "/wecombot-stop":
-        return CommandRoute(kind="wecom", normalized=cmd, wecom_action="stop")
-    if cmd == "/schedule" or cmd.startswith("/schedule "):
+    if action := _WECOM_COMMAND_ACTIONS.get(cmd):
+        return CommandRoute(kind="wecom", normalized=cmd, wecom_action=action)
+    if cmd.startswith("/schedule "):
         return CommandRoute(kind="schedule", normalized=cmd)
-    if cmd == "/theme":
-        return CommandRoute(kind="theme", normalized=cmd)
-    if cmd == "/language":
-        return CommandRoute(kind="language", normalized=cmd)
-    if cmd == "/model" or cmd.startswith("/model "):
+    if cmd.startswith("/model "):
         return CommandRoute(kind="model", normalized=cmd)
-    if cmd == "/reload":
-        return CommandRoute(kind="reload", normalized=cmd)
     if cmd.startswith("/skill:"):
         return CommandRoute(kind="skill", normalized=cmd)
     return CommandRoute(kind="unknown", normalized=cmd)

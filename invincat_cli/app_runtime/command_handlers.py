@@ -159,6 +159,14 @@ async def _mount_url_output(app: Any, command: str, url: str) -> None:  # noqa: 
     await app._mount_message(AppMessage(link))
 
 
+def _open_browser(url: str) -> None:
+    """Best-effort browser launch for URL commands."""
+    try:
+        webbrowser.open(url)
+    except Exception:
+        logger.debug("Could not open browser for URL: %s", url, exc_info=True)
+
+
 async def _defer_url_output(app: Any, command: str, url: str) -> None:  # noqa: ANN401
     queued_widget = QueuedUserMessage(command)
     app._queued_widgets.append(queued_widget)
@@ -179,7 +187,7 @@ async def _defer_url_output(app: Any, command: str, url: str) -> None:  # noqa: 
 async def handle_url_command(app: Any, command: str, cmd: str) -> None:  # noqa: ANN401
     """Open a static URL command and render a clickable chat link."""
     url = COMMAND_URLS[cmd]
-    webbrowser.open(url)
+    _open_browser(url)
 
     if app._agent_running or app._shell_running:
         await _defer_url_output(app, command, url)
@@ -210,13 +218,7 @@ async def handle_trace_command(app: Any, command: str) -> None:  # noqa: ANN401
         await app._mount_message(AppMessage(t("trace.not_configured")))
         return
 
-    def _open_browser() -> None:
-        try:
-            webbrowser.open(url)
-        except Exception:
-            logger.debug("Could not open browser for URL: %s", url, exc_info=True)
-
-    asyncio.get_running_loop().run_in_executor(None, _open_browser)
+    asyncio.get_running_loop().run_in_executor(None, _open_browser, url)
 
     if app._agent_running or app._shell_running:
         await _defer_url_output(app, command, url)

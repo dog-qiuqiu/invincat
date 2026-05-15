@@ -215,36 +215,13 @@ class SchedulerRunner:
                 task.title,
                 lag_seconds,
             )
-            if task.schedule_type == "once":
-                # One-shot task can never run again — disable it and clear next_run_at.
-                self._store.update_task_status(
-                    task.id, last_status="missed", clear_next_run_at=True
-                )
-                self._store.set_task_enabled(task.id, False)
-            else:
-                next_run2 = task_next_run(task, now)
-                self._store.update_task_status(
-                    task.id,
-                    last_status="missed",
-                    next_run_at=next_run2.isoformat() if next_run2 else None,
-                )
+            self._mark_task_missed(task, now)
             return
 
         was_missed = lag_seconds > _MISFIRE_TOLERANCE_SECONDS
         if was_missed and task.misfire_policy == "skip":
             logger.info("Skipping missed task %r per policy", task.title)
-            if task.schedule_type == "once":
-                self._store.update_task_status(
-                    task.id, last_status="missed", clear_next_run_at=True
-                )
-                self._store.set_task_enabled(task.id, False)
-            else:
-                next_run2 = task_next_run(task, now)
-                self._store.update_task_status(
-                    task.id,
-                    last_status="missed",
-                    next_run_at=next_run2.isoformat() if next_run2 else None,
-                )
+            self._mark_task_missed(task, now)
             return
 
         if was_missed:
@@ -259,6 +236,22 @@ class SchedulerRunner:
         )
         self._pending_task_ids.add(task.id)
         await self._drain_pending(now)
+
+    def _mark_task_missed(self, task: ScheduledTask, now: datetime) -> None:
+        """Persist a missed task and advance or disable it as appropriate."""
+        if task.schedule_type == "once":
+            self._store.update_task_status(
+                task.id, last_status="missed", clear_next_run_at=True
+            )
+            self._store.set_task_enabled(task.id, False)
+            return
+
+        next_run = task_next_run(task, now)
+        self._store.update_task_status(
+            task.id,
+            last_status="missed",
+            next_run_at=next_run.isoformat() if next_run else None,
+        )
 
     async def _drain_pending(self, now: datetime) -> None:
         while self._pending_runs and not self._is_busy():
@@ -288,20 +281,19 @@ class SchedulerRunner:
     async def fire_now(self, task: ScheduledTask) -> None:
         """Trigger a task to run immediately, bypassing the cron schedule."""
         now = datetime.now(UTC)
-        if task.id in self._running_task_ids:
+        if task.id in self._running_task_ids or task.id in self._pending_task_ids:
             return
         if self._is_busy():
-            if task.id not in self._pending_task_ids:
-                self._pending_runs.append(
-                    _PendingRun(
-                        task=task,
-                        scheduled_for=now,
-                        expected_next_run_at=None,
-                        manual=True,
-                        require_enabled=False,
-                    )
+            self._pending_runs.append(
+                _PendingRun(
+                    task=task,
+                    scheduled_for=now,
+                    expected_next_run_at=None,
+                    manual=True,
+                    require_enabled=False,
                 )
-                self._pending_task_ids.add(task.id)
+            )
+            self._pending_task_ids.add(task.id)
         else:
             await self._fire(task, now, now, require_enabled=False, manual=True)
 

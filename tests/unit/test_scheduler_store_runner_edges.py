@@ -519,6 +519,20 @@ def test_fire_now_returns_when_task_is_already_running() -> None:
     assert store.try_start_calls == []
 
 
+def test_fire_now_returns_when_task_is_already_pending() -> None:
+    task = _task()
+    store = FakeRunnerStore([task])
+    fired: list[tuple[str, str, str]] = []
+    runner = _runner(store, fired=fired)
+    runner._pending_task_ids.add(task.id)
+
+    asyncio.run(runner.fire_now(task))
+
+    assert fired == []
+    assert store.try_start_calls == []
+    assert runner._pending_runs == []
+
+
 def test_fire_returns_without_injecting_when_claim_fails() -> None:
     task = _task()
     store = FakeRunnerStore([task], claim_result=False)

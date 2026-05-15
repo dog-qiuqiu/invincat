@@ -9,18 +9,20 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Generic, TypeVar
+
+T = TypeVar("T")
 
 
-class LazyService:
+class LazyService(Generic[T]):
     """Initialize a service only when one of its attributes is used."""
 
-    def __init__(self, factory: Callable[[], Any]) -> None:
+    def __init__(self, factory: Callable[[], T]) -> None:
         self._factory = factory
-        self._instance: Any | None = None
+        self._instance: T | None = None
 
     @property
-    def instance(self) -> Any:
+    def instance(self) -> T:
         """Return the concrete service, constructing it on first use."""
         if self._instance is None:
             self._instance = self._factory()
@@ -43,6 +45,6 @@ class AppServices:
 
     scheduler_store_factory: Callable[[], Any] = _default_scheduler_store
 
-    def lazy_scheduler_store(self) -> LazyService:
+    def lazy_scheduler_store(self) -> LazyService[Any]:
         """Return a lazy scheduler store proxy."""
         return LazyService(self.scheduler_store_factory)
