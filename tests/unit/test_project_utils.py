@@ -7,7 +7,100 @@ from unittest.mock import patch
 
 import pytest
 
-from invincat_cli.project_utils import find_project_root
+from invincat_cli.core.env_vars import SERVER_ENV_PREFIX
+from invincat_cli.project_utils import (
+    ProjectContext,
+    find_project_root,
+    get_server_project_context,
+)
+
+
+def test_project_context_rejects_relative_paths() -> None:
+    with pytest.raises(ValueError, match="user_cwd"):
+        ProjectContext(user_cwd=Path("relative"))
+
+    with pytest.raises(ValueError, match="project_root"):
+        ProjectContext(user_cwd=Path("/tmp"), project_root=Path("relative"))
+
+
+def test_project_context_from_user_cwd_resolves_root_and_user_paths(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    nested = project / "src"
+    nested.mkdir(parents=True)
+    (project / "pyproject.toml").touch()
+
+    context = ProjectContext.from_user_cwd(nested)
+
+    assert context.user_cwd == nested.resolve()
+    assert context.project_root == project.resolve()
+    assert context.resolve_user_path("README.md") == (nested / "README.md").resolve()
+    assert (
+        context.resolve_user_path(project / "README.md")
+        == (project / "README.md").resolve()
+    )
+    assert context.project_skills_dir() == project.resolve() / ".invincat" / "skills"
+    assert (
+        context.project_agent_skills_dir() == project.resolve() / ".agents" / "skills"
+    )
+
+
+def test_project_context_without_project_root_has_no_project_skill_dirs(
+    tmp_path: Path,
+) -> None:
+    context = ProjectContext(user_cwd=tmp_path.resolve())
+
+    assert context.project_skills_dir() is None
+    assert context.project_agent_skills_dir() is None
+
+
+def test_get_server_project_context_uses_transport_project_root(tmp_path: Path) -> None:
+    cwd = tmp_path / "work"
+    root = tmp_path / "root"
+    cwd.mkdir()
+    root.mkdir()
+    env = {
+        f"{SERVER_ENV_PREFIX}CWD": str(cwd),
+        f"{SERVER_ENV_PREFIX}PROJECT_ROOT": str(root),
+    }
+
+    context = get_server_project_context(env)
+
+    assert context == ProjectContext(
+        user_cwd=cwd.resolve(), project_root=root.resolve()
+    )
+
+
+def test_get_server_project_context_falls_back_to_detected_root(
+    tmp_path: Path,
+) -> None:
+    cwd = tmp_path / "project" / "src"
+    cwd.mkdir(parents=True)
+    (tmp_path / "project" / "pyproject.toml").touch()
+    env = {f"{SERVER_ENV_PREFIX}CWD": str(cwd)}
+
+    context = get_server_project_context(env)
+
+    assert context == ProjectContext(
+        user_cwd=cwd.resolve(),
+        project_root=(tmp_path / "project").resolve(),
+    )
+
+
+def test_get_server_project_context_returns_none_when_paths_cannot_resolve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_resolve(self: Path) -> Path:
+        raise OSError(f"cannot resolve {self}")
+
+    monkeypatch.setattr(Path, "resolve", fail_resolve)
+
+    assert get_server_project_context({f"{SERVER_ENV_PREFIX}CWD": "/tmp/work"}) is None
+
+
+def test_get_server_project_context_returns_none_without_cwd() -> None:
+    assert get_server_project_context({}) is None
 
 
 class TestFindProjectRoot:
@@ -79,7 +172,9 @@ class TestFindProjectRoot:
 
         assert find_project_root(inner) == inner
 
-    @pytest.mark.parametrize("marker", ["pyproject.toml", "package.json", "go.mod", "Cargo.toml"])
+    @pytest.mark.parametrize(
+        "marker", ["pyproject.toml", "package.json", "go.mod", "Cargo.toml"]
+    )
     def test_detects_other_markers(self, tmp_path: Path, marker: str) -> None:
         (tmp_path / marker).touch()
         assert find_project_root(tmp_path) == tmp_path

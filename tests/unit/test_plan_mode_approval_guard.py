@@ -125,7 +125,9 @@ def test_after_planner_turn_finalizes_when_approve_plan_approved() -> None:
         return {
             "messages": [
                 HumanMessage(content="做计划"),
-                ToolMessage("todos recorded", tool_call_id="tc-write", name="write_todos"),
+                ToolMessage(
+                    "todos recorded", tool_call_id="tc-write", name="write_todos"
+                ),
                 ToolMessage("approved", tool_call_id="tc-approve", name="approve_plan"),
             ],
             "todos": [{"content": "final todo", "status": "in_progress"}],
@@ -167,7 +169,9 @@ def test_after_planner_turn_skips_second_prompt_after_rejected_approve_plan() ->
         return {
             "messages": [
                 HumanMessage(content="做计划"),
-                ToolMessage("todos recorded", tool_call_id="tc-write", name="write_todos"),
+                ToolMessage(
+                    "todos recorded", tool_call_id="tc-write", name="write_todos"
+                ),
             ],
             "todos": [{"content": "final todo", "status": "in_progress"}],
         }
@@ -196,7 +200,9 @@ def test_after_planner_turn_prompts_for_refinement_when_approve_plan_rejected() 
         return {
             "messages": [
                 HumanMessage(content="做计划"),
-                ToolMessage("todos recorded", tool_call_id="tc-write", name="write_todos"),
+                ToolMessage(
+                    "todos recorded", tool_call_id="tc-write", name="write_todos"
+                ),
                 ToolMessage("rejected", tool_call_id="tc-approve", name="approve_plan"),
             ],
             "todos": [{"content": "final todo", "status": "in_progress"}],
@@ -212,12 +218,12 @@ def test_after_planner_turn_prompts_for_refinement_when_approve_plan_rejected() 
         await app._after_planner_turn()
 
     asyncio.run(_run())
-    assert any(
-        "Plan not approved" in msg or "计划未通过" in msg for msg in mounted
-    )
+    assert any("Plan not approved" in msg or "计划未通过" in msg for msg in mounted)
 
 
-def test_after_planner_turn_does_not_duplicate_refine_prompt_after_rejected_ai_reply() -> None:
+def test_after_planner_turn_does_not_duplicate_refine_prompt_after_rejected_ai_reply() -> (
+    None
+):
     app = DeepAgentsApp(agent=None, assistant_id="agent", backend=None)
     app._planner_agent = object()
     app._planner_thread_id = "planner-thread"
@@ -227,7 +233,9 @@ def test_after_planner_turn_does_not_duplicate_refine_prompt_after_rejected_ai_r
         return {
             "messages": [
                 HumanMessage(content="做计划"),
-                ToolMessage("todos recorded", tool_call_id="tc-write", name="write_todos"),
+                ToolMessage(
+                    "todos recorded", tool_call_id="tc-write", name="write_todos"
+                ),
                 ToolMessage("rejected", tool_call_id="tc-approve", name="approve_plan"),
                 AIMessage(content="请告诉我需要调整哪些任务。"),
             ],
@@ -328,7 +336,9 @@ def test_switch_model_invalidates_planner_cache(monkeypatch) -> None:
     app._mount_message = lambda *_args, **_kwargs: asyncio.sleep(0)  # type: ignore[method-assign]
 
     monkeypatch.setattr(config_mod.settings, "model_name", "claude-old", raising=False)
-    monkeypatch.setattr(config_mod.settings, "model_provider", "anthropic", raising=False)
+    monkeypatch.setattr(
+        config_mod.settings, "model_provider", "anthropic", raising=False
+    )
     monkeypatch.setattr(config_mod, "detect_provider", lambda _spec: "anthropic")
     monkeypatch.setattr(
         config_mod,
@@ -358,9 +368,11 @@ def test_switch_model_invalidates_planner_cache(monkeypatch) -> None:
 def test_ensure_planner_agent_uses_planner_approve_prompt_and_disables_shell(
     monkeypatch,
 ) -> None:
-    from invincat_cli.plan_agent import PLANNER_APPROVE_PLAN_SYSTEM_PROMPT
+    from invincat_cli.middleware.plan_agent import PLANNER_APPROVE_PLAN_SYSTEM_PROMPT
 
-    app = DeepAgentsApp(agent=SimpleNamespace(checkpointer=None), assistant_id="agent", backend=None)
+    app = DeepAgentsApp(
+        agent=SimpleNamespace(checkpointer=None), assistant_id="agent", backend=None
+    )
     captured: dict[str, object] = {}
     planner_runtime = object()
 
@@ -376,12 +388,17 @@ def test_ensure_planner_agent_uses_planner_approve_prompt_and_disables_shell(
 
     asyncio.run(_run())
     assert captured.get("enable_shell") is False
-    assert captured.get("approve_plan_system_prompt") == PLANNER_APPROVE_PLAN_SYSTEM_PROMPT
+    assert (
+        captured.get("approve_plan_system_prompt") == PLANNER_APPROVE_PLAN_SYSTEM_PROMPT
+    )
     planner_system_prompt = str(captured.get("system_prompt", ""))
     assert "root_context_dir" in planner_system_prompt
     assert str(app._cwd) in planner_system_prompt
     assert "tools" in captured
-    tool_names = {getattr(tool, "name", getattr(tool, "__name__", "")) for tool in captured["tools"]}  # type: ignore[index]
+    tool_names = {
+        getattr(tool, "name", getattr(tool, "__name__", ""))
+        for tool in captured["tools"]
+    }  # type: ignore[index]
     assert "fetch_url" in tool_names
 
 
@@ -727,7 +744,9 @@ def test_handle_user_message_rolls_back_plan_mode_when_planner_fails() -> None:
     app._mount_message = _fake_mount_message  # type: ignore[method-assign]
 
     async def _run() -> None:
-        await app._handle_user_message("生成计划")
+        from invincat_cli.app_runtime.input_handlers import handle_user_message
+
+        await handle_user_message(app, "生成计划")
 
     asyncio.run(_run())
     assert app._session_state.plan_mode is False

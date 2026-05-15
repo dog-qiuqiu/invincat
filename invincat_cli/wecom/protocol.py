@@ -60,7 +60,9 @@ def extract_wecom_inbound_media(frame: dict[str, Any]) -> list[WeComInboundMedia
             or payload.get("file_url")
             or payload.get("fileUrl")
         )
-        aeskey = payload.get("aeskey") or payload.get("aes_key") or payload.get("aesKey")
+        aeskey = (
+            payload.get("aeskey") or payload.get("aes_key") or payload.get("aesKey")
+        )
         if not isinstance(url, str) or not url:
             return None
         filename_hint = payload.get("filename") or payload.get("name") or ""
@@ -148,7 +150,10 @@ def safe_wecom_content(content: str, max_bytes: int = 20480) -> str:
     safe = "".join(ch for ch in safe if (ch >= " " or ch in "\n\t\r"))
     encoded = safe.encode("utf-8")
     if len(encoded) > max_bytes:
-        safe = encoded[:max_bytes].decode("utf-8", errors="ignore") + "\n\n(输出过长，已截断)"
+        safe = (
+            encoded[:max_bytes].decode("utf-8", errors="ignore")
+            + "\n\n(输出过长，已截断)"
+        )
     return safe if safe.strip() else "（空回复）"
 
 
@@ -170,7 +175,11 @@ def build_wecom_stream_frame(
     }
     if isinstance(chatid, str) and chatid:
         body["chatid"] = chatid
-    return {"cmd": "aibot_respond_msg", "headers": {"req_id": inbound_req_id}, "body": body}
+    return {
+        "cmd": "aibot_respond_msg",
+        "headers": {"req_id": inbound_req_id},
+        "body": body,
+    }
 
 
 def build_wecom_file_frame(
@@ -260,7 +269,10 @@ def build_wecom_agent_input(
     msgtype = body.get("msgtype")
     mixed_text = extract_wecom_mixed_text(frame) if msgtype == "mixed" else ""
     if not saved_paths:
-        return mixed_text or f"收到企业微信 {msgtype or 'unknown'} 消息，但当前无法提取内容。"
+        return (
+            mixed_text
+            or f"收到企业微信 {msgtype or 'unknown'} 消息，但当前无法提取内容。"
+        )
 
     lines: list[str] = []
     if mixed_text:

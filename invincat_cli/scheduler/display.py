@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 
@@ -39,12 +39,12 @@ def format_schedule_time_for_display(
         return str(value)
 
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
 
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
     try:
         tz = ZoneInfo(timezone_name)
     except ZoneInfoNotFoundError:
-        return dt.astimezone(timezone.utc).isoformat(timespec="minutes")
+        return dt.astimezone(UTC).isoformat(timespec="minutes")
     return dt.astimezone(tz).isoformat(timespec="minutes")

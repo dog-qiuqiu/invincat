@@ -7,221 +7,31 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from rich.cells import cell_len, get_character_cell_size
 from textual.containers import Horizontal
 from textual.content import Content
 from textual.css.query import NoMatches
 from textual.reactive import reactive
-from textual.widget import Widget
 from textual.widgets import Static
 
 from invincat_cli import theme
 from invincat_cli.config import get_glyphs
 from invincat_cli.i18n import t
+from invincat_cli.widgets.status_model_label import ModelLabel, _take_right_cells
+from invincat_cli.widgets.status_styles import STATUS_BAR_CSS
 
 logger = logging.getLogger(__name__)
 
+__all__ = ["ModelLabel", "StatusBar", "_take_right_cells"]
+
 if TYPE_CHECKING:
     from textual import events
-    from textual.app import ComposeResult, RenderResult
-    from textual.geometry import Size
-
-
-def _take_right_cells(text: str, max_cells: int) -> str:
-    """Return the right-most substring whose rendered width <= max_cells."""
-    if max_cells <= 0 or not text:
-        return ""
-    kept: list[str] = []
-    used = 0
-    for ch in reversed(text):
-        ch_cells = get_character_cell_size(ch)
-        if used + ch_cells > max_cells:
-            break
-        kept.append(ch)
-        used += ch_cells
-    return "".join(reversed(kept))
-
-
-class ModelLabel(Widget):
-    """A label that displays a model name, right-aligned with smart truncation.
-
-    When the full `provider:model` text doesn't fit, the provider is dropped
-    first. If the bare model name still doesn't fit, it is left-truncated
-    with a leading ellipsis so the most distinctive tail stays visible.
-    """
-
-    provider: reactive[str] = reactive("", layout=True)
-    model: reactive[str] = reactive("", layout=True)
-    prefix: reactive[str] = reactive("", layout=True)
-
-    def get_content_width(self, container: Size, viewport: Size) -> int:  # noqa: ARG002
-        """Return the intrinsic width so `width: auto` works.
-
-        Args:
-            container: Size of the container.
-            viewport: Size of the viewport.
-
-        Returns:
-            Character length of the full provider:model string.
-        """
-        if not self.model:
-            return 0
-        full = f"{self.prefix}{self.model}"
-        return cell_len(full)
-
-    def render(self) -> RenderResult:
-        """Render the model label with width-aware truncation.
-
-        Returns:
-            Text content, truncated from the left when necessary.
-        """
-        width = self.content_size.width
-        if not self.model or width <= 0:
-            return ""
-        full = f"{self.prefix}{self.model}"
-        colors = theme.get_theme_colors(self)
-        if cell_len(full) <= width:
-            if self.prefix:
-                return Content.assemble(
-                    (self.prefix, colors.primary),
-                    (self.model, ""),
-                )
-            return Content(full)
-        if width > 1:
-            tail = _take_right_cells(full, width - 1)
-            text = "\u2026" + tail
-            if self.prefix and text.startswith(self.prefix):
-                return Content.assemble(
-                    (self.prefix, colors.primary),
-                    (text[len(self.prefix) :], ""),
-                )
-            return Content(text)
-        return Content("\u2026")
+    from textual.app import ComposeResult
 
 
 class StatusBar(Horizontal):
     """Status bar showing mode, auto-approve, cwd, git branch, tokens, and models."""
 
-    DEFAULT_CSS = """
-    StatusBar {
-        height: 1;
-        dock: bottom;
-        background: $surface;
-        padding: 0 1;
-    }
-
-    StatusBar .status-mode {
-        width: auto;
-        padding: 0 1;
-    }
-
-    StatusBar .status-mode.normal {
-        display: none;
-    }
-
-    StatusBar .status-mode.shell {
-        background: $mode-bash;
-        color: white;
-        text-style: bold;
-    }
-
-    StatusBar .status-mode.command {
-        background: $mode-command;
-        color: white;
-    }
-
-    StatusBar .status-auto-approve {
-        width: auto;
-        padding: 0 1;
-    }
-
-    StatusBar .status-auto-approve.on {
-        background: $success;
-        color: $background;
-    }
-
-    StatusBar .status-auto-approve.off {
-        background: $warning;
-        color: $background;
-    }
-
-    StatusBar .status-plan-mode {
-        width: auto;
-        padding: 0 1;
-        background: $primary;
-        color: $background;
-        text-style: bold;
-        display: none;
-    }
-
-    StatusBar .status-plan-mode.on {
-        display: block;
-    }
-
-    StatusBar .status-message {
-        width: auto;
-        padding: 0 1;
-        color: $text-muted;
-    }
-
-    StatusBar .status-message.thinking {
-        color: $warning;
-    }
-
-    StatusBar .status-message.memory {
-        color: $success;
-    }
-
-    StatusBar .status-cwd {
-        width: auto;
-        text-align: right;
-        color: $text-muted;
-    }
-
-    StatusBar .status-branch {
-        width: auto;
-        color: $text-muted;
-        padding: 0 1;
-    }
-
-    StatusBar .status-left-collapsible {
-        width: 1fr;
-        min-width: 0;
-        height: 1;
-        overflow-x: hidden;
-    }
-
-    StatusBar .status-tokens {
-        width: auto;
-        padding: 0 0 0 1;
-        color: $text-muted;
-    }
-
-    StatusBar .status-tokens.warn {
-        color: $warning;
-    }
-
-    StatusBar .status-tokens.danger {
-        color: $error;
-    }
-
-    StatusBar .status-message-count {
-        width: auto;
-        padding: 0 0 0 1;
-        color: $text-muted;
-    }
-
-    StatusBar ModelLabel {
-        width: auto;
-        padding: 0 0 0 1;
-        color: $text-muted;
-        text-align: right;
-    }
-
-    StatusBar #memory-model-display {
-        color: $text-muted;
-    }
-    """
+    DEFAULT_CSS = STATUS_BAR_CSS
     """Mode badges and auto-approve pills use distinct colors for at-a-glance status."""
 
     mode: reactive[str] = reactive("normal", init=False)
@@ -505,6 +315,7 @@ class StatusBar(Horizontal):
 
         # Build context usage ratio for color coding
         from invincat_cli.config import settings
+
         context_limit = settings.model_context_limit
         display.remove_class("warn", "danger")
         if context_limit and context_limit > 0:

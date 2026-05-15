@@ -2,8 +2,8 @@
 
 import os
 import tempfile
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator
 
 import pytest
 
@@ -19,7 +19,7 @@ def temp_dir() -> Generator[Path, None, None]:
 def test_env() -> Generator[dict, None, None]:
     """Provide a clean test environment."""
     original_env = os.environ.copy()
-    
+
     # Set up test environment
     test_env_vars = {
         "OPENAI_API_KEY": "test-openai-key",
@@ -29,12 +29,12 @@ def test_env() -> Generator[dict, None, None]:
         "DEEPAGENTS_CLI_SHELL_ALLOW_LIST": "ls,cd,pwd,echo",
         "LC_ALL": "en_US.UTF-8",  # Ensure UTF-8 for tests
     }
-    
+
     os.environ.clear()
     os.environ.update(test_env_vars)
-    
+
     yield test_env_vars
-    
+
     # Restore original environment
     os.environ.clear()
     os.environ.update(original_env)
@@ -44,8 +44,7 @@ def test_env() -> Generator[dict, None, None]:
 def mock_settings():
     """Mock settings for tests."""
     from unittest.mock import Mock
-    from invincat_cli.config import settings as actual_settings
-    
+
     # Create mock settings
     mock_settings = Mock()
     mock_settings.openai_api_key = "test-openai-key"
@@ -54,7 +53,7 @@ def mock_settings():
     mock_settings.tavily_api_key = "test-tavily-key"
     mock_settings.shell_allow_list = ["ls", "cd", "pwd", "echo"]
     mock_settings.project_root = None
-    
+
     # Mock methods
     mock_settings.has_api_key.return_value = True
     mock_settings.get_api_key.side_effect = lambda provider: {
@@ -63,7 +62,7 @@ def mock_settings():
         "google": "test-google-key",
         "tavily": "test-tavily-key",
     }.get(provider)
-    
+
     return mock_settings
 
 

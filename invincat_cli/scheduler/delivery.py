@@ -30,7 +30,7 @@ def is_wecom_deliverable_task(task: Any) -> bool:  # noqa: ANN401
     return bool(scheduled_task_wecom_chatid(task))
 
 
-def _report_filename(task: "ScheduledTask", date_str: str) -> str:
+def _report_filename(task: ScheduledTask, date_str: str) -> str:
     import re
 
     report = task.report
@@ -40,7 +40,7 @@ def _report_filename(task: "ScheduledTask", date_str: str) -> str:
     )
 
 
-def resolve_report_path(task: "ScheduledTask", date_str: str) -> Path:
+def resolve_report_path(task: ScheduledTask, date_str: str) -> Path:
     """Return a checked absolute report path under the task working directory."""
     report = task.report
     filename = _report_filename(task, date_str)
@@ -53,17 +53,19 @@ def resolve_report_path(task: "ScheduledTask", date_str: str) -> Path:
     try:
         report_path.relative_to(cwd)
     except ValueError as exc:
-        raise ValueError("Scheduled report path escapes the task working directory") from exc
+        raise ValueError(
+            "Scheduled report path escapes the task working directory"
+        ) from exc
     return report_path
 
 
-def report_display_path(task: "ScheduledTask", date_str: str) -> str:
+def report_display_path(task: ScheduledTask, date_str: str) -> str:
     """Return the relative report path shown to users and agent prompts."""
     path = resolve_report_path(task, date_str)
     return path.relative_to(Path(task.cwd).expanduser().resolve()).as_posix()
 
 
-def check_report_exists(task: "ScheduledTask", date_str: str) -> str | None:
+def check_report_exists(task: ScheduledTask, date_str: str) -> str | None:
     """Return the report path if the file exists, else None."""
     try:
         report_path = resolve_report_path(task, date_str)
@@ -75,7 +77,9 @@ def check_report_exists(task: "ScheduledTask", date_str: str) -> str | None:
     return None
 
 
-def save_fallback_report(task: "ScheduledTask", content: str, date_str: str) -> str | None:
+def save_fallback_report(
+    task: ScheduledTask, content: str, date_str: str
+) -> str | None:
     """Write agent response text as a fallback report and return the path."""
     if not content.strip():
         return None

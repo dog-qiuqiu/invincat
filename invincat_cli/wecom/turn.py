@@ -34,7 +34,11 @@ class WeComTurnRunner:
         is_busy: Callable[[], bool],
         get_messages: Callable[[], list[MessageData]],
         handle_user_message: Callable[
-            [str, Callable[[str, str], Awaitable[None]], Callable[[dict[str, Any]], Awaitable[None]]],
+            [
+                str,
+                Callable[[str, str], Awaitable[None]],
+                Callable[[dict[str, Any]], Awaitable[None]],
+            ],
             Awaitable[None],
         ],
         send_request: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]],
@@ -84,7 +88,9 @@ class WeComTurnRunner:
 
         before = self._get_messages()
         before_ids: set[str] = {m.id for m in before}
-        before_assistant_count = sum(1 for m in before if m.type == MessageType.ASSISTANT)
+        before_assistant_count = sum(
+            1 for m in before if m.type == MessageType.ASSISTANT
+        )
         before_error_count = sum(1 for m in before if m.type == MessageType.ERROR)
 
         async def _on_text_delta(delta: str, accumulated: str) -> None:
@@ -200,7 +206,11 @@ class WeComTurnRunner:
         assistant_started = False
         for message in self._get_messages():
             if message.id not in before_ids and message.type == MessageType.TOOL:
-                if message.tool_status in {ToolStatus.PENDING, ToolStatus.RUNNING, None}:
+                if message.tool_status in {
+                    ToolStatus.PENDING,
+                    ToolStatus.RUNNING,
+                    None,
+                }:
                     running_tool = message.tool_name or running_tool
                 elif message.id not in sent_tool_ids:
                     sent_tool_ids.add(message.id)

@@ -105,20 +105,26 @@ target-version = "py311"
 line-length = 88
 
 [tool.ruff.lint]
-select = ["E"] # pycodestyle errors
+select = [
+    "E",
+    "F",
+    "I",
+    "UP017",
+    "UP035",
+    "UP037",
+    "UP041",
+]
 ignore = ["E501"] # line too long, handled by black
 
 [tool.ruff.lint.per-file-ignores]
-"invincat_cli/app.py" = ["E402"]
+"invincat_cli/app/__init__.py" = ["E402"]
 "invincat_cli/widgets/autocomplete.py" = ["E402"]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = ["test_*.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
-addopts = "-v --tb=short"
-filterwarnings = [
-    "ignore::DeprecationWarning",
-    "ignore::UserWarning",
+[tool.mypy]
+python_version = "3.11"
+files = [
+    "invincat_cli/scheduler",
+    "invincat_cli/app_runtime",
+    "invincat_cli/wecom/protocol.py",
+    "invincat_cli/project_utils/__init__.py",
 ]

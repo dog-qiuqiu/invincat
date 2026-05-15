@@ -18,8 +18,8 @@ import sys
 import traceback
 from typing import Any
 
-from invincat_cli.server.config import ServerConfig
 from invincat_cli.project_utils import ProjectContext, get_server_project_context
+from invincat_cli.server.config import ServerConfig
 
 logger = logging.getLogger(__name__)
 

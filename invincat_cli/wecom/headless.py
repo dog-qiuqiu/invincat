@@ -10,9 +10,12 @@ import asyncio
 import logging
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
-from contextlib import suppress
 from pathlib import Path
 from typing import Any
+
+from invincat_cli.wecom.headless_stream import (
+    DebouncedContentEmitter as _DebouncedContentEmitter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,79 +24,6 @@ _MESSAGE_DATA_LENGTH = 2
 _HITL_AUTO_APPROVE_CAP = 50
 _MAX_SESSIONS = 256  # bound _sessions LRU; older idle entries are evicted
 _STREAM_UPDATE_INTERVAL = 0.5
-
-
-class _DebouncedContentEmitter:
-    """Coalesce high-frequency stream updates while preserving the latest text."""
-
-    def __init__(
-        self,
-        on_content: Callable[[str], Awaitable[None]],
-        *,
-        interval: float = _STREAM_UPDATE_INTERVAL,
-    ) -> None:
-        self._on_content = on_content
-        self._interval = max(0.0, interval)
-        self._latest: str | None = None
-        self._last_sent: str | None = None
-        self._last_sent_at = 0.0
-        self._task: asyncio.Task[None] | None = None
-
-    async def emit(self, content: str) -> None:
-        """Send immediately when due; otherwise schedule one latest-text update."""
-        self._latest = content
-        now = asyncio.get_running_loop().time()
-        if self._last_sent_at == 0.0 or now - self._last_sent_at >= self._interval:
-            await self.flush()
-            return
-        if self._task is None or self._task.done():
-            delay = max(0.0, self._interval - (now - self._last_sent_at))
-            self._task = asyncio.create_task(self._send_later(delay))
-
-    async def flush(self) -> None:
-        """Cancel any delayed send and deliver the latest pending content now."""
-        task = self._task
-        if task is not None and not task.done():
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-        self._task = None
-        latest = self._latest
-        if latest is None or latest == self._last_sent:
-            return
-        await self._send(latest)
-
-    async def close(self) -> None:
-        """Cancel a pending delayed send without emitting another update."""
-        task = self._task
-        if task is not None and not task.done():
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-        self._task = None
-
-    async def _send_later(self, delay: float) -> None:
-        try:
-            await asyncio.sleep(delay)
-            latest = self._latest
-            if latest is not None and latest != self._last_sent:
-                await self._send(latest)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.debug("on_content callback failed", exc_info=True)
-        finally:
-            if self._task is asyncio.current_task():
-                self._task = None
-
-    async def _send(self, content: str) -> None:
-        try:
-            await self._on_content(content)
-        except Exception:
-            logger.debug("on_content callback failed", exc_info=True)
-        finally:
-            self._last_sent = content
-            self._last_sent_at = asyncio.get_running_loop().time()
 
 
 class HeadlessWeComHandler:
@@ -179,6 +109,7 @@ class HeadlessWeComHandler:
             self._sessions.move_to_end(chatid)
             return existing
         from invincat_cli.sessions import generate_thread_id
+
         self._sessions[chatid] = (generate_thread_id(), asyncio.Lock())
         self._evict_idle_sessions()
         return self._sessions[chatid]
@@ -210,11 +141,15 @@ class HeadlessWeComHandler:
         on_content: Callable[[str], Awaitable[None]],
         runtime_context: dict[str, Any] | None = None,
     ) -> str:
-        from invincat_cli.config import build_stream_config
-        from invincat_cli.wecom.file import WECOM_FILE_TOOL_NAME, parse_wecom_file_request
-        from invincat_cli.wecom.media import send_wecom_file_from_tool_payload
         from langchain_core.messages import AIMessage, ToolMessage
         from langgraph.types import Command
+
+        from invincat_cli.config import build_stream_config
+        from invincat_cli.wecom.file import (
+            WECOM_FILE_TOOL_NAME,
+            parse_wecom_file_request,
+        )
+        from invincat_cli.wecom.media import send_wecom_file_from_tool_payload
 
         config = build_stream_config(thread_id, "agent")
         # WeComFileMiddleware reads context["wecom_enabled"] from the LangGraph runtime.
@@ -252,7 +187,10 @@ class HeadlessWeComHandler:
                     subgraphs=True,
                     durability="exit",
                 ):
-                    if not isinstance(chunk, tuple) or len(chunk) != _STREAM_CHUNK_LENGTH:
+                    if (
+                        not isinstance(chunk, tuple)
+                        or len(chunk) != _STREAM_CHUNK_LENGTH
+                    ):
                         continue
                     namespace, mode, data = chunk
 
@@ -261,14 +199,21 @@ class HeadlessWeComHandler:
                         continue
 
                     if mode == "messages":
-                        if not isinstance(data, tuple) or len(data) != _MESSAGE_DATA_LENGTH:
+                        if (
+                            not isinstance(data, tuple)
+                            or len(data) != _MESSAGE_DATA_LENGTH
+                        ):
                             continue
                         message_obj, _meta = data
 
                         if isinstance(message_obj, AIMessage):
                             # Skip internal middleware LLM runs (memory agent, summarization).
                             # These have lc_source set in metadata and must never reach the user.
-                            lc_source = _meta.get("lc_source") if isinstance(_meta, dict) else None
+                            lc_source = (
+                                _meta.get("lc_source")
+                                if isinstance(_meta, dict)
+                                else None
+                            )
                             if lc_source in {"memory_agent", "summarization"}:
                                 continue
 
@@ -278,17 +223,26 @@ class HeadlessWeComHandler:
                             # 2. tool_call_chunks with name — OpenAI-style streaming delta
                             # 3. content[{"type":"tool_use","name":...}] — Anthropic streaming delta
                             detected_tool: str | None = None
-                            tool_calls = list(getattr(message_obj, "tool_calls", None) or [])
+                            tool_calls = list(
+                                getattr(message_obj, "tool_calls", None) or []
+                            )
                             if tool_calls:
                                 first = tool_calls[0]
                                 detected_tool = (
-                                    first.get("name") if isinstance(first, dict)
+                                    first.get("name")
+                                    if isinstance(first, dict)
                                     else getattr(first, "name", None)
                                 ) or None
                             if not detected_tool:
-                                raw_chunks = getattr(message_obj, "tool_call_chunks", None) or []
+                                raw_chunks = (
+                                    getattr(message_obj, "tool_call_chunks", None) or []
+                                )
                                 for c in raw_chunks:
-                                    name = c.get("name") if isinstance(c, dict) else getattr(c, "name", "")
+                                    name = (
+                                        c.get("name")
+                                        if isinstance(c, dict)
+                                        else getattr(c, "name", "")
+                                    )
                                     if name:
                                         detected_tool = name
                                         break
@@ -326,13 +280,23 @@ class HeadlessWeComHandler:
 
                             # Persist schedule management payloads that the TUI would
                             # normally handle via on_schedule_payload / _handle_schedule_tool_payload.
-                            from invincat_cli.scheduler.tool import parse_schedule_tool_result
-                            sched_payload = parse_schedule_tool_result(message_obj.content)
+                            from invincat_cli.scheduler.tool import (
+                                parse_schedule_tool_result,
+                            )
+
+                            sched_payload = parse_schedule_tool_result(
+                                message_obj.content
+                            )
                             if sched_payload is not None:
                                 try:
-                                    await self._process_schedule_payload(sched_payload, inbound_frame)
+                                    await self._process_schedule_payload(
+                                        sched_payload, inbound_frame
+                                    )
                                 except Exception:
-                                    logger.warning("Schedule payload processing failed", exc_info=True)
+                                    logger.warning(
+                                        "Schedule payload processing failed",
+                                        exc_info=True,
+                                    )
                                     raise
 
                             if tool_name == WECOM_FILE_TOOL_NAME:
@@ -354,7 +318,9 @@ class HeadlessWeComHandler:
                                             )
                                         except Exception as exc:
                                             logger.warning(
-                                                "WeCom file send failed: %s", exc, exc_info=True
+                                                "WeCom file send failed: %s",
+                                                exc,
+                                                exc_info=True,
                                             )
 
                             # Tool completed — update counters and emit progress.
@@ -395,191 +361,15 @@ class HeadlessWeComHandler:
         payload: dict[str, Any],
         inbound_frame: dict[str, Any],
     ) -> None:
-        """Persist a schedule management payload from the agent to the DB.
+        """Persist a schedule management payload from the agent to the DB."""
+        from invincat_cli.wecom.headless_schedule import process_schedule_payload
 
-        Mirrors app.py._handle_schedule_tool_payload for daemon (headless) mode.
-        """
-        import re
-        import uuid
-        from datetime import datetime, timezone
-
-        from invincat_cli.scheduler.models import DeliverySpec, ReportSpec, ScheduledTask
-        from invincat_cli.scheduler.runner import _parse_dt, compute_next_run
-        from invincat_cli.scheduler.store import SchedulerStore
-        from invincat_cli.scheduler.tool import (
-            SCHEDULE_CANCEL_TYPE,
-            SCHEDULE_CREATE_TYPE,
-            SCHEDULE_RUN_NOW_TYPE,
-            SCHEDULE_UPDATE_TYPE,
-            validate_schedule_create_options,
-            validate_timezone_name,
+        await process_schedule_payload(
+            payload=payload,
+            inbound_frame=inbound_frame,
+            cwd=self._cwd,
+            on_schedule_run_now=self._on_schedule_run_now,
         )
-        from invincat_cli.wecom.protocol import resolve_wecom_active_chat_id
-
-        ptype = payload.get("type")
-        store = SchedulerStore()
-        current_cwd = str(self._cwd)
-
-        def _load_current_cwd_task(task_id: str, operation: str) -> Any:
-            task = store.load_task(task_id)
-            if task is None:
-                logger.warning("%s: task %r not found", operation, task_id)
-                raise ValueError(f"{operation}: scheduled task {task_id!r} not found")
-            if task.cwd != current_cwd:
-                logger.warning(
-                    "%s: refusing to operate on task %r from cwd=%r while daemon cwd=%r",
-                    operation,
-                    task_id,
-                    task.cwd,
-                    current_cwd,
-                )
-                raise ValueError(
-                    f"{operation}: scheduled task {task_id!r} belongs to another "
-                    f"project (task cwd={task.cwd!r}, daemon cwd={current_cwd!r})"
-                )
-            return task
-
-        if ptype == SCHEDULE_CREATE_TYPE:
-            task_id = payload.get("task_id") or str(uuid.uuid4())
-            title = payload.get("title", "Untitled")
-            cron = payload.get("cron", "0 8 * * *")
-            tz = payload.get("timezone", "Asia/Shanghai")
-            tz = validate_timezone_name(tz)
-            prompt_text = payload.get("prompt", "")
-            schedule_type = payload.get("schedule_type", "recurring")
-            if schedule_type not in {"recurring", "once"}:
-                schedule_type = "recurring"
-            run_at = payload.get("run_at")
-            delete_after_run = bool(payload.get("delete_after_run", False))
-            output_mode, report_format, misfire_policy, timeout_seconds = (
-                validate_schedule_create_options(
-                    output_mode=payload.get("output_mode", "message"),
-                    report_format=payload.get("report_format", "markdown"),
-                    misfire_policy=payload.get("misfire_policy", "run_once"),
-                    timeout_seconds=payload.get("timeout_seconds", 600),
-                )
-            )
-            slug = re.sub(r"[^\w\-]", "-", title.lower())[:40].strip("-")
-
-            # Resolve the WeCom delivery target from the inbound frame.
-            # Synthetic frames from scheduled runs start with __scheduled_ — skip those
-            # to prevent sub-tasks from inheriting a non-real chatid.
-            # IMPORTANT: WeCom single-chat callbacks have no body.chatid (only body.from.userid),
-            # so we MUST NOT gate on body.chatid being non-empty — let
-            # resolve_wecom_active_chat_id() do the userid fallback for single chats.
-            delivery = DeliverySpec()
-            frame_chatid = str((inbound_frame.get("body") or {}).get("chatid", ""))
-            if not frame_chatid.startswith("__scheduled_"):
-                chatid_to_use = ""
-                try:
-                    chatid_to_use = resolve_wecom_active_chat_id(inbound_frame) or ""
-                except Exception:
-                    logger.warning(
-                        "resolve_wecom_active_chat_id failed for scheduled task %r; "
-                        "WeCom delivery will not be configured (frame_chatid=%r)",
-                        payload.get("task_id", ""),
-                        frame_chatid,
-                        exc_info=True,
-                    )
-                if chatid_to_use:
-                    delivery = DeliverySpec(channels=[{"type": "wecom", "chatid": chatid_to_use}])
-                    logger.info(
-                        "Scheduled task %r WeCom delivery configured: chatid=%s (single-chat fallback=%s)",
-                        payload.get("task_id", ""),
-                        chatid_to_use,
-                        not bool(frame_chatid),
-                    )
-                else:
-                    logger.warning(
-                        "WeCom chatid is empty for scheduled task %r; WeCom delivery will not be configured",
-                        payload.get("task_id", ""),
-                    )
-
-            now = datetime.now(timezone.utc)
-            next_run = _parse_dt(run_at) if schedule_type == "once" else compute_next_run(cron, now, tz)
-            if next_run is None:
-                raise ValueError(
-                    "Could not compute the next scheduled run time. "
-                    "Check the schedule, timezone, and once_at value."
-                )
-            task = ScheduledTask(
-                id=task_id,
-                title=title,
-                enabled=True,
-                prompt=prompt_text,
-                cron=cron,
-                timezone=tz,
-                cwd=str(self._cwd),
-                delivery=delivery,
-                report=ReportSpec(
-                    mode=output_mode,
-                    output_dir="reports",
-                    filename_template=f"{slug}-{{date}}.{report_format.lower().replace('markdown', 'md')}",
-                    format=report_format,
-                ),
-                created_at=now.isoformat(),
-                updated_at=now.isoformat(),
-                next_run_at=next_run.isoformat() if next_run else None,
-                last_run_at=None,
-                last_status="never",
-                last_error=None,
-                run_count=0,
-                failure_count=0,
-                misfire_policy=misfire_policy,
-                schedule_type=schedule_type,
-                run_at=run_at if schedule_type == "once" else None,
-                delete_after_run=delete_after_run,
-                timeout_seconds=timeout_seconds,
-            )
-            store.save_task(task)
-            logger.info(
-                "Scheduled task created: %r id=%s next_run=%s delivery=%s",
-                title, task_id, task.next_run_at,
-                [c.get("type") for c in (delivery.channels or [])],
-            )
-
-        elif ptype == SCHEDULE_UPDATE_TYPE:
-            task_id = payload.get("task_id", "")
-            task = _load_current_cwd_task(task_id, "schedule_update")
-            updates = payload.get("updates", {})
-            if "title" in updates:
-                task.title = updates["title"]
-            if "cron" in updates:
-                task.cron = updates["cron"]
-            if "prompt" in updates:
-                task.prompt = updates["prompt"]
-            if "enabled" in updates:
-                task.enabled = bool(updates["enabled"])
-            if "timezone" in updates:
-                task.timezone = validate_timezone_name(updates["timezone"])
-            if "cron" in updates or "timezone" in updates:
-                next_run = (
-                    _parse_dt(task.run_at)
-                    if task.schedule_type == "once"
-                    else compute_next_run(task.cron, datetime.now(timezone.utc), task.timezone)
-                )
-                if next_run is None:
-                    raise ValueError(
-                        "Could not compute the next scheduled run time. "
-                        "Check the schedule, timezone, and once_at value."
-                    )
-                task.next_run_at = next_run.isoformat() if next_run else None
-            task.updated_at = datetime.now(timezone.utc).isoformat()
-            store.save_task(task)
-            logger.info("Scheduled task updated: %r id=%s", task.title, task_id)
-
-        elif ptype == SCHEDULE_CANCEL_TYPE:
-            task_id = payload.get("task_id", "")
-            task = _load_current_cwd_task(task_id, "schedule_cancel")
-            store.delete_task(task_id)
-            logger.info("Scheduled task deleted: id=%s", task_id)
-
-        elif ptype == SCHEDULE_RUN_NOW_TYPE:
-            if self._on_schedule_run_now is not None:
-                task_id = payload.get("task_id", "")
-                task = _load_current_cwd_task(task_id, "schedule_run_now")
-                await self._on_schedule_run_now(task)
-                logger.info("Scheduled task fired immediately: %r id=%s", task.title, task_id)
 
     @staticmethod
     def _extract_ai_text(message: Any) -> str:

@@ -11,7 +11,7 @@ from textual.widgets import Static
 
 from invincat_cli.config import get_glyphs
 from invincat_cli.i18n import t
-from invincat_cli.formatting import format_duration
+from invincat_cli.presentation.formatting import format_duration
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult

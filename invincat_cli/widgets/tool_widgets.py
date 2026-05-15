@@ -127,7 +127,9 @@ class GenericApprovalWidget(ToolApprovalWidget):
             value_str = str(value)
             if len(value_str) > _MAX_VALUE_LEN:
                 hidden = len(value_str) - _MAX_VALUE_LEN
-                value_str = value_str[:_MAX_VALUE_LEN] + t("tool.more_chars", count=hidden)
+                value_str = value_str[:_MAX_VALUE_LEN] + t(
+                    "tool.more_chars", count=hidden
+                )
             yield Static(
                 f"{key}: {value_str}", markup=False, classes="approval-description"
             )
@@ -147,7 +149,9 @@ class PlanApprovalWidget(ToolApprovalWidget):
         todos_raw = self.data.get("todos", [])
         todos = [item for item in todos_raw if isinstance(item, dict)]
         if not todos:
-            yield Static(t("tool.details_not_available"), classes="approval-description")
+            yield Static(
+                t("tool.details_not_available"), classes="approval-description"
+            )
             return
 
         yield Static(t("tool.plan_preview"), classes="approval-description")

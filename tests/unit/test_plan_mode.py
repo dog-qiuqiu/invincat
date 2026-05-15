@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from invincat_cli.command_registry import (
+from invincat_cli.app_runtime.approval import PLAN_MODE_ALLOWED_INTERRUPT_TOOLS
+from invincat_cli.commands.registry import (
     COMMANDS,
-    SLASH_COMMANDS,
     SIDE_EFFECT_FREE,
+    SLASH_COMMANDS,
 )
-from invincat_cli.plan_agent import PLANNER_ALLOWED_TOOLS
-from invincat_cli.app import _PLAN_MODE_ALLOWED_INTERRUPT_TOOLS
+from invincat_cli.middleware.plan_agent import PLANNER_ALLOWED_TOOLS
 
 
 class TestSlashCommandRegistration:
@@ -37,4 +37,14 @@ class TestSlashCommandRegistration:
         assert "/exit-plan" in SIDE_EFFECT_FREE
 
     def test_plan_interrupt_allowlist_tracks_planner_allowed_tools(self) -> None:
-        assert _PLAN_MODE_ALLOWED_INTERRUPT_TOOLS == frozenset(PLANNER_ALLOWED_TOOLS)
+        assert PLAN_MODE_ALLOWED_INTERRUPT_TOOLS == frozenset(PLANNER_ALLOWED_TOOLS)
+
+    def test_update_commands_are_registered(self) -> None:
+        names = {cmd.name for cmd in COMMANDS}
+        autocomplete_names = {entry[0] for entry in SLASH_COMMANDS}
+
+        assert "/update" in names
+        assert "/auto-update" in names
+        assert "/update" in autocomplete_names
+        assert "/auto-update" in autocomplete_names
+        assert "/auto-update" in SIDE_EFFECT_FREE

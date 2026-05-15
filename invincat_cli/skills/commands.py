@@ -10,7 +10,7 @@ These commands are registered with the CLI via main.py:
 from __future__ import annotations
 
 import argparse
-import shutil
+import shutil as shutil  # noqa: F401
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -18,8 +18,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from deepagents.middleware.skills import SkillMetadata
-
-    from invincat_cli.io.output import OutputFormat
 
 from invincat_cli import theme
 
@@ -83,6 +81,33 @@ def _validate_name(name: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _validate_agent_name(name: str) -> tuple[bool, str]:
+    """Validate an agent identifier used as part of the user skills path."""
+    if not name or not name.strip():
+        return False, "cannot be empty"
+    if len(name) > MAX_SKILL_NAME_LENGTH:
+        return False, "cannot exceed 64 characters"
+    if ".." in name or "/" in name or "\\" in name:
+        return False, "cannot contain path components"
+    if name.startswith("-") or name.endswith("-") or "--" in name:
+        return (
+            False,
+            "must be lowercase alphanumeric with hyphens or underscores only",
+        )
+
+    for c in name:
+        if c in {"-", "_"}:
+            continue
+        if (c.isalpha() and c.islower()) or c.isdigit():
+            continue
+        return (
+            False,
+            "must be lowercase alphanumeric with hyphens or underscores only",
+        )
+
+    return True, ""
+
+
 def _validate_skill_path(skill_dir: Path, base_dir: Path) -> tuple[bool, str]:
     """Validate that the resolved skill directory is within the base directory.
 
@@ -105,6 +130,20 @@ def _validate_skill_path(skill_dir: Path, base_dir: Path) -> tuple[bool, str]:
         return False, f"Invalid path: {e}"
     else:
         return True, ""
+
+
+def _find_containing_skills_dir(
+    skill_dir: Path,
+    candidate_dirs: list[Path | None],
+) -> Path | None:
+    """Return the candidate skills root that contains ``skill_dir``."""
+    for base_dir in candidate_dirs:
+        if base_dir is None:
+            continue
+        is_valid, _ = _validate_skill_path(skill_dir, base_dir)
+        if is_valid:
+            return base_dir
+    return None
 
 
 def _format_info_fields(skill: SkillMetadata) -> list[tuple[str, str]]:
@@ -140,758 +179,13 @@ def _format_info_fields(skill: SkillMetadata) -> list[tuple[str, str]]:
     return fields
 
 
-def _list(
-    agent: str, *, project: bool = False, output_format: OutputFormat = "text"
-) -> None:
-    """List all available skills for the specified agent.
-
-    Args:
-        agent: Agent identifier for skills (default: agent).
-        project: If True, show only project skills.
-            If False, show all skills (user + project).
-        output_format: Output format — `'text'` (Rich) or `'json'`.
-    """
-    from rich.markup import escape as escape_markup
-
-    from invincat_cli.config import Settings, console, get_glyphs
-    from invincat_cli.skills.load import list_skills, load_skill_content
-
-    settings = Settings.from_environment()
-    user_skills_dir = settings.get_user_skills_dir(agent)
-    project_skills_dir = settings.get_project_skills_dir()
-    user_agent_skills_dir = settings.get_user_agent_skills_dir()
-    project_agent_skills_dir = settings.get_project_agent_skills_dir()
-
-    # If --project flag is used, only show project skills
-    if project:
-        if not project_skills_dir:
-            if output_format == "json":
-                from invincat_cli.io.output import write_json
-
-                write_json("skills list", [])
-                return
-            console.print("[yellow]Not in a project directory.[/yellow]")
-            console.print(
-                "[dim]Project skills require a .git directory "
-                "in the project root.[/dim]",
-                style=theme.MUTED,
-            )
-            return
-
-        # Check both project skill directories
-        has_deepagents_skills = project_skills_dir.exists() and any(
-            project_skills_dir.iterdir()
-        )
-        has_agent_skills = (
-            project_agent_skills_dir
-            and project_agent_skills_dir.exists()
-            and any(project_agent_skills_dir.iterdir())
-        )
-
-        if not has_deepagents_skills and not has_agent_skills:
-            if output_format == "json":
-                from invincat_cli.io.output import write_json
-
-                write_json("skills list", [])
-                return
-            console.print("[yellow]No project skills found.[/yellow]")
-            console.print(
-                f"[dim]Project skills will be created in {project_skills_dir}/ "
-                "when you add them.[/dim]",
-                style=theme.MUTED,
-            )
-            console.print(
-                "\n[dim]Create a project skill:\n"
-                "  deepagents skills create my-skill --project[/dim]",
-                style=theme.MUTED,
-            )
-            return
-
-        skills = list_skills(
-            user_skills_dir=None,
-            project_skills_dir=project_skills_dir,
-            user_agent_skills_dir=None,
-            project_agent_skills_dir=project_agent_skills_dir,
-        )
-
-        if output_format == "json":
-            from invincat_cli.io.output import write_json
-
-            write_json("skills list", [dict(s) for s in skills])
-            return
-
-        console.print("\n[bold]Project Skills:[/bold]\n", style=theme.PRIMARY)
-    else:
-        # Load skills from all directories (including built-in)
-        skills = list_skills(
-            built_in_skills_dir=settings.get_built_in_skills_dir(),
-            user_skills_dir=user_skills_dir,
-            project_skills_dir=project_skills_dir,
-            user_agent_skills_dir=user_agent_skills_dir,
-            project_agent_skills_dir=project_agent_skills_dir,
-        )
-
-        if output_format == "json":
-            from invincat_cli.io.output import write_json
-
-            write_json("skills list", [dict(s) for s in skills])
-            return
-
-        if not skills:
-            console.print()
-            console.print("[yellow]No skills found.[/yellow]")
-            console.print()
-            console.print(
-                "[dim]Skills are loaded from these directories "
-                "(highest precedence first):\n"
-                "  1. .agents/skills/                 project skills\n"
-                "  2. .invincat/skills/             project skills (alias)\n"
-                "  3. ~/.agents/skills/               user skills\n"
-                "  4. ~/.invincat/<agent>/skills/   user skills (alias)\n"
-                "  5. <package>/built_in_skills/      built-in skills[/dim]",
-                style=theme.MUTED,
-            )
-            console.print(
-                "\n[dim]Create your first skill:\n"
-                "  deepagents skills create my-skill[/dim]",
-                style=theme.MUTED,
-            )
-            return
-
-        console.print("\n[bold]Available Skills:[/bold]\n", style=theme.PRIMARY)
-
-    # Group skills by source
-    user_skills = [s for s in skills if s["source"] == "user"]
-    project_skills_list = [s for s in skills if s["source"] == "project"]
-    built_in_skills_list = [s for s in skills if s["source"] == "built-in"]
-
-    # Show user skills
-    if user_skills and not project:
-        console.print("[bold cyan]User Skills:[/bold cyan]", style=theme.PRIMARY)
-        bullet = get_glyphs().bullet
-        for skill in user_skills:
-            skill_path = Path(skill["path"])
-            name = escape_markup(skill["name"])
-            console.print(f"  {bullet} [bold]{name}[/bold]", style=theme.PRIMARY)
-            console.print(
-                f"    {escape_markup(str(skill_path.parent))}/",
-                style=theme.MUTED,
-            )
-            console.print()
-            console.print(
-                f"    {escape_markup(skill['description'])}",
-                style=theme.MUTED,
-            )
-            console.print()
-
-    # Show project skills
-    if project_skills_list:
-        if not project and user_skills:
-            console.print()
-        console.print("[bold green]Project Skills:[/bold green]", style=theme.PRIMARY)
-        bullet = get_glyphs().bullet
-        for skill in project_skills_list:
-            skill_path = Path(skill["path"])
-            name = escape_markup(skill["name"])
-            console.print(f"  {bullet} [bold]{name}[/bold]", style=theme.PRIMARY)
-            console.print(
-                f"    {escape_markup(str(skill_path.parent))}/",
-                style=theme.MUTED,
-            )
-            console.print()
-            console.print(
-                f"    {escape_markup(skill['description'])}",
-                style=theme.MUTED,
-            )
-            console.print()
-
-    # Show built-in skills
-    if built_in_skills_list and not project:
-        if user_skills or project_skills_list:
-            console.print()
-        console.print(
-            "[bold magenta]Built-in Skills:[/bold magenta]", style=theme.PRIMARY
-        )
-        bullet = get_glyphs().bullet
-        for skill in built_in_skills_list:
-            name = escape_markup(skill["name"])
-            console.print(f"  {bullet} [bold]{name}[/bold]", style=theme.PRIMARY)
-            console.print()
-            console.print(
-                f"    {escape_markup(skill['description'])}",
-                style=theme.MUTED,
-            )
-            console.print()
-
-
-def _generate_template(skill_name: str) -> str:
-    """Generate a `SKILL.md` template for a new skill.
-
-    The template follows the Agent Skills spec
-    (https://agentskills.io/specification) and the skill-creator guidance:
-
-    - Description includes "when to use" trigger information (not the body)
-    - Body contains only instructions loaded after the skill triggers
-
-    Args:
-        skill_name: Name of the skill (used in frontmatter and heading).
-
-    Returns:
-        Complete `SKILL.md` content with YAML frontmatter and markdown body.
-    """
-    title = skill_name.title().replace("-", " ")
-    description = (
-        "TODO: Explain what this skill does and when to use it. "
-        "Include specific triggers — scenarios, file types, or phrases "
-        "that should activate this skill. Example: 'Create and edit PDF "
-        "documents. Use when the user asks to merge, split, fill, or "
-        "annotate PDF files.'"
-    )
-    return f"""---
-name: {skill_name}
-description: "{description}"
-# (Warning: SKILL.md files exceeding 10 MB are silently skipped at load time.)
-# Optional fields per Agent Skills spec:
-# license: Apache-2.0
-# compatibility: Designed for Deep Agents CLI
-# metadata:
-#   author: your-org
-#   version: "1.0"
-# allowed-tools: Bash(git:*) Read
----
-
-# {title}
-
-## Overview
-
-[TODO: 1-2 sentences explaining what this skill enables]
-
-## Instructions
-
-### Step 1: [First Action]
-[Explain what to do first]
-
-### Step 2: [Second Action]
-[Explain what to do next]
-
-### Step 3: [Final Action]
-[Explain how to complete the task]
-
-## Best Practices
-
-- [Best practice 1]
-- [Best practice 2]
-- [Best practice 3]
-
-## Examples
-
-### Example 1: [Scenario Name]
-
-**User Request:** "[Example user request]"
-
-**Approach:**
-1. [Step-by-step breakdown]
-2. [Using tools and commands]
-3. [Expected outcome]
-"""
-
-
-def _create(
-    skill_name: str,
-    agent: str,
-    project: bool = False,
-    *,
-    output_format: OutputFormat = "text",
-) -> None:
-    """Create a new skill with a template SKILL.md file.
-
-    Args:
-        skill_name: Name of the skill to create.
-        agent: Agent identifier for skills
-        project: If True, create in project skills directory.
-            If False, create in user skills directory.
-        output_format: Output format — `'text'` (Rich) or `'json'`.
-
-    Raises:
-        SystemExit: If the skill name is invalid or the directory cannot be created.
-    """
-    from invincat_cli.config import Settings, console, get_glyphs
-
-    # Validate skill name first (per Agent Skills spec)
-    is_valid, error_msg = _validate_name(skill_name)
-    if not is_valid:
-        console.print(f"[bold red]Error:[/bold red] Invalid skill name: {error_msg}")
-        console.print(
-            "[dim]Per Agent Skills spec: names must be lowercase alphanumeric "
-            "with hyphens only.\n"
-            "Examples: web-research, code-review, data-analysis[/dim]",
-            style=theme.MUTED,
-        )
-        raise SystemExit(1)
-
-    # Determine target directory
-    settings = Settings.from_environment()
-    if project:
-        if not settings.project_root:
-            console.print("[bold red]Error:[/bold red] Not in a project directory.")
-            console.print(
-                "[dim]Project skills require a .git directory "
-                "in the project root.[/dim]",
-                style=theme.MUTED,
-            )
-            raise SystemExit(1)
-        skills_dir = settings.ensure_project_skills_dir()
-        if skills_dir is None:
-            console.print(
-                "[bold red]Error:[/bold red] Could not create project skills directory."
-            )
-            raise SystemExit(1)
-    else:
-        skills_dir = settings.ensure_user_skills_dir(agent)
-
-    skill_dir = skills_dir / skill_name
-
-    # Validate the resolved path is within skills_dir
-    is_valid_path, path_error = _validate_skill_path(skill_dir, skills_dir)
-    if not is_valid_path:
-        console.print(f"[bold red]Error:[/bold red] {path_error}")
-        raise SystemExit(1)
-
-    if skill_dir.exists():
-        if output_format == "json":
-            from invincat_cli.io.output import write_json
-
-            write_json(
-                "skills create",
-                {
-                    "name": skill_name,
-                    "path": str(skill_dir),
-                    "project": project,
-                    "already_existed": True,
-                },
-            )
-            return
-        console.print(
-            f"Skill '{skill_name}' already exists at {skill_dir}",
-            style=theme.MUTED,
-        )
-        return
-
-    # Create skill directory
-    skill_dir.mkdir(parents=True, exist_ok=True)
-
-    template = _generate_template(skill_name)
-    skill_md = skill_dir / "SKILL.md"
-    skill_md.write_text(template)
-
-    if output_format == "json":
-        from invincat_cli.io.output import write_json
-
-        write_json(
-            "skills create",
-            {
-                "name": skill_name,
-                "path": str(skill_dir),
-                "project": project,
-            },
-        )
-        return
-
-    checkmark = get_glyphs().checkmark
-    console.print(
-        f"\n[bold]{checkmark} Skill '{skill_name}' created successfully![/bold]",
-        style=theme.PRIMARY,
-    )
-    console.print(f"Location: {skill_dir}\n", style=theme.MUTED)
-    console.print(
-        "[dim]Edit the SKILL.md file to customize:\n"
-        "  1. Update the description in YAML frontmatter\n"
-        "  2. Fill in the instructions and examples\n"
-        "  3. Add any supporting files (scripts, configs, etc.)\n"
-        "\n"
-        f"  nano {skill_md}\n"
-        "\n"
-        "  See examples/skills/ in the deepagents-cli repo for example skills:\n"
-        "   - web-research: Structured research workflow\n"
-        "   - langgraph-docs: LangGraph documentation lookup\n"
-        "\n"
-        "   Copy an example:\n"
-        "   cp -r examples/skills/web-research ~/.invincat/agent/skills/\n",
-        style=theme.MUTED,
-    )
-
-
-def _info(
-    skill_name: str,
-    *,
-    agent: str = "agent",
-    project: bool = False,
-    output_format: OutputFormat = "text",
-) -> None:
-    """Show detailed information about a specific skill.
-
-    Args:
-        skill_name: Name of the skill to show info for.
-        agent: Agent identifier for skills (default: agent).
-        project: If True, only search in project skills.
-            If False, search in both user and project skills.
-        output_format: Output format — `'text'` (Rich) or `'json'`.
-
-    Raises:
-        SystemExit: If the skill is not found or not in a project directory.
-    """
-    from rich.markup import escape as escape_markup
-
-    from invincat_cli.config import Settings, console
-    from invincat_cli.skills.load import list_skills
-
-    settings = Settings.from_environment()
-    user_skills_dir = settings.get_user_skills_dir(agent)
-    project_skills_dir = settings.get_project_skills_dir()
-    user_agent_skills_dir = settings.get_user_agent_skills_dir()
-    project_agent_skills_dir = settings.get_project_agent_skills_dir()
-
-    # Load skills based on --project flag
-    if project:
-        if not project_skills_dir:
-            console.print("[bold red]Error:[/bold red] Not in a project directory.")
-            raise SystemExit(1)
-        skills = list_skills(
-            user_skills_dir=None,
-            project_skills_dir=project_skills_dir,
-            user_agent_skills_dir=None,
-            project_agent_skills_dir=project_agent_skills_dir,
-        )
-    else:
-        skills = list_skills(
-            built_in_skills_dir=settings.get_built_in_skills_dir(),
-            user_skills_dir=user_skills_dir,
-            project_skills_dir=project_skills_dir,
-            user_agent_skills_dir=user_agent_skills_dir,
-            project_agent_skills_dir=project_agent_skills_dir,
-        )
-
-    # Find the skill
-    skill = next((s for s in skills if s["name"] == skill_name), None)
-
-    if not skill:
-        console.print(f"[bold red]Error:[/bold red] Skill '{skill_name}' not found.")
-        console.print("\n[dim]Available skills:[/dim]", style=theme.MUTED)
-        for s in skills:
-            console.print(f"  - {s['name']}", style=theme.MUTED)
-        raise SystemExit(1)
-
-    if output_format == "json":
-        from invincat_cli.io.output import write_json
-
-        write_json("skills info", dict(skill))
-        return
-
-    # Read the full SKILL.md file with containment checks
-    skill_path = Path(skill["path"])
-    allowed_roots = [
-        d.resolve()
-        for d in (
-            settings.get_built_in_skills_dir(),
-            user_skills_dir,
-            project_skills_dir,
-            user_agent_skills_dir,
-            project_agent_skills_dir,
-            settings.get_user_claude_skills_dir(),
-            settings.get_project_claude_skills_dir(),
-        )
-        if d is not None
-    ]
-    allowed_roots.extend(d.resolve() for d in settings.get_extra_skills_dirs())
-    try:
-        skill_content = load_skill_content(str(skill_path), allowed_roots=allowed_roots)
-    except PermissionError as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
-        raise SystemExit(1) from e
-    except OSError as e:
-        console.print(
-            f"[bold red]Error:[/bold red] Could not read SKILL.md for "
-            f"'{skill_name}': {e}"
-        )
-        raise SystemExit(1) from e
-    if skill_content is None:
-        console.print(
-            f"[bold red]Error:[/bold red] Could not read SKILL.md for '{skill_name}'. "
-            "Check file encoding and permissions."
-        )
-        raise SystemExit(1)
-
-    # Determine source label
-    source_labels = {
-        "project": ("Project Skill", "green"),
-        "user": ("User Skill", "cyan"),
-        "built-in": ("Built-in Skill", "magenta"),
-    }
-    source_label, source_color = source_labels.get(skill["source"], ("Skill", "dim"))
-
-    # Check if this project skill shadows a user skill with the same name.
-    # This is a cosmetic hint — if the second list_skills() call fails
-    # (e.g. permission error reading user dirs) we silently skip the warning
-    # rather than crashing the entire `skills info` display.
-    shadowed_user_skill = False
-    if skill["source"] == "project" and not project:
-        try:
-            user_only = list_skills(
-                user_skills_dir=user_skills_dir,
-                project_skills_dir=None,
-                user_agent_skills_dir=user_agent_skills_dir,
-                project_agent_skills_dir=None,
-            )
-            shadowed_user_skill = any(s["name"] == skill_name for s in user_only)
-        except Exception:  # noqa: BLE001, S110  # Shadow detection is cosmetic, safe to swallow
-            pass
-
-    console.print(
-        f"\n[bold]Skill: {escape_markup(skill['name'])}[/bold] "
-        f"[bold {source_color}]({source_label})[/bold {source_color}]\n",
-        style=theme.PRIMARY,
-    )
-    if shadowed_user_skill:
-        console.print(
-            f"[yellow]Note: Overrides user skill '{escape_markup(skill_name)}' "
-            "of the same name[/yellow]\n"
-        )
-    console.print(
-        f"[bold]Location:[/bold] {escape_markup(str(skill_path.parent))}/\n",
-        style=theme.MUTED,
-    )
-    console.print(
-        f"[bold]Description:[/bold] {escape_markup(skill['description'])}\n",
-        style=theme.MUTED,
-    )
-
-    # Show optional metadata fields
-    for label, value in _format_info_fields(skill):
-        console.print(
-            f"[bold]{label}:[/bold] {escape_markup(value)}\n",
-            style=theme.MUTED,
-        )
-
-    # List supporting files
-    skill_dir = skill_path.parent
-    try:
-        supporting_files = [f for f in skill_dir.iterdir() if f.name != "SKILL.md"]
-    except OSError:
-        supporting_files = []
-
-    if supporting_files:
-        console.print("[bold]Supporting Files:[/bold]", style=theme.MUTED)
-        for file in supporting_files:
-            console.print(f"  - {escape_markup(file.name)}", style=theme.MUTED)
-        console.print()
-
-    # Show the full SKILL.md content
-    console.print("[bold]Full SKILL.md Content:[/bold]\n", style=theme.PRIMARY)
-    console.print(skill_content, style=theme.MUTED)
-    console.print()
-
-
-def _delete(
-    skill_name: str,
-    *,
-    agent: str = "agent",
-    project: bool = False,
-    force: bool = False,
-    dry_run: bool = False,
-    output_format: OutputFormat = "text",
-) -> None:
-    """Delete a skill directory after validation and optional user confirmation.
-
-    Validates the skill name, locates the skill in user or project directories,
-    confirms the deletion with the user (unless `force` is `True`), and
-    recursively removes the skill directory.
-
-    Args:
-        skill_name: Name of the skill to delete.
-        agent: Agent identifier for skills.
-        project: If `True`, only search in project skills.
-
-            If `False`, search in both user and project skills.
-        force: If `True`, skip confirmation prompt.
-        dry_run: If `True`, print what would be removed without deleting.
-        output_format: Output format — `'text'` (Rich) or `'json'`.
-
-    Raises:
-        SystemExit: If the deletion fails or a safety check is violated.
-    """
-    from rich.markup import escape as escape_markup
-
-    from invincat_cli.config import Settings, console, get_glyphs
-    from invincat_cli.skills.load import list_skills
-
-    # Validate skill name first (per Agent Skills spec)
-    is_valid, error_msg = _validate_name(skill_name)
-    if not is_valid:
-        console.print(f"[bold red]Error:[/bold red] Invalid skill name: {error_msg}")
-        raise SystemExit(1)
-
-    settings = Settings.from_environment()
-    user_skills_dir = settings.get_user_skills_dir(agent)
-    project_skills_dir = settings.get_project_skills_dir()
-    user_agent_skills_dir = settings.get_user_agent_skills_dir()
-    project_agent_skills_dir = settings.get_project_agent_skills_dir()
-
-    # Load skills based on --project flag
-    if project:
-        if not project_skills_dir:
-            console.print("[bold red]Error:[/bold red] Not in a project directory.")
-            raise SystemExit(1)
-        skills = list_skills(
-            user_skills_dir=None,
-            project_skills_dir=project_skills_dir,
-            user_agent_skills_dir=None,
-            project_agent_skills_dir=project_agent_skills_dir,
-        )
-    else:
-        skills = list_skills(
-            user_skills_dir=user_skills_dir,
-            project_skills_dir=project_skills_dir,
-            user_agent_skills_dir=user_agent_skills_dir,
-            project_agent_skills_dir=project_agent_skills_dir,
-        )
-
-    # Find the skill
-    skill = next((s for s in skills if s["name"] == skill_name), None)
-
-    if not skill:
-        console.print(f"[bold red]Error:[/bold red] Skill '{skill_name}' not found.")
-        console.print("\n[dim]Available skills:[/dim]", style=theme.MUTED)
-        for s in skills:
-            source_tag = "[project]" if s["source"] == "project" else "[user]"
-            console.print(f"  - {s['name']} {source_tag}", style=theme.MUTED)
-        raise SystemExit(1)
-
-    skill_path = Path(skill["path"])
-    skill_dir = skill_path.parent
-
-    # Validate the path is safe to delete
-    base_dir = project_skills_dir if skill["source"] == "project" else user_skills_dir
-    if not base_dir:
-        console.print(
-            "[bold red]Error:[/bold red] Cannot determine base skills directory. "
-            "Refusing to delete."
-        )
-        raise SystemExit(1)
-    is_valid_path, path_error = _validate_skill_path(skill_dir, base_dir)
-    if not is_valid_path:
-        console.print(f"[bold red]Error:[/bold red] {path_error}")
-        raise SystemExit(1)
-
-    if dry_run:
-        if output_format == "json":
-            from invincat_cli.io.output import write_json
-
-            write_json(
-                "skills delete",
-                {
-                    "name": skill_name,
-                    "path": str(skill_dir),
-                    "dry_run": True,
-                },
-            )
-            return
-        console.print(
-            f"Would delete skill '{skill_name}' at {skill_dir}",
-        )
-        console.print("No changes made.", style=theme.MUTED)
-        return
-
-    # Display confirmation summary (text mode only)
-    if output_format != "json":
-        source_label = "Project Skill" if skill["source"] == "project" else "User Skill"
-        source_color = "green" if skill["source"] == "project" else "cyan"
-
-        # Count files for the confirmation summary (display-only; a permission
-        # error in a subdirectory should not abort the entire delete flow).
-        try:
-            file_count = sum(1 for f in skill_dir.rglob("*") if f.is_file())
-        except OSError:
-            file_count = -1
-
-        console.print(
-            f"\n[bold]Skill:[/bold] {escape_markup(skill_name)}"
-            f" [bold {source_color}]({source_label})[/bold {source_color}]",
-            style=theme.PRIMARY,
-        )
-        console.print(
-            f"[bold]Location:[/bold] {escape_markup(str(skill_dir))}/",
-            style=theme.MUTED,
-        )
-        if file_count >= 0:
-            console.print(
-                f"[bold]Files:[/bold] {file_count} file(s) will be deleted\n",
-                style=theme.MUTED,
-            )
-        else:
-            console.print(
-                "[bold]Files:[/bold] (unable to count files)\n",
-                style=theme.MUTED,
-            )
-
-    # Confirmation (skip in JSON mode — no interactive prompt)
-    if not force and output_format != "json":
-        console.print(
-            "[yellow]Are you sure you want to delete this skill? (y/N)[/yellow] ",
-            end="",
-        )
-        try:
-            response = input().strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            console.print("\n[dim]Cancelled.[/dim]")
-            return
-
-        if response not in {"y", "yes"}:
-            console.print("[dim]Cancelled.[/dim]")
-            return
-
-    # Re-validate immediately before deletion to narrow the TOCTOU window
-    # (the user may have paused at the confirmation prompt).
-    if skill_dir.is_symlink():
-        console.print(
-            "[bold red]Error:[/bold red] Skill directory is a symlink. "
-            "Refusing to delete for safety."
-        )
-        raise SystemExit(1)
-
-    is_valid_path, path_error = _validate_skill_path(skill_dir, base_dir)
-    if not is_valid_path:
-        console.print(f"[bold red]Error:[/bold red] {path_error}")
-        raise SystemExit(1)
-
-    # Delete the skill directory
-    try:
-        shutil.rmtree(skill_dir)
-    except OSError as e:
-        console.print(
-            f"[bold red]Error:[/bold red] Failed to fully delete skill: {e}\n"
-            f"[yellow]Warning:[/yellow] Some files may have been partially removed.\n"
-            f"Please inspect: {skill_dir}/"
-        )
-        raise SystemExit(1) from e
-
-    if output_format == "json":
-        from invincat_cli.io.output import write_json
-
-        write_json(
-            "skills delete",
-            {
-                "name": skill_name,
-                "path": str(skill_dir),
-                "deleted": True,
-            },
-        )
-        return
-
-    checkmark = get_glyphs().checkmark
-    console.print(
-        f"{checkmark} Skill '{skill_name}' deleted successfully!",
-        style=theme.PRIMARY,
-    )
+from invincat_cli.skills.commands_create import (  # noqa: E402, F401
+    _create,
+    _generate_template,
+)
+from invincat_cli.skills.commands_delete import _delete  # noqa: E402, F401
+from invincat_cli.skills.commands_info import _info  # noqa: E402, F401
+from invincat_cli.skills.commands_list import _list  # noqa: E402, F401
 
 
 def setup_skills_parser(
@@ -919,7 +213,7 @@ def setup_skills_parser(
     # Lazy wrapper: defers ui import until the help action fires.
     def _lazy_help(fn_name: str) -> Callable[[], None]:
         def _show() -> None:
-            from invincat_cli import ui
+            from invincat_cli.presentation import help as ui
 
             getattr(ui, fn_name)()
 
@@ -1069,7 +363,7 @@ def execute_skills_command(args: argparse.Namespace) -> None:
 
     # validate agent argument
     if args.agent:
-        is_valid, error_msg = _validate_name(args.agent)
+        is_valid, error_msg = _validate_agent_name(args.agent)
         if not is_valid:
             console.print(
                 f"[bold red]Error:[/bold red] Invalid agent name: {error_msg}"
@@ -1112,7 +406,7 @@ def execute_skills_command(args: argparse.Namespace) -> None:
         )
     else:
         # No subcommand provided, show skills help screen
-        from invincat_cli.ui import show_skills_help
+        from invincat_cli.presentation.help import show_skills_help
 
         show_skills_help()
 

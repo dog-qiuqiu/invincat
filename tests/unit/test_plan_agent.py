@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
-from invincat_cli.plan_agent import (
-    PLANNER_APPROVE_PLAN_SYSTEM_PROMPT,
+import asyncio
+
+from langchain_core.messages import ToolMessage
+
+from invincat_cli.middleware.plan_agent import (
     PLANNER_ALLOWED_TOOLS,
+    PLANNER_APPROVE_PLAN_SYSTEM_PROMPT,
     PLANNER_SUBAGENT_NAME,
     PLANNER_SYSTEM_PROMPT,
     PlannerToolAllowListMiddleware,
     PlannerVisibleToolsMiddleware,
     build_planner_input,
+    extract_todos_from_message,
 )
 
 
@@ -48,7 +53,9 @@ class TestPlannerSystemPrompt:
 
     def test_prompt_describes_confirmation_loop(self) -> None:
         assert "ask_user" in PLANNER_SYSTEM_PROMPT
-        assert "Discuss/refine the plan with the user if needed" in PLANNER_SYSTEM_PROMPT
+        assert (
+            "Discuss/refine the plan with the user if needed" in PLANNER_SYSTEM_PROMPT
+        )
         assert "approve_plan" in PLANNER_SYSTEM_PROMPT
         assert "If approval is rejected" in PLANNER_SYSTEM_PROMPT
         assert "rejected plan is not a completed turn" in PLANNER_SYSTEM_PROMPT
@@ -110,6 +117,53 @@ class TestPlannerToolAllowListMiddleware:
         rejection = middleware._reject_if_disallowed(request)  # type: ignore[arg-type]
         assert rejection is None
 
+    def test_wrap_tool_call_allows_and_rejects(self) -> None:
+        middleware = PlannerToolAllowListMiddleware(set(PLANNER_ALLOWED_TOOLS))
+        allowed_request = type(
+            "Req",
+            (),
+            {"tool_call": {"name": "read_file", "id": "tc2", "args": {}}},
+        )()
+        rejected_request = type(
+            "Req",
+            (),
+            {"tool_call": {"name": "write_file", "id": "tc3", "args": {}}},
+        )()
+
+        def handler(_request):  # noqa: ANN001
+            return ToolMessage("ok", tool_call_id="tc2", name="read_file")
+
+        assert middleware.wrap_tool_call(allowed_request, handler).content == "ok"  # type: ignore[arg-type]
+        rejected = middleware.wrap_tool_call(rejected_request, handler)  # type: ignore[arg-type]
+        assert rejected.status == "error"
+
+    def test_awrap_tool_call_allows_and_rejects(self) -> None:
+        middleware = PlannerToolAllowListMiddleware(set(PLANNER_ALLOWED_TOOLS))
+        allowed_request = type(
+            "Req",
+            (),
+            {"tool_call": {"name": "read_file", "id": "tc2", "args": {}}},
+        )()
+        rejected_request = type(
+            "Req",
+            (),
+            {"tool_call": {"name": "write_file", "id": "tc3", "args": {}}},
+        )()
+
+        async def handler(_request):  # noqa: ANN001
+            return ToolMessage("ok", tool_call_id="tc2", name="read_file")
+
+        assert (
+            asyncio.run(
+                middleware.awrap_tool_call(allowed_request, handler)  # type: ignore[arg-type]
+            ).content
+            == "ok"
+        )
+        rejected = asyncio.run(
+            middleware.awrap_tool_call(rejected_request, handler)  # type: ignore[arg-type]
+        )
+        assert rejected.status == "error"
+
 
 class TestPlannerVisibleToolsMiddleware:
     def test_filters_out_write_tools_from_model_schema(self) -> None:
@@ -138,3 +192,37 @@ class TestPlannerVisibleToolsMiddleware:
 
         middleware.wrap_model_call(_Req(), _handler)
         assert captured == ["read_file", "write_todos", "approve_plan"]
+
+    def test_filters_object_tools_and_async_model_call(self) -> None:
+        middleware = PlannerVisibleToolsMiddleware({"read_file"})
+
+        class Tool:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+        class _Req:
+            def __init__(self) -> None:
+                self.tools = [Tool("read_file"), Tool("write_file"), object()]
+
+            def override(self, **kwargs):  # noqa: ANN003
+                nxt = _Req()
+                nxt.tools = kwargs.get("tools", self.tools)
+                return nxt
+
+        async def _handler(req):  # noqa: ANN001
+            return [tool.name for tool in req.tools]
+
+        assert asyncio.run(middleware.awrap_model_call(_Req(), _handler)) == [
+            "read_file"
+        ]
+
+
+class TestExtractTodosFromMessage:
+    def test_extracts_numbered_items_and_statuses(self) -> None:
+        assert extract_todos_from_message("1. Implement\n2. Test") == [
+            {"content": "Implement", "status": "in_progress"},
+            {"content": "Test", "status": "pending"},
+        ]
+
+    def test_returns_none_without_numbered_items(self) -> None:
+        assert extract_todos_from_message("No numbered plan here") is None

@@ -15,7 +15,6 @@ if TYPE_CHECKING:
     from textual.events import Click
 
 from invincat_cli import theme
-from invincat_cli.core.version import __version__
 from invincat_cli.config import (
     _get_editable_install_path,
     _is_editable_install,
@@ -24,8 +23,10 @@ from invincat_cli.config import (
     get_glyphs,
     get_langsmith_project_name,
 )
+from invincat_cli.core.version import __version__
 from invincat_cli.i18n import get_i18n, t
 from invincat_cli.widgets._links import open_style_link
+
 
 def _get_tips() -> list[str]:
     """Get localized tips for the welcome banner.

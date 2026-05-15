@@ -2,6 +2,8 @@
 
 [中文文档](doc/README_CN.md) | [Documentation Index](doc/README.md)
 
+[![codecov](https://codecov.io/gh/dog-qiuqiu/invincat/branch/main/graph/badge.svg)](https://codecov.io/gh/dog-qiuqiu/invincat)
+
 ![](data/banner_en.png)
 
 A Python-based terminal AI programming assistant — collaborate with AI directly in your project directory: read/write files, execute commands, browse the web, and maintain memory across sessions.

@@ -223,7 +223,9 @@ class ApprovalMenu(Container):
                 requires_approval=t("approval.decision_required"),
             )
         else:
-            title = Content(f">>> {count} {t('approval.tool_call')} {t('approval.decision_required')} <<<")
+            title = Content(
+                f">>> {count} {t('approval.tool_call')} {t('approval.decision_required')} <<<"
+            )
         yield Static(title, classes="approval-title")
 
         if self._security_warnings:
@@ -238,7 +240,11 @@ class ApprovalMenu(Container):
             )
             if len(self._security_warnings) > _WARNING_PREVIEW_LIMIT:
                 remaining = len(self._security_warnings) - _WARNING_PREVIEW_LIMIT
-                parts.append(Content.styled(f"\n- {t('approval.more_warnings', count=remaining)}", "dim"))
+                parts.append(
+                    Content.styled(
+                        f"\n- {t('approval.more_warnings', count=remaining)}", "dim"
+                    )
+                )
             yield Static(
                 Content.assemble(*parts),
                 classes="approval-security-warning",

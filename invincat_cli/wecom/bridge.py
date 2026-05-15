@@ -8,10 +8,9 @@ import logging
 import os
 import uuid
 from collections import OrderedDict, deque
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from typing import Any
-
-from collections.abc import Awaitable, Callable
 
 from invincat_cli.wecom.protocol import (
     build_wecom_ping_frame,
@@ -57,7 +56,9 @@ class WeComServerError(RuntimeError):
     from transport-level failures so callers can decide whether to retry.
     """
 
-    def __init__(self, errcode: Any, errmsg: str, *, cmd: str = "", req_id: str = "") -> None:
+    def __init__(
+        self, errcode: Any, errmsg: str, *, cmd: str = "", req_id: str = ""
+    ) -> None:
         super().__init__(
             f"WeCom request failed: cmd={cmd} req_id={req_id} errcode={errcode} errmsg={errmsg}"
         )
@@ -141,7 +142,9 @@ class WeComBridge:
                             ensure_ascii=False,
                         )
                     )
-                    await self._on_status("WeCom connected, awaiting subscription acknowledgement.")
+                    await self._on_status(
+                        "WeCom connected, awaiting subscription acknowledgement."
+                    )
                     self._discard_stale_progress_frames()
                     # flush_outbox is called after subscribe ACK arrives in _handle_control_frame
                     heartbeat_task = asyncio.create_task(self._heartbeat(ws))
@@ -165,7 +168,10 @@ class WeComBridge:
                         # invalid or the bot lacked permission.
                         cmd = frame.get("cmd")
                         errcode = frame.get("errcode", 0)
-                        if cmd in {"aibot_send_msg", "aibot_respond_msg"} and errcode not in (0, None):
+                        if cmd in {
+                            "aibot_send_msg",
+                            "aibot_respond_msg",
+                        } and errcode not in (0, None):
                             logger.warning(
                                 "wecom unmatched response with error cmd=%s req_id=%s errcode=%s errmsg=%s",
                                 cmd,
@@ -243,7 +249,9 @@ class WeComBridge:
                     )
                     await ws.send(raw)
                 except Exception as send_exc:
-                    logger.warning("wecom outbox send failed: %s", send_exc, exc_info=True)
+                    logger.warning(
+                        "wecom outbox send failed: %s", send_exc, exc_info=True
+                    )
                     if self._ws is ws:
                         self._bridge_ready.clear()
                         self._ws = None
@@ -310,7 +318,9 @@ class WeComBridge:
             req_id,
             errcode,
             response.get("errmsg", ""),
-            sorted(resp_body.keys()) if isinstance(resp_body, dict) else type(resp_body).__name__,
+            sorted(resp_body.keys())
+            if isinstance(resp_body, dict)
+            else type(resp_body).__name__,
         )
         if errcode not in (0, None):
             errmsg = str(response.get("errmsg", ""))
@@ -453,10 +463,13 @@ class WeComBridge:
 
     def _discard_stale_progress_frames(self) -> None:
         self._outbox = deque(
-            f for f in self._outbox
+            f
+            for f in self._outbox
             if not (
                 f.get("cmd") == "aibot_respond_msg"
-                and not (((f.get("body") or {}).get("stream") or {}).get("finish", True))
+                and not (
+                    ((f.get("body") or {}).get("stream") or {}).get("finish", True)
+                )
             )
         )
 

@@ -13,8 +13,6 @@ from textual.screen import ModalScreen
 from textual.widgets import Static
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from textual.app import ComposeResult
     from textual.events import Click
 
@@ -43,7 +41,7 @@ class TaskRow(Static):
 
     def __init__(
         self,
-        task: "ScheduledTask",
+        task: ScheduledTask,
         index: int,
         *,
         selected: bool = False,
@@ -58,7 +56,6 @@ class TaskRow(Static):
         from invincat_cli.scheduler.parser import describe_schedule
 
         task = self._task
-        glyphs = get_glyphs()
 
         enabled_icon = "●" if task.enabled else "○"
         status_map = {
@@ -81,7 +78,7 @@ class TaskRow(Static):
                 title=task.title,
                 schedule=schedule_desc,
                 next_run=next_run,
-                status=task.last_status,
+                status=status_icon or task.last_status,
                 short_id=short_id,
             )
         else:
@@ -92,7 +89,7 @@ class TaskRow(Static):
                 title=task.title,
                 schedule=schedule_desc,
                 next_run=next_run,
-                status=task.last_status,
+                status=status_icon or task.last_status,
                 short_id=short_id,
             )
         self.update(label)
@@ -101,11 +98,11 @@ class TaskRow(Static):
         self._selected = selected
         self._update_label()
 
-    def refresh_task(self, task: "ScheduledTask") -> None:
+    def refresh_task(self, task: ScheduledTask) -> None:
         self._task = task
         self._update_label()
 
-    def on_click(self, event: "Click") -> None:
+    def on_click(self, event: Click) -> None:
         event.stop()
         screen = self.screen
         if isinstance(screen, ScheduleManagerScreen):
@@ -218,22 +215,25 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
     }
     """
 
-    def __init__(self, store: "SchedulerStore") -> None:
+    def __init__(self, store: SchedulerStore) -> None:
         super().__init__()
         self._store = store
-        self._tasks: list["ScheduledTask"] = []
+        self._tasks: list[ScheduledTask] = []
         self._selected_index: int = 0
         self._confirm_delete: str | None = None
 
-    def compose(self) -> "ComposeResult":
+    def compose(self) -> ComposeResult:
         glyphs = get_glyphs()
         key_bindings = [
-            (f"{glyphs.arrow_up} / {glyphs.arrow_down}", t("schedule.manager.key.navigate")),
-            ("Enter",                                     t("schedule.manager.key.run_now")),
-            ("p",                                         t("schedule.manager.key.pause_resume")),
-            ("d  d",                                      t("schedule.manager.key.delete")),
-            ("r",                                         t("schedule.manager.key.refresh")),
-            ("Esc",                                       t("schedule.manager.key.close")),
+            (
+                f"{glyphs.arrow_up} / {glyphs.arrow_down}",
+                t("schedule.manager.key.navigate"),
+            ),
+            ("Enter", t("schedule.manager.key.run_now")),
+            ("p", t("schedule.manager.key.pause_resume")),
+            ("d  d", t("schedule.manager.key.delete")),
+            ("r", t("schedule.manager.key.refresh")),
+            ("Esc", t("schedule.manager.key.close")),
         ]
         with Vertical():
             yield Static(t("schedule.manager.title"), classes="schedule-title")
@@ -294,11 +294,11 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
             return
 
         status_map = {
-            "never":   t("schedule.task.status.never"),
+            "never": t("schedule.task.status.never"),
             "success": t("schedule.task.status.success"),
-            "failed":  t("schedule.task.status.failed"),
+            "failed": t("schedule.task.status.failed"),
             "running": t("schedule.task.status.running"),
-            "missed":  t("schedule.task.status.missed"),
+            "missed": t("schedule.task.status.missed"),
             "timeout": t("schedule.task.status.timeout"),
         }
         next_label = t("schedule.manager.next_run_label")
@@ -358,14 +358,24 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
                 else f"[dim]{t('schedule.manager.status.paused')}[/dim]"
             )
             runs_label = t("schedule.manager.status.runs").format(n=task.run_count)
-            fail_label = t("schedule.manager.status.failures").format(n=task.failure_count) if task.failure_count else ""
-            last_date = task.last_run_at[:10] if task.last_run_at else t("schedule.manager.status.never")
+            fail_label = (
+                t("schedule.manager.status.failures").format(n=task.failure_count)
+                if task.failure_count
+                else ""
+            )
+            last_date = (
+                task.last_run_at[:10]
+                if task.last_run_at
+                else t("schedule.manager.status.never")
+            )
             last_label = t("schedule.manager.status.last_run").format(date=last_date)
             parts = [f" {task.title}", state_label, runs_label]
             if fail_label:
                 parts.append(f"[red]{fail_label}[/red]")
             if task.last_run_at:
-                from invincat_cli.scheduler.display import format_schedule_time_for_display
+                from invincat_cli.scheduler.display import (
+                    format_schedule_time_for_display,
+                )
 
                 local_last = format_schedule_time_for_display(
                     task.last_run_at,
@@ -422,7 +432,11 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
         task = self._tasks[self._selected_index]
         new_state = not task.enabled
         self._store.set_task_enabled(task.id, new_state)
-        verb = t("schedule.manager.action.resumed") if new_state else t("schedule.manager.action.paused")
+        verb = (
+            t("schedule.manager.action.resumed")
+            if new_state
+            else t("schedule.manager.action.paused")
+        )
         self._update_status(f"{task.title} — {verb}")
         self._load_tasks()
 
@@ -438,7 +452,9 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
             self._update_status(t("schedule.manager.action.deleted"))
         else:
             self._confirm_delete = task.id
-            self._update_status(t("schedule.manager.confirm_delete").format(title=task.title))
+            self._update_status(
+                t("schedule.manager.confirm_delete").format(title=task.title)
+            )
 
     def action_refresh(self) -> None:
         self._load_tasks()
@@ -447,7 +463,7 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
     def action_close(self) -> None:
         self.dismiss(None)
 
-    def on_key(self, event: "object") -> None:
+    def on_key(self, event: object) -> None:
         # Any key other than 'd' cancels a pending delete confirmation
         key = getattr(event, "key", "")
         if key != "d" and self._confirm_delete is not None:
