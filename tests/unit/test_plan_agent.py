@@ -46,10 +46,25 @@ class TestPlannerSystemPrompt:
     def test_prompt_forbids_common_write_tools(self) -> None:
         # Spot-check that the prompt explicitly names tools the planner
         # must NOT call, so the model understands the boundary.
-        for forbidden in ["edit_file", "write_file", "execute", "task"]:
+        for forbidden in [
+            "edit_file",
+            "write_file",
+            "execute",
+            "task",
+            "provide patches",
+            "requested deliverable",
+        ]:
             assert forbidden in PLANNER_SYSTEM_PROMPT, (
                 f"system prompt should forbid {forbidden}"
             )
+
+    def test_prompt_separates_planning_from_execution(self) -> None:
+        lowered = PLANNER_SYSTEM_PROMPT.lower()
+        assert "not the execution agent" in lowered
+        assert "must not complete" in lowered
+        assert "deliverable is always an approved checklist" in lowered
+        assert "main agent executes" in lowered
+        assert "never replace `write_todos`/`approve_plan`" in lowered
 
     def test_prompt_describes_confirmation_loop(self) -> None:
         assert "ask_user" in PLANNER_SYSTEM_PROMPT
@@ -63,6 +78,7 @@ class TestPlannerSystemPrompt:
     def test_approval_prompt_keeps_rejected_plans_in_planning_loop(self) -> None:
         assert "stay in planning mode" in PLANNER_APPROVE_PLAN_SYSTEM_PROMPT
         assert "call `approve_plan` again" in PLANNER_APPROVE_PLAN_SYSTEM_PROMPT
+        assert "Do NOT start the first task" in PLANNER_APPROVE_PLAN_SYSTEM_PROMPT
 
     def test_prompt_mentions_interrupt_flow(self) -> None:
         assert "write_todos" in PLANNER_SYSTEM_PROMPT

@@ -66,6 +66,7 @@ ZH_TRANSLATIONS: dict[str, str] = {
         "plan.auto_reject_non_plan_tool": "在 /plan 模式下已拒绝非计划工具调用：{tools}。请继续完善计划。",
         "plan.agent_not_configured": "代理未配置。",
         "plan.planner_unavailable": "计划代理当前不可用。",
+        "plan.missing_checklist": "规划代理没有产出可审批清单。/plan 模式下应使用 write_todos 和 approve_plan 提交计划，而不是直接完成任务。",
         "plan.approval_no_valid_todos": "计划已确认，但未找到有效待办清单；请重新生成计划。",
         "plan.ready_no_valid_todos": "规划代理已标记计划就绪，但未找到有效待办清单；请重新生成计划。",
         "plan.blocked_tool_error": "已被 /plan 策略拦截：规划模式下不允许调用该工具。",

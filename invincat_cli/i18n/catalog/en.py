@@ -66,6 +66,7 @@ EN_TRANSLATIONS: dict[str, str] = {
         "plan.auto_reject_non_plan_tool": "Rejected non-plan tool call in /plan mode: {tools}. Continue refining the plan.",
         "plan.agent_not_configured": "Agent not configured.",
         "plan.planner_unavailable": "Planner agent is unavailable.",
+        "plan.missing_checklist": "Planner returned without an approval checklist. In /plan mode, provide a checklist with write_todos and approve_plan instead of completing the task.",
         "plan.approval_no_valid_todos": "Planner approval succeeded but no valid todo list was found; please regenerate the plan.",
         "plan.ready_no_valid_todos": "Planner marked plan-ready but no valid todo list was found; please regenerate the plan.",
         "plan.blocked_tool_error": "Blocked by /plan policy: this tool is not allowed in planner mode.",

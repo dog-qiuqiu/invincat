@@ -224,6 +224,12 @@ async def after_planner_turn(app: Any) -> None:  # noqa: ANN401
         return
 
     if not planner_turn_has_write_todos(messages):
+        if (
+            app._session_state
+            and app._session_state.plan_mode
+            and extract_latest_ai_text(messages)
+        ):
+            await app._mount_message(AppMessage(t("plan.missing_checklist")))
         return
 
     todos = extract_todos_from_state(state_values)

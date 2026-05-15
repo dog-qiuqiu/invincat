@@ -355,6 +355,25 @@ def test_after_planner_turn_early_returns_and_reports_no_valid_todos() -> None:
     assert app.messages == []
 
 
+def test_after_planner_turn_reports_prose_only_planner_output() -> None:
+    app = PlanApp()
+    app._session_state = SimpleNamespace(
+        thread_id="planner-thread",
+        plan_mode=True,
+    )
+    app.state_values = {
+        "messages": [
+            HumanMessage(content="修复这个 bug"),
+            AIMessage(content="我已经分析并给出了修复方式。"),
+        ],
+    }
+
+    asyncio.run(plan_handlers.after_planner_turn(app))
+
+    assert any("write_todos" in content for content in message_contents(app))
+    assert app.processed == []
+
+
 def test_after_planner_turn_processes_todos_and_finalizes_approved_tool() -> None:
     app = PlanApp()
     app.state_values = {
