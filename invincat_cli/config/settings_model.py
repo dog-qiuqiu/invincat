@@ -483,7 +483,7 @@ class Settings:
         Returns:
             Path to the `built_in_skills/` directory within the package.
         """
-        return Path(__file__).parent / "built_in_skills"
+        return Path(__file__).resolve().parents[1] / "built_in_skills"
 
     def get_extra_skills_dirs(self) -> list[Path]:
         """Get user-configured extra skill directories.

@@ -230,7 +230,10 @@ class TestSettings:
             settings.get_project_claude_skills_dir()
             == tmp_path / "repo" / ".claude" / "skills"
         )
-        assert settings.get_built_in_skills_dir().name == "built_in_skills"
+        built_in_skills_dir = settings.get_built_in_skills_dir()
+        assert built_in_skills_dir.name == "built_in_skills"
+        assert built_in_skills_dir.parent.name == "invincat_cli"
+        assert (built_in_skills_dir / "skill-creator" / "SKILL.md").is_file()
         assert settings.get_extra_skills_dirs() == [tmp_path / "extra"]
 
         with pytest.raises(ValueError, match="Invalid agent name"):
