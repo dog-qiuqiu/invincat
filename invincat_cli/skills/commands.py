@@ -83,6 +83,33 @@ def _validate_name(name: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _validate_agent_name(name: str) -> tuple[bool, str]:
+    """Validate an agent identifier used as part of the user skills path."""
+    if not name or not name.strip():
+        return False, "cannot be empty"
+    if len(name) > MAX_SKILL_NAME_LENGTH:
+        return False, "cannot exceed 64 characters"
+    if ".." in name or "/" in name or "\\" in name:
+        return False, "cannot contain path components"
+    if name.startswith("-") or name.endswith("-") or "--" in name:
+        return (
+            False,
+            "must be lowercase alphanumeric with hyphens or underscores only",
+        )
+
+    for c in name:
+        if c in {"-", "_"}:
+            continue
+        if (c.isalpha() and c.islower()) or c.isdigit():
+            continue
+        return (
+            False,
+            "must be lowercase alphanumeric with hyphens or underscores only",
+        )
+
+    return True, ""
+
+
 def _validate_skill_path(skill_dir: Path, base_dir: Path) -> tuple[bool, str]:
     """Validate that the resolved skill directory is within the base directory.
 
@@ -105,6 +132,20 @@ def _validate_skill_path(skill_dir: Path, base_dir: Path) -> tuple[bool, str]:
         return False, f"Invalid path: {e}"
     else:
         return True, ""
+
+
+def _find_containing_skills_dir(
+    skill_dir: Path,
+    candidate_dirs: list[Path | None],
+) -> Path | None:
+    """Return the candidate skills root that contains ``skill_dir``."""
+    for base_dir in candidate_dirs:
+        if base_dir is None:
+            continue
+        is_valid, _ = _validate_skill_path(skill_dir, base_dir)
+        if is_valid:
+            return base_dir
+    return None
 
 
 def _format_info_fields(skill: SkillMetadata) -> list[tuple[str, str]]:
@@ -769,17 +810,20 @@ def _delete(
     skill_path = Path(skill["path"])
     skill_dir = skill_path.parent
 
-    # Validate the path is safe to delete
-    base_dir = project_skills_dir if skill["source"] == "project" else user_skills_dir
+    # Validate the path is safe to delete.  Skills may come from either the
+    # DeepAgents-specific directory or the `.agents/skills` alias, so choose the
+    # concrete root that actually contains the discovered skill.
+    candidate_base_dirs = (
+        [project_skills_dir, project_agent_skills_dir]
+        if skill["source"] == "project"
+        else [user_skills_dir, user_agent_skills_dir]
+    )
+    base_dir = _find_containing_skills_dir(skill_dir, candidate_base_dirs)
     if not base_dir:
         console.print(
-            "[bold red]Error:[/bold red] Cannot determine base skills directory. "
+            "[bold red]Error:[/bold red] Skill directory is not inside a known skills directory. "
             "Refusing to delete."
         )
-        raise SystemExit(1)
-    is_valid_path, path_error = _validate_skill_path(skill_dir, base_dir)
-    if not is_valid_path:
-        console.print(f"[bold red]Error:[/bold red] {path_error}")
         raise SystemExit(1)
 
     if dry_run:
@@ -858,9 +902,12 @@ def _delete(
         )
         raise SystemExit(1)
 
-    is_valid_path, path_error = _validate_skill_path(skill_dir, base_dir)
-    if not is_valid_path:
-        console.print(f"[bold red]Error:[/bold red] {path_error}")
+    base_dir = _find_containing_skills_dir(skill_dir, candidate_base_dirs)
+    if not base_dir:
+        console.print(
+            "[bold red]Error:[/bold red] Skill directory is not inside a known skills directory. "
+            "Refusing to delete."
+        )
         raise SystemExit(1)
 
     # Delete the skill directory
@@ -1069,7 +1116,7 @@ def execute_skills_command(args: argparse.Namespace) -> None:
 
     # validate agent argument
     if args.agent:
-        is_valid, error_msg = _validate_name(args.agent)
+        is_valid, error_msg = _validate_agent_name(args.agent)
         if not is_valid:
             console.print(
                 f"[bold red]Error:[/bold red] Invalid agent name: {error_msg}"

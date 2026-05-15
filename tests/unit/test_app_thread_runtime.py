@@ -18,41 +18,56 @@ from invincat_cli.app_runtime.thread_runtime import (
 
 
 def test_thread_resume_block_reason() -> None:
-    assert thread_resume_block_reason(
-        has_agent=False,
-        has_session=False,
-        current_thread_id=None,
-        requested_thread_id="thread-1",
-        switching=False,
-    ) == "no_agent"
-    assert thread_resume_block_reason(
-        has_agent=True,
-        has_session=False,
-        current_thread_id=None,
-        requested_thread_id="thread-1",
-        switching=False,
-    ) == "no_session"
-    assert thread_resume_block_reason(
-        has_agent=True,
-        has_session=True,
-        current_thread_id="thread-1",
-        requested_thread_id="thread-1",
-        switching=False,
-    ) == "already_on"
-    assert thread_resume_block_reason(
-        has_agent=True,
-        has_session=True,
-        current_thread_id="thread-1",
-        requested_thread_id="thread-2",
-        switching=True,
-    ) == "switching"
-    assert thread_resume_block_reason(
-        has_agent=True,
-        has_session=True,
-        current_thread_id="thread-1",
-        requested_thread_id="thread-2",
-        switching=False,
-    ) is None
+    assert (
+        thread_resume_block_reason(
+            has_agent=False,
+            has_session=False,
+            current_thread_id=None,
+            requested_thread_id="thread-1",
+            switching=False,
+        )
+        == "no_agent"
+    )
+    assert (
+        thread_resume_block_reason(
+            has_agent=True,
+            has_session=False,
+            current_thread_id=None,
+            requested_thread_id="thread-1",
+            switching=False,
+        )
+        == "no_session"
+    )
+    assert (
+        thread_resume_block_reason(
+            has_agent=True,
+            has_session=True,
+            current_thread_id="thread-1",
+            requested_thread_id="thread-1",
+            switching=False,
+        )
+        == "already_on"
+    )
+    assert (
+        thread_resume_block_reason(
+            has_agent=True,
+            has_session=True,
+            current_thread_id="thread-1",
+            requested_thread_id="thread-2",
+            switching=True,
+        )
+        == "switching"
+    )
+    assert (
+        thread_resume_block_reason(
+            has_agent=True,
+            has_session=True,
+            current_thread_id="thread-1",
+            requested_thread_id="thread-2",
+            switching=False,
+        )
+        is None
+    )
 
 
 def test_thread_resume_block_message_key() -> None:
@@ -126,8 +141,7 @@ def test_thread_switch_failed_message() -> None:
         error=RuntimeError("boom"),
     )
     assert message == (
-        "Failed to switch to thread thread-1: boom. "
-        "Use /threads to try again."
+        "Failed to switch to thread thread-1: boom. Use /threads to try again."
     )
 
     rollback_message = thread_switch_failed_message(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 from invincat_cli.app_runtime.memory import (
@@ -17,13 +18,16 @@ from invincat_cli.app_runtime.memory import (
 
 
 def test_resolve_auto_offload_decision() -> None:
-    assert resolve_auto_offload_decision(
-        tokens_approximate=False,
-        now=10.0,
-        cooldown_until=0.0,
-        context_tokens=85,
-        context_limit=100,
-    ) is not None
+    assert (
+        resolve_auto_offload_decision(
+            tokens_approximate=False,
+            now=10.0,
+            cooldown_until=0.0,
+            context_tokens=85,
+            context_limit=100,
+        )
+        is not None
+    )
 
     decision = resolve_auto_offload_decision(
         tokens_approximate=False,
@@ -40,27 +44,56 @@ def test_resolve_auto_offload_decision() -> None:
 
 
 def test_resolve_auto_offload_decision_skips_ineligible_state() -> None:
-    assert resolve_auto_offload_decision(
-        tokens_approximate=True,
-        now=10.0,
-        cooldown_until=0.0,
-        context_tokens=90,
-        context_limit=100,
-    ) is None
-    assert resolve_auto_offload_decision(
-        tokens_approximate=False,
-        now=10.0,
-        cooldown_until=20.0,
-        context_tokens=90,
-        context_limit=100,
-    ) is None
-    assert resolve_auto_offload_decision(
-        tokens_approximate=False,
-        now=10.0,
-        cooldown_until=0.0,
-        context_tokens=70,
-        context_limit=100,
-    ) is None
+    assert (
+        resolve_auto_offload_decision(
+            tokens_approximate=True,
+            now=10.0,
+            cooldown_until=0.0,
+            context_tokens=90,
+            context_limit=100,
+        )
+        is None
+    )
+    assert (
+        resolve_auto_offload_decision(
+            tokens_approximate=False,
+            now=10.0,
+            cooldown_until=20.0,
+            context_tokens=90,
+            context_limit=100,
+        )
+        is None
+    )
+    assert (
+        resolve_auto_offload_decision(
+            tokens_approximate=False,
+            now=10.0,
+            cooldown_until=0.0,
+            context_tokens=0,
+            context_limit=100,
+        )
+        is None
+    )
+    assert (
+        resolve_auto_offload_decision(
+            tokens_approximate=False,
+            now=10.0,
+            cooldown_until=0.0,
+            context_tokens=90,
+            context_limit=None,
+        )
+        is None
+    )
+    assert (
+        resolve_auto_offload_decision(
+            tokens_approximate=False,
+            now=10.0,
+            cooldown_until=0.0,
+            context_tokens=70,
+            context_limit=100,
+        )
+        is None
+    )
 
 
 def test_resolve_memory_update_notification_single_path() -> None:
@@ -72,11 +105,52 @@ def test_resolve_memory_update_notification_single_path() -> None:
     assert notification is not None
     assert notification.count == 1
     assert notification.short_path == "~/memory_project.json"
-    assert format_memory_update_success(
-        notification,
-        single_template="Updated {path}",
-        multiple_template="Updated {n} files",
-    ) == "Updated ~/memory_project.json"
+    assert (
+        format_memory_update_success(
+            notification,
+            single_template="Updated {path}",
+            multiple_template="Updated {n} files",
+        )
+        == "Updated ~/memory_project.json"
+    )
+
+
+def test_resolve_memory_update_notification_accepts_string_and_fallback_path() -> None:
+    notification = resolve_memory_update_notification(
+        "/tmp/memory_project.json",
+        home=Path("/Users/example"),
+    )
+
+    assert notification is not None
+    assert notification.count == 1
+    assert notification.short_path == "/tmp/memory_project.json"
+
+
+def test_resolve_memory_update_notification_skips_empty_and_unknown_values() -> None:
+    assert resolve_memory_update_notification(None, home=Path("/Users/example")) is None
+    assert resolve_memory_update_notification([], home=Path("/Users/example")) is None
+    assert resolve_memory_update_notification(123, home=Path("/Users/example")) is None
+
+    class TruthyEmptySequence(Sequence[object]):
+        def __len__(self) -> int:
+            return 0
+
+        def __getitem__(self, index: int) -> object:
+            raise IndexError(index)
+
+        def __iter__(self) -> Iterator[object]:
+            return iter(())
+
+        def __bool__(self) -> bool:
+            return True
+
+    assert (
+        resolve_memory_update_notification(
+            TruthyEmptySequence(),
+            home=Path("/Users/example"),
+        )
+        is None
+    )
 
 
 def test_resolve_memory_update_notification_multiple_paths() -> None:
@@ -88,11 +162,14 @@ def test_resolve_memory_update_notification_multiple_paths() -> None:
     assert notification is not None
     assert notification.count == 2
     assert notification.short_path is None
-    assert format_memory_update_success(
-        notification,
-        single_template="Updated {path}",
-        multiple_template="Updated {n} files",
-    ) == "Updated 2 files"
+    assert (
+        format_memory_update_success(
+            notification,
+            single_template="Updated {path}",
+            multiple_template="Updated {n} files",
+        )
+        == "Updated 2 files"
+    )
 
 
 def test_build_offload_budget_cache_key_sorts_profile_override() -> None:

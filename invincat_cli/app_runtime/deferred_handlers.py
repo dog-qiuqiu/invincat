@@ -14,9 +14,7 @@ logger = logging.getLogger(__name__)
 
 def defer_action(app: Any, action: DeferredAction) -> None:  # noqa: ANN401
     """Queue a deferred action, replacing any existing action of the same kind."""
-    app._deferred_actions = [
-        a for a in app._deferred_actions if a.kind != action.kind
-    ]
+    app._deferred_actions = [a for a in app._deferred_actions if a.kind != action.kind]
     app._deferred_actions.append(action)
 
 

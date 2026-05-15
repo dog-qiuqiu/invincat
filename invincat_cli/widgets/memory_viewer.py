@@ -225,7 +225,9 @@ def _load_scope_snapshot(scope: str, path: str) -> MemoryScopeView:
     )
 
 
-def load_memory_snapshot(memory_store_paths: dict[str, str]) -> dict[str, MemoryScopeView]:
+def load_memory_snapshot(
+    memory_store_paths: dict[str, str],
+) -> dict[str, MemoryScopeView]:
     """Load user/project memory snapshots for viewer rendering."""
     snapshots: dict[str, MemoryScopeView] = {}
     for scope in ("user", "project"):
@@ -245,7 +247,8 @@ def _delete_memory_item(store_path: str, item_id: str) -> None:
         msg = "invalid store schema: items is not a list"
         raise ValueError(msg)
     payload["items"] = [
-        item for item in items
+        item
+        for item in items
         if not (isinstance(item, dict) and item.get("id") == item_id)
     ]
     content = json.dumps(payload, ensure_ascii=False, indent=2)
@@ -288,7 +291,9 @@ def _apply_sort(items: list[MemoryItemView], sort_mode: str) -> list[MemoryItemV
     else:  # score_desc (default)
         key, reverse = _key_score_desc, False
 
-    return sorted(active, key=key, reverse=reverse) + sorted(archived, key=key, reverse=reverse)
+    return sorted(active, key=key, reverse=reverse) + sorted(
+        archived, key=key, reverse=reverse
+    )
 
 
 class MemoryViewerScreen(ModalScreen[None]):
@@ -456,7 +461,8 @@ class MemoryViewerScreen(ModalScreen[None]):
                 )
                 sorted_items = _apply_sort(view.items, self._sort_mode)
                 visible: list[MemoryItemView] = [
-                    item for item in sorted_items
+                    item
+                    for item in sorted_items
                     if item.status == "active" or self._show_archived
                 ]
                 self._visible_items = visible
@@ -498,7 +504,11 @@ class MemoryViewerScreen(ModalScreen[None]):
                             f"{escape(item.last_scored_at or '-')}"
                         )
 
-        content = "\n".join(lines).strip() if lines else t("memory.viewer.no_stores_configured")
+        content = (
+            "\n".join(lines).strip()
+            if lines
+            else t("memory.viewer.no_stores_configured")
+        )
         children = list(container.children)
         if children and isinstance(children[0], Static):
             children[0].update(_markup_text([content]))
@@ -523,7 +533,9 @@ class MemoryViewerScreen(ModalScreen[None]):
         self._render_snapshot()
 
     def action_cycle_sort(self) -> None:
-        idx = _SORT_MODES.index(self._sort_mode) if self._sort_mode in _SORT_MODES else 0
+        idx = (
+            _SORT_MODES.index(self._sort_mode) if self._sort_mode in _SORT_MODES else 0
+        )
         self._sort_mode = _SORT_MODES[(idx + 1) % len(_SORT_MODES)]
         self._render_snapshot()
 
@@ -538,7 +550,9 @@ class MemoryViewerScreen(ModalScreen[None]):
         self._pending_delete_id = None
         self._status_message = ""
         if self._visible_items:
-            self._selected_index = min(len(self._visible_items) - 1, self._selected_index + 1)
+            self._selected_index = min(
+                len(self._visible_items) - 1, self._selected_index + 1
+            )
         self._render_snapshot()
 
     def action_delete_item(self) -> None:

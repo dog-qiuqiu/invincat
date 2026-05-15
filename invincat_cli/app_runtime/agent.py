@@ -124,7 +124,9 @@ def queued_scheduled_run_state(
 
 def should_route_message_to_planner(session_state: object | None) -> bool:
     """Return whether a user message should be routed to the planner."""
-    return bool(session_state is not None and getattr(session_state, "plan_mode", False))
+    return bool(
+        session_state is not None and getattr(session_state, "plan_mode", False)
+    )
 
 
 def should_clear_scheduled_run_before_send(*, processing_pending: bool) -> bool:
@@ -159,7 +161,11 @@ def can_start_agent_turn(
     session_state: object | None,
 ) -> bool:
     """Return whether all runtime pieces are present for an agent turn."""
-    return target_agent is not None and ui_adapter is not None and session_state is not None
+    return (
+        target_agent is not None
+        and ui_adapter is not None
+        and session_state is not None
+    )
 
 
 def is_planner_agent_turn(

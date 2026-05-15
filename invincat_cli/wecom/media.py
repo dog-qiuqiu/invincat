@@ -151,11 +151,15 @@ async def download_wecom_inbound_media(
                 except ValueError:
                     declared_size = 0
                 if declared_size > encrypted_max_bytes:
-                    raise ValueError("Inbound WeCom media is larger than the 20 MB limit")
+                    raise ValueError(
+                        "Inbound WeCom media is larger than the 20 MB limit"
+                    )
             async for chunk in response.aiter_bytes():
                 encrypted_size += len(chunk)
                 if encrypted_size > encrypted_max_bytes:
-                    raise ValueError("Inbound WeCom media is larger than the 20 MB limit")
+                    raise ValueError(
+                        "Inbound WeCom media is larger than the 20 MB limit"
+                    )
                 encrypted_parts.append(chunk)
 
     encrypted = b"".join(encrypted_parts)

@@ -32,10 +32,7 @@ def remove_scheduled_messages(
     return deque(
         msg
         for msg in messages
-        if not (
-            msg.scheduled_run_id == run_id
-            and msg.scheduled_task_id == task_id
-        )
+        if not (msg.scheduled_run_id == run_id and msg.scheduled_task_id == task_id)
     )
 
 

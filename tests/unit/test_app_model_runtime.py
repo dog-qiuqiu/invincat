@@ -48,25 +48,37 @@ def test_resolve_model_spec_uses_detected_provider_for_bare_model() -> None:
 
 
 def test_normalize_default_model_spec() -> None:
-    assert normalize_default_model_spec(
-        ":anthropic:claude-test",
-        detect_provider=lambda _spec: "openai",
-    ) == "anthropic:claude-test"
-    assert normalize_default_model_spec(
-        "gpt-test",
-        detect_provider=lambda _spec: "openai",
-    ) == "openai:gpt-test"
-    assert normalize_default_model_spec(
-        "custom-model",
-        detect_provider=lambda _spec: None,
-    ) == "custom-model"
+    assert (
+        normalize_default_model_spec(
+            ":anthropic:claude-test",
+            detect_provider=lambda _spec: "openai",
+        )
+        == "anthropic:claude-test"
+    )
+    assert (
+        normalize_default_model_spec(
+            "gpt-test",
+            detect_provider=lambda _spec: "openai",
+        )
+        == "openai:gpt-test"
+    )
+    assert (
+        normalize_default_model_spec(
+            "custom-model",
+            detect_provider=lambda _spec: None,
+        )
+        == "custom-model"
+    )
 
 
 def test_missing_credentials_detail() -> None:
-    assert missing_credentials_detail(
-        "openai",
-        get_credential_env_var=lambda _provider: "OPENAI_API_KEY",
-    ) == "OPENAI_API_KEY is not set or is empty"
+    assert (
+        missing_credentials_detail(
+            "openai",
+            get_credential_env_var=lambda _provider: "OPENAI_API_KEY",
+        )
+        == "OPENAI_API_KEY is not set or is empty"
+    )
     assert "provider 'unknown' is not recognized" in missing_credentials_detail(
         "unknown",
         get_credential_env_var=lambda _provider: None,

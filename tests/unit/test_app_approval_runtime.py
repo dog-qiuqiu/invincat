@@ -34,6 +34,12 @@ def test_disallowed_plan_interrupt_tools_filters_allowed_tools() -> None:
     ) == ["edit_file", "write_file"]
 
 
+def test_disallowed_plan_interrupt_tools_ignores_invalid_requests() -> None:
+    assert disallowed_plan_interrupt_tools(None) == []
+    assert disallowed_plan_interrupt_tools("write_file") == []
+    assert disallowed_plan_interrupt_tools(42) == []
+
+
 def test_plan_interrupt_guard_disallowed_tools_requires_active_plan_guard() -> None:
     requests = [{"name": "web_search"}, {"name": "write_file"}]
 
@@ -88,16 +94,39 @@ def test_resolve_auto_approved_shell_commands_requires_all_requests_allowed() ->
         is_shell_command_allowed=_allowed,
     ) == ["pytest -q"]
 
-    assert resolve_auto_approved_shell_commands(
-        [
-            {"name": "shell", "args": {"command": "pytest -q"}},
-            {"name": "write_file", "args": {}},
-        ],
-        shell_allow_list=["pytest"],
-        shell_tool_names=frozenset({"shell"}),
-        cwd="/repo",
-        is_shell_command_allowed=_allowed,
-    ) is None
+    assert (
+        resolve_auto_approved_shell_commands(
+            [
+                {"name": "shell", "args": {"command": "pytest -q"}},
+                {"name": "write_file", "args": {}},
+            ],
+            shell_allow_list=["pytest"],
+            shell_tool_names=frozenset({"shell"}),
+            cwd="/repo",
+            is_shell_command_allowed=_allowed,
+        )
+        is None
+    )
+    assert (
+        resolve_auto_approved_shell_commands(
+            [{"name": "shell", "args": {"command": "pytest -q"}}],
+            shell_allow_list=[],
+            shell_tool_names=frozenset({"shell"}),
+            cwd="/repo",
+            is_shell_command_allowed=_allowed,
+        )
+        is None
+    )
+    assert (
+        resolve_auto_approved_shell_commands(
+            [{"name": "shell", "args": {"command": "rm -rf build"}}],
+            shell_allow_list=["pytest"],
+            shell_tool_names=frozenset({"shell"}),
+            cwd="/repo",
+            is_shell_command_allowed=_allowed,
+        )
+        is None
+    )
 
 
 def test_build_auto_approved_shell_message() -> None:
@@ -165,6 +194,4 @@ def test_map_raw_approval_to_plan_decision() -> None:
     assert map_raw_approval_to_plan_decision({"type": "approve"}) == {
         "type": "approved"
     }
-    assert map_raw_approval_to_plan_decision({"type": "reject"}) == {
-        "type": "rejected"
-    }
+    assert map_raw_approval_to_plan_decision({"type": "reject"}) == {"type": "rejected"}

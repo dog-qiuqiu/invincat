@@ -164,7 +164,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "schedule.run_queued": "Scheduled task queued: {title}",
         "schedule.missed": "Missed scheduled task: {title} — running now",
         "schedule.manager.title": "Scheduled Tasks",
-        "schedule.manager.empty": "  No scheduled tasks. Tell the assistant to create one, e.g. \"Analyze the project every morning at 8am\"",
+        "schedule.manager.empty": '  No scheduled tasks. Tell the assistant to create one, e.g. "Analyze the project every morning at 8am"',
         "schedule.manager.footer_hint": "Tip: Ask the assistant in natural language to create new scheduled tasks",
         "schedule.manager.key.navigate": "Navigate task list",
         "schedule.manager.key.run_now": "Run selected task now (skip scheduled time)",
@@ -183,7 +183,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "schedule.manager.action.paused": "Paused",
         "schedule.manager.action.deleted": "Deleted",
         "schedule.manager.action.refreshed": "Refreshed",
-        "schedule.manager.confirm_delete": "Delete \"{title}\"? Press d again to confirm, any other key to cancel",
+        "schedule.manager.confirm_delete": 'Delete "{title}"? Press d again to confirm, any other key to cancel',
         "schedule.task.status.never": "—",
         "schedule.task.status.success": "✓ ok",
         "schedule.task.status.failed": "✗ failed",
@@ -940,7 +940,7 @@ class I18n:
         Args:
             value: The language to set.
         """
-        if value not in Language:
+        if not isinstance(value, Language):
             logger.warning(
                 "Invalid language '%s', falling back to default '%s'",
                 value,

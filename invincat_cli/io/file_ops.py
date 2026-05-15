@@ -404,7 +404,10 @@ class FileOpTracker:
                         record = r
                         self.active.pop(key, None)
                         _removed_from_active = True
-                        if tool_call_id is not None and record.tool_call_id != tool_call_id:
+                        if (
+                            tool_call_id is not None
+                            and record.tool_call_id != tool_call_id
+                        ):
                             record.tool_call_id = tool_call_id
                         logger.debug(
                             "complete_with_message: matched record by tool_name=%s path=%s (key=%s)",
@@ -501,7 +504,7 @@ class FileOpTracker:
                     record.tool_call_id,
                 )
             before_lines = _count_lines(record.before_content or "")
-            
+
             logger.debug(
                 "Generating diff: tool=%s, before_lines=%s, after_lines=%s, "
                 "before_len=%s, after_len=%s",
@@ -511,7 +514,7 @@ class FileOpTracker:
                 len(record.before_content or ""),
                 len(record.after_content),
             )
-            
+
             diff = compute_unified_diff(
                 record.before_content or "",
                 record.after_content,
@@ -519,7 +522,7 @@ class FileOpTracker:
                 max_lines=100,
             )
             record.diff = diff
-            
+
             logger.debug(
                 "Diff generated: length=%s, empty=%s",
                 len(diff) if diff else 0,
@@ -572,7 +575,7 @@ class FileOpTracker:
             record.physical_path,
             "available" if self.backend else "not available",
         )
-        
+
         # Try backend first if available (works for any BackendProtocol implementation)
         if self.backend:
             try:

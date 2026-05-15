@@ -74,7 +74,9 @@ class WeComMessageResponder:
         """Process one inbound WeCom message and deliver a streaming reply."""
         stream_id = uuid.uuid4().hex
         self._enqueue(
-            build_wecom_stream_frame(frame, stream_id, "⏳ 正在处理，请稍候…", finish=False)
+            build_wecom_stream_frame(
+                frame, stream_id, "⏳ 正在处理，请稍候…", finish=False
+            )
         )
         ack_sent = await self._flush()
         logger.debug("wecom stream ACK sent=%s stream_id=%s", ack_sent, stream_id)

@@ -118,7 +118,9 @@ def thread_switch_failure_log(thread_id: str) -> str:
 
 def thread_switch_rollback_restore_failure_log(thread_id: str) -> str:
     """Return log message for failed rollback history restoration."""
-    return f"Could not restore previous thread history after failed switch to {thread_id}"
+    return (
+        f"Could not restore previous thread history after failed switch to {thread_id}"
+    )
 
 
 def thread_switch_failed_message(

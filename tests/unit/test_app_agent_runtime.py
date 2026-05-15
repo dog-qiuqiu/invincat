@@ -38,9 +38,12 @@ def test_scheduled_run_from_message_requires_both_ids() -> None:
             scheduled_task_id="task-1",
         )
     ) == ("run-1", "task-1")
-    assert scheduled_run_from_message(
-        QueuedMessage(text="run", mode="normal", scheduled_run_id="run-1")
-    ) is None
+    assert (
+        scheduled_run_from_message(
+            QueuedMessage(text="run", mode="normal", scheduled_run_id="run-1")
+        )
+        is None
+    )
 
 
 def test_queued_scheduled_run_state() -> None:
@@ -129,35 +132,47 @@ def test_should_continue_queue_after_sync_message() -> None:
 
 
 def test_can_start_agent_turn_requires_runtime_pieces() -> None:
-    assert can_start_agent_turn(
-        target_agent=object(),
-        ui_adapter=object(),
-        session_state=object(),
-    ) is True
-    assert can_start_agent_turn(
-        target_agent=None,
-        ui_adapter=object(),
-        session_state=object(),
-    ) is False
+    assert (
+        can_start_agent_turn(
+            target_agent=object(),
+            ui_adapter=object(),
+            session_state=object(),
+        )
+        is True
+    )
+    assert (
+        can_start_agent_turn(
+            target_agent=None,
+            ui_adapter=object(),
+            session_state=object(),
+        )
+        is False
+    )
 
 
 def test_is_planner_agent_turn() -> None:
     planner = object()
 
-    assert is_planner_agent_turn(
-        agent_override=planner,
-        target_agent=planner,
-        planner_agent=planner,
-        thread_id_override="planner-thread",
-        planner_thread_id="planner-thread",
-    ) is True
-    assert is_planner_agent_turn(
-        agent_override=None,
-        target_agent=planner,
-        planner_agent=planner,
-        thread_id_override="planner-thread",
-        planner_thread_id="planner-thread",
-    ) is False
+    assert (
+        is_planner_agent_turn(
+            agent_override=planner,
+            target_agent=planner,
+            planner_agent=planner,
+            thread_id_override="planner-thread",
+            planner_thread_id="planner-thread",
+        )
+        is True
+    )
+    assert (
+        is_planner_agent_turn(
+            agent_override=None,
+            target_agent=planner,
+            planner_agent=planner,
+            thread_id_override="planner-thread",
+            planner_thread_id="planner-thread",
+        )
+        is False
+    )
 
 
 def test_next_agent_turn_start_state() -> None:
@@ -191,14 +206,20 @@ def test_next_agent_turn_start_state() -> None:
 def test_agent_cleanup_decisions() -> None:
     assert is_current_agent_generation(generation=2, current_generation=2) is True
     assert is_current_agent_generation(generation=1, current_generation=2) is False
-    assert should_continue_after_deferred_actions(
-        agent_running=False,
-        shell_running=False,
-    ) is True
-    assert should_continue_after_deferred_actions(
-        agent_running=True,
-        shell_running=False,
-    ) is False
+    assert (
+        should_continue_after_deferred_actions(
+            agent_running=False,
+            shell_running=False,
+        )
+        is True
+    )
+    assert (
+        should_continue_after_deferred_actions(
+            agent_running=True,
+            shell_running=False,
+        )
+        is False
+    )
 
 
 def test_resolve_agent_cleanup_start_state() -> None:
@@ -364,20 +385,29 @@ def test_resolve_wecom_file_request_handler() -> None:
     async def scheduled(_payload: dict) -> None:
         return None
 
-    assert resolve_wecom_file_request_handler(
-        explicit_handler=explicit,
-        active_scheduled_wecom_chat_id="chat-1",
-        scheduled_handler=scheduled,
-    ) is explicit
-    assert resolve_wecom_file_request_handler(
-        explicit_handler=None,
-        active_scheduled_wecom_chat_id="chat-1",
-        scheduled_handler=scheduled,
-    ) is scheduled
-    assert resolve_wecom_file_request_handler(
-        explicit_handler=None,
-        active_scheduled_wecom_chat_id=None,
-        scheduled_handler=scheduled,
-    ) is None
+    assert (
+        resolve_wecom_file_request_handler(
+            explicit_handler=explicit,
+            active_scheduled_wecom_chat_id="chat-1",
+            scheduled_handler=scheduled,
+        )
+        is explicit
+    )
+    assert (
+        resolve_wecom_file_request_handler(
+            explicit_handler=None,
+            active_scheduled_wecom_chat_id="chat-1",
+            scheduled_handler=scheduled,
+        )
+        is scheduled
+    )
+    assert (
+        resolve_wecom_file_request_handler(
+            explicit_handler=None,
+            active_scheduled_wecom_chat_id=None,
+            scheduled_handler=scheduled,
+        )
+        is None
+    )
 
     asyncio.run(scheduled({}))

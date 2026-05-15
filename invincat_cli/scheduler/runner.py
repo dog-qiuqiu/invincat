@@ -43,7 +43,9 @@ def compute_next_run(cron: str, after: datetime, tz_name: str) -> datetime | Non
         it = croniter(cron, local_after)
         return it.get_next(datetime).replace(tzinfo=tz).astimezone(UTC)
     except Exception:
-        logger.warning("Failed to compute next_run for cron %r tz %r", cron, tz_name, exc_info=True)
+        logger.warning(
+            "Failed to compute next_run for cron %r tz %r", cron, tz_name, exc_info=True
+        )
         return None
 
 
@@ -75,8 +77,12 @@ def _build_scheduled_prompt(task: ScheduledTask, scheduled_for: datetime) -> str
         try:
             report_path = report_display_path(task, date_str)
         except ValueError:
-            logger.warning("Invalid scheduled report path for task %r", task.id, exc_info=True)
-            report_path = f"{report.output_dir}/{_slug(task.title)}-{date_str}.{report.format}"
+            logger.warning(
+                "Invalid scheduled report path for task %r", task.id, exc_info=True
+            )
+            report_path = (
+                f"{report.output_dir}/{_slug(task.title)}-{date_str}.{report.format}"
+            )
         requirements = (
             f"Requirements:\n"
             f"1. Save the report to: {report_path}\n"
@@ -204,10 +210,16 @@ class SchedulerRunner:
 
         if lag_seconds > _MISFIRE_MAX_SECONDS:
             # Too old — skip silently.
-            logger.info("Skipping very old misfire for task %r (%ds ago)", task.title, lag_seconds)
+            logger.info(
+                "Skipping very old misfire for task %r (%ds ago)",
+                task.title,
+                lag_seconds,
+            )
             if task.schedule_type == "once":
                 # One-shot task can never run again — disable it and clear next_run_at.
-                self._store.update_task_status(task.id, last_status="missed", clear_next_run_at=True)
+                self._store.update_task_status(
+                    task.id, last_status="missed", clear_next_run_at=True
+                )
                 self._store.set_task_enabled(task.id, False)
             else:
                 next_run2 = task_next_run(task, now)
@@ -222,7 +234,9 @@ class SchedulerRunner:
         if was_missed and task.misfire_policy == "skip":
             logger.info("Skipping missed task %r per policy", task.title)
             if task.schedule_type == "once":
-                self._store.update_task_status(task.id, last_status="missed", clear_next_run_at=True)
+                self._store.update_task_status(
+                    task.id, last_status="missed", clear_next_run_at=True
+                )
                 self._store.set_task_enabled(task.id, False)
             else:
                 next_run2 = task_next_run(task, now)
@@ -323,7 +337,9 @@ class SchedulerRunner:
         if manual:
             next_run = _parse_dt(task.next_run_at)
         else:
-            next_run = None if is_once else compute_next_run(task.cron, now, task.timezone)
+            next_run = (
+                None if is_once else compute_next_run(task.cron, now, task.timezone)
+            )
         claimed = self._store.try_start_run(
             task.id,
             run,
@@ -333,7 +349,10 @@ class SchedulerRunner:
             require_enabled=require_enabled,
         )
         if not claimed:
-            logger.info("Scheduled task %r was already claimed or is no longer runnable", task.id)
+            logger.info(
+                "Scheduled task %r was already claimed or is no longer runnable",
+                task.id,
+            )
             return
         self._running_task_ids.add(task.id)
         if manual:
@@ -354,14 +373,18 @@ class SchedulerRunner:
             logger.exception("Failed to inject scheduled task %r", task.id)
             self._finish_run(run_id, task.id, status="failed", error="inject failed")
 
-    async def _timeout_watcher(self, run_id: str, task_id: str, timeout_seconds: int) -> None:
+    async def _timeout_watcher(
+        self, run_id: str, task_id: str, timeout_seconds: int
+    ) -> None:
         """Fires finish_run with status='timeout' if the task hasn't finished in time."""
         try:
             await asyncio.sleep(timeout_seconds)
         except asyncio.CancelledError:
             return
         if task_id in self._running_task_ids:
-            logger.warning("Scheduled task %r timed out after %ds", task_id, timeout_seconds)
+            logger.warning(
+                "Scheduled task %r timed out after %ds", task_id, timeout_seconds
+            )
             # Remove ourselves from the registry BEFORE calling _finish_run so that
             # _finish_run does not cancel this coroutine from within itself — which
             # would inject CancelledError at the next await and prevent _on_timeout
@@ -417,7 +440,10 @@ class SchedulerRunner:
         if run is None:
             # Run record missing — release lock without touching stats to avoid
             # corrupting counters based on a state we cannot verify.
-            logger.warning("Run %r not found in store; releasing lock without updating stats", run_id)
+            logger.warning(
+                "Run %r not found in store; releasing lock without updating stats",
+                run_id,
+            )
             self._running_task_ids.discard(task_id)
             self._manual_run_ids.discard(run_id)
             return

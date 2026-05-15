@@ -54,9 +54,7 @@ async def handle_skill_command(app: Any, command: str) -> None:  # noqa: ANN401
             )
             return
         except Exception as exc:
-            logger.warning(
-                "Error searching for skill %r", skill_name, exc_info=True
-            )
+            logger.warning("Error searching for skill %r", skill_name, exc_info=True)
             await app._mount_message(UserMessage(command))
             await app._mount_message(
                 AppMessage(
@@ -97,9 +95,7 @@ async def handle_skill_command(app: Any, command: str) -> None:  # noqa: ANN401
         )
         return
     except OSError as exc:
-        logger.warning(
-            "Filesystem error loading skill %r", skill_name, exc_info=True
-        )
+        logger.warning("Filesystem error loading skill %r", skill_name, exc_info=True)
         await app._mount_message(UserMessage(command))
         await app._mount_message(
             AppMessage(

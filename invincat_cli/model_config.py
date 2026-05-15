@@ -279,8 +279,9 @@ def clear_caches() -> None:
     _profiles_cache = None
     _profiles_override_cache = None
     invalidate_thread_config_cache()
-    
+
     from invincat_cli.config import reset_settings_cache
+
     reset_settings_cache()
 
 
@@ -1130,9 +1131,7 @@ def clear_default_model(config_path: Path | None = None) -> bool:
     return _clear_model_field("default", config_path)
 
 
-def save_memory_default_model(
-    model_spec: str, config_path: Path | None = None
-) -> bool:
+def save_memory_default_model(model_spec: str, config_path: Path | None = None) -> bool:
     """Update the dedicated memory default model in config file.
 
     Writes to `[models].memory_default`.
@@ -1772,9 +1771,7 @@ def register_provider_model(
                 Path(tmp_path).unlink()
             raise
     except (OSError, tomllib.TOMLDecodeError):
-        logger.exception(
-            "Could not register model %s:%s", provider_name, model_name
-        )
+        logger.exception("Could not register model %s:%s", provider_name, model_name)
         return False
     else:
         clear_caches()

@@ -8,6 +8,7 @@ from invincat_cli.scheduler.wecom_delivery import (
     build_scheduled_wecom_text,
     latest_assistant_summary,
     scheduled_report_path_for_wecom,
+    scheduled_wecom_chat_id,
     scheduled_wecom_delivery_target,
     should_send_scheduled_report_file,
 )
@@ -26,6 +27,10 @@ def test_scheduled_wecom_delivery_target_distinguishes_missing_chatid() -> None:
     assert scheduled_wecom_delivery_target(no_channel) == (False, None)
     assert scheduled_wecom_delivery_target(missing_chat) == (True, None)
     assert scheduled_wecom_delivery_target(valid) == (True, "chat-1")
+    assert scheduled_wecom_chat_id(valid) == "chat-1"
+    assert scheduled_wecom_delivery_target(
+        SimpleNamespace(delivery=SimpleNamespace(channels=["bad", {"type": "tui"}]))
+    ) == (False, None)
 
 
 def test_latest_assistant_summary_uses_latest_non_empty_assistant_message() -> None:
@@ -37,6 +42,15 @@ def test_latest_assistant_summary_uses_latest_non_empty_assistant_message() -> N
     ]
 
     assert latest_assistant_summary(messages) == "second"
+
+
+def test_latest_assistant_summary_truncates_long_message() -> None:
+    messages = [MessageData(type=MessageType.ASSISTANT, content="x" * 20)]
+
+    assert (
+        latest_assistant_summary(messages, max_chars=5) == "xxxxx\n\n(摘要过长，已截断)"
+    )
+    assert latest_assistant_summary([]) == ""
 
 
 def test_build_scheduled_wecom_text() -> None:
@@ -57,6 +71,12 @@ def test_build_scheduled_wecom_text() -> None:
     assert "reports/daily.md" in success
     assert "定时任务执行失败：Daily" in failure
     assert "boom" in failure
+    assert build_scheduled_wecom_text(title="Daily", status="success") == (
+        "定时任务已完成：Daily"
+    )
+    assert build_scheduled_wecom_text(title="Daily", status="failed") == (
+        "定时任务执行失败：Daily"
+    )
 
 
 def test_scheduled_report_path_for_wecom_resolves_report_date() -> None:
@@ -66,11 +86,34 @@ def test_scheduled_report_path_for_wecom_resolves_report_date() -> None:
     )
     run = SimpleNamespace(scheduled_for="2026-05-12T17:30:00+00:00")
 
-    assert scheduled_report_path_for_wecom(
-        task,
-        run,
-        check_report_exists=lambda _task, date_str: f"reports/{date_str}.md",
-    ) == "reports/2026-05-13.md"
+    assert (
+        scheduled_report_path_for_wecom(
+            task,
+            run,
+            check_report_exists=lambda _task, date_str: f"reports/{date_str}.md",
+        )
+        == "reports/2026-05-13.md"
+    )
+
+
+def test_scheduled_report_path_for_wecom_handles_naive_time_and_errors() -> None:
+    task = SimpleNamespace(
+        timezone="UTC",
+        report=SimpleNamespace(mode="report"),
+    )
+    naive_run = SimpleNamespace(scheduled_for="2026-05-12T17:30:00")
+
+    assert (
+        scheduled_report_path_for_wecom(
+            task,
+            naive_run,
+            check_report_exists=lambda _task, date_str: f"reports/{date_str}.md",
+        )
+        == "reports/2026-05-12.md"
+    )
+
+    bad_run = SimpleNamespace(scheduled_for="not-a-date")
+    assert scheduled_report_path_for_wecom(task, bad_run) is None
 
 
 def test_scheduled_report_path_for_wecom_skips_message_only_task() -> None:

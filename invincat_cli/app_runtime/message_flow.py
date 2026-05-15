@@ -50,9 +50,7 @@ def is_spinner_at_correct_position(app: Any, container: Container) -> bool:
         first_queued = app._queued_widgets[0]
         if first_queued not in children:
             return False
-        return children.index(app._loading_widget) == (
-            children.index(first_queued) - 1
-        )
+        return children.index(app._loading_widget) == (children.index(first_queued) - 1)
 
     return children[-1] == app._loading_widget
 

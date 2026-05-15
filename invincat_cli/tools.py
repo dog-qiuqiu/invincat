@@ -244,7 +244,10 @@ def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
                     location = response.headers.get("location")
                     response.close()
                     if not location:
-                        return {"error": "Fetch URL error: redirect missing Location", "url": url}
+                        return {
+                            "error": "Fetch URL error: redirect missing Location",
+                            "url": url,
+                        }
                     current_url = urljoin(current_url, location)
                     _validate_fetch_url(current_url)
                     continue
@@ -252,8 +255,6 @@ def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
             else:
                 return {"error": "Fetch URL error: too many redirects", "url": url}
 
-            if response is None:
-                return {"error": "Fetch URL error: no response", "url": url}
             response.raise_for_status()
 
             # Convert HTML content to markdown

@@ -274,10 +274,20 @@ def _is_transient_stream_error(exc: BaseException) -> bool:
     if any(code in err_str for code in transient_status_codes):
         return True
     transient_keywords = (
-        "rate_limit", "ratelimit", "rate limit",
-        "connect", "timeout", "network", "unavailable",
-        "overloaded", "capacity", "reset by peer", "broken pipe",
-        "eof", "connection closed", "connection error",
+        "rate_limit",
+        "ratelimit",
+        "rate limit",
+        "connect",
+        "timeout",
+        "network",
+        "unavailable",
+        "overloaded",
+        "capacity",
+        "reset by peer",
+        "broken pipe",
+        "eof",
+        "connection closed",
+        "connection error",
     )
     if any(kw in err_str or kw in err_type for kw in transient_keywords):
         return True
@@ -720,19 +730,21 @@ async def execute_task_textual(
                     ):
                         _astream_chunks += 1
                         if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # stream chunk is a 3-tuple (namespace, mode, data)
-                            logger.debug("Skipping non-3-tuple chunk: %s", type(chunk).__name__)
+                            logger.debug(
+                                "Skipping non-3-tuple chunk: %s", type(chunk).__name__
+                            )
                             continue
-        
+
                         namespace, current_stream_mode, data = chunk
-        
+
                         # Convert namespace to hashable tuple for dict keys
                         ns_key = tuple(namespace) if namespace else ()
-        
+
                         # Filter out subagent outputs - only show main agent (empty
                         # namespace). Subagents run via Task tool and should only
                         # report back to the main agent
                         is_main_agent = ns_key == ()
-        
+
                         # Handle CUSTOM stream - middleware lifecycle events
                         if current_stream_mode == "custom":
                             if (
@@ -744,7 +756,9 @@ async def execute_task_textual(
                                     if not memory_update_in_progress:
                                         memory_update_in_progress = True
                                         if adapter._set_spinner:
-                                            await adapter._set_spinner(t("status.memory_updating"))
+                                            await adapter._set_spinner(
+                                                t("status.memory_updating")
+                                            )
                                 elif status == "done":
                                     if memory_update_in_progress:
                                         memory_update_in_progress = False
@@ -752,14 +766,16 @@ async def execute_task_textual(
                                             adapter._set_spinner
                                             and not adapter._current_tool_messages
                                         ):
-                                            await adapter._set_spinner(t("status.thinking"))
+                                            await adapter._set_spinner(
+                                                t("status.thinking")
+                                            )
                             continue
 
                         # Handle UPDATES stream - for interrupts and todos
                         if current_stream_mode == "updates":
                             if not isinstance(data, dict):
                                 continue
-        
+
                             # Check for interrupts
                             if "__interrupt__" in data:
                                 interrupts: list[Interrupt] = data["__interrupt__"]
@@ -778,7 +794,9 @@ async def execute_task_textual(
                                                     validated_ask_user
                                                 )
                                                 interrupt_occurred = True
-                                                await dispatch_hook("input.required", {})
+                                                await dispatch_hook(
+                                                    "input.required", {}
+                                                )
                                             except ValidationError:
                                                 logger.exception(
                                                     "Invalid ask_user interrupt payload; "
@@ -796,14 +814,16 @@ async def execute_task_textual(
                                                 approve_plan_adapter = (
                                                     _get_approve_plan_adapter()
                                                 )
-                                                validated_approve_plan = (
-                                                    approve_plan_adapter.validate_python(iv)
+                                                validated_approve_plan = approve_plan_adapter.validate_python(
+                                                    iv
                                                 )
-                                                pending_approve_plan[interrupt_obj.id] = (
-                                                    validated_approve_plan
-                                                )
+                                                pending_approve_plan[
+                                                    interrupt_obj.id
+                                                ] = validated_approve_plan
                                                 interrupt_occurred = True
-                                                await dispatch_hook("input.required", {})
+                                                await dispatch_hook(
+                                                    "input.required", {}
+                                                )
                                             except ValidationError:
                                                 logger.exception(
                                                     "Invalid approve_plan interrupt payload; "
@@ -815,14 +835,16 @@ async def execute_task_textual(
                                                 interrupt_occurred = True
                                         else:
                                             try:
-                                                validated_request = (
-                                                    hitl_request_adapter.validate_python(iv)
+                                                validated_request = hitl_request_adapter.validate_python(
+                                                    iv
                                                 )
                                                 pending_interrupts[interrupt_obj.id] = (
                                                     validated_request
                                                 )
                                                 interrupt_occurred = True
-                                                await dispatch_hook("input.required", {})
+                                                await dispatch_hook(
+                                                    "input.required", {}
+                                                )
                                             except ValidationError:
                                                 logger.exception(
                                                     "Invalid HITL interrupt payload; "
@@ -837,7 +859,7 @@ async def execute_task_textual(
                                                     )
                                                 )
                                                 return turn_stats
-        
+
                             # Check for todo updates (not yet implemented in Textual UI)
                             chunk_data = next(iter(data.values())) if data else None
                             if (
@@ -846,21 +868,21 @@ async def execute_task_textual(
                                 and "todos" in chunk_data
                             ):
                                 pass  # Future: render todo list widget
-        
+
                         # Handle MESSAGES stream - for content and tool calls
                         elif current_stream_mode == "messages":
                             # Skip subagent outputs - only render main agent content in chat
                             if not is_main_agent:
                                 logger.debug("Skipping subagent message ns=%s", ns_key)
                                 continue
-        
+
                             if not isinstance(data, tuple) or len(data) != 2:  # noqa: PLR2004  # message stream data is a 2-tuple (message, metadata)
                                 logger.debug(
                                     "Skipping non-2-tuple message data: type=%s",
                                     type(data).__name__,
                                 )
                                 continue
-        
+
                             message, metadata = data
                             has_content_blocks = hasattr(message, "content_blocks")
                             content_blocks = (
@@ -875,7 +897,7 @@ async def execute_task_textual(
                                     getattr(message, "id", None),
                                     has_content_blocks,
                                 )
-        
+
                             # Filter out summarization model output, but keep UI feedback.
                             # The summarization model streams AIMessage chunks tagged
                             # with lc_source="summarization" in the callback metadata.
@@ -885,15 +907,19 @@ async def execute_task_textual(
                                 if not summarization_in_progress:
                                     summarization_in_progress = True
                                     if adapter._set_spinner:
-                                        await adapter._set_spinner(t("status.offloading"))
+                                        await adapter._set_spinner(
+                                            t("status.offloading")
+                                        )
                                 continue
                             if _is_internal_model_chunk(metadata):
                                 if not memory_update_in_progress:
                                     memory_update_in_progress = True
                                     if adapter._set_spinner:
-                                        await adapter._set_spinner(t("status.memory_updating"))
+                                        await adapter._set_spinner(
+                                            t("status.memory_updating")
+                                        )
                                 continue
-        
+
                             # Regular (non-summarization) chunks resumed — summarization
                             # has finished. Mount the notification and reset the spinner.
                             if summarization_in_progress:
@@ -905,14 +931,20 @@ async def execute_task_textual(
                                         "Failed to mount summarization notification",
                                         exc_info=True,
                                     )
-                                if adapter._set_spinner and not adapter._current_tool_messages:
+                                if (
+                                    adapter._set_spinner
+                                    and not adapter._current_tool_messages
+                                ):
                                     await adapter._set_spinner(t("status.thinking"))
 
                             if memory_update_in_progress:
                                 memory_update_in_progress = False
-                                if adapter._set_spinner and not adapter._current_tool_messages:
+                                if (
+                                    adapter._set_spinner
+                                    and not adapter._current_tool_messages
+                                ):
                                     await adapter._set_spinner(t("status.thinking"))
-        
+
                             if isinstance(message, HumanMessage):
                                 content = message.text
                                 # Flush pending text for this namespace
@@ -926,11 +958,13 @@ async def execute_task_textual(
                                     )
                                     pending_text_by_namespace[ns_key] = ""
                                 continue
-        
+
                             if isinstance(message, ToolMessage):
                                 tool_name = getattr(message, "name", "")
                                 tool_status = getattr(message, "status", "success")
-                                tool_content = format_tool_message_content(message.content)
+                                tool_content = format_tool_message_content(
+                                    message.content
+                                )
                                 raw_tool_id = getattr(message, "tool_call_id", None)
                                 tool_id = _normalize_tool_id(raw_tool_id)
                                 if (
@@ -944,9 +978,13 @@ async def execute_task_textual(
                                     payload = parse_wecom_file_request(message.content)
                                     if payload is not None:
                                         dedupe_id = (
-                                            _normalize_tool_id(payload.get("tool_call_id"))
+                                            _normalize_tool_id(
+                                                payload.get("tool_call_id")
+                                            )
                                             or tool_id
-                                            or _normalize_tool_id(getattr(message, "id", None))
+                                            or _normalize_tool_id(
+                                                getattr(message, "id", None)
+                                            )
                                         )
                                         if dedupe_id in processed_wecom_file_tool_ids:
                                             logger.debug(
@@ -955,7 +993,9 @@ async def execute_task_textual(
                                             )
                                         else:
                                             if dedupe_id is not None:
-                                                processed_wecom_file_tool_ids.add(dedupe_id)
+                                                processed_wecom_file_tool_ids.add(
+                                                    dedupe_id
+                                                )
                                             try:
                                                 await on_wecom_file_request(payload)
                                             except Exception:
@@ -969,7 +1009,9 @@ async def execute_task_textual(
                                         parse_schedule_tool_result,
                                     )
 
-                                    sched_payload = parse_schedule_tool_result(message.content)
+                                    sched_payload = parse_schedule_tool_result(
+                                        message.content
+                                    )
                                     if sched_payload is not None:
                                         try:
                                             await on_schedule_payload(sched_payload)
@@ -987,17 +1029,22 @@ async def execute_task_textual(
                                     type(raw_tool_id).__name__,
                                     list(file_op_tracker.active.keys()),
                                 )
-                                
+
                                 tool_msg = None
                                 tool_args_for_match: dict[str, Any] | None = None
-        
+
                                 # Strategy 1: Direct key match on normalized str ID.
                                 # Use pop(key, None) defensively even though the preceding
                                 # `in` check makes KeyError impossible in normal asyncio
                                 # execution — the guard protects against future refactors
                                 # that might introduce an await between the check and pop.
-                                if tool_id and tool_id in adapter._current_tool_messages:
-                                    tool_msg = adapter._current_tool_messages.pop(tool_id, None)
+                                if (
+                                    tool_id
+                                    and tool_id in adapter._current_tool_messages
+                                ):
+                                    tool_msg = adapter._current_tool_messages.pop(
+                                        tool_id, None
+                                    )
                                     if tool_msg is None:
                                         logger.warning(
                                             "Strategy 1: key disappeared between check and pop "
@@ -1006,9 +1053,10 @@ async def execute_task_textual(
                                         )
                                     else:
                                         logger.debug(
-                                            "Matched ToolMessage by direct key tool_id=%s", tool_id
+                                            "Matched ToolMessage by direct key tool_id=%s",
+                                            tool_id,
                                         )
-        
+
                                 # Strategy 2: Match by widget's _tool_call_id attribute.
                                 # When the widget was stored under a different (e.g. index-based)
                                 # key, pop it by that key, then sync:
@@ -1017,12 +1065,16 @@ async def execute_task_textual(
                                 # Without (2) the store's index still maps the OLD key, so
                                 # any future prune/hydrate lookup by tool_id would miss it.
                                 if not tool_msg and tool_id:
-                                    for key, msg in list(adapter._current_tool_messages.items()):
+                                    for key, msg in list(
+                                        adapter._current_tool_messages.items()
+                                    ):
                                         widget_id = _normalize_tool_id(
                                             getattr(msg, "_tool_call_id", None)
                                         )
                                         if widget_id == tool_id:
-                                            tool_msg = adapter._current_tool_messages.pop(key)
+                                            tool_msg = (
+                                                adapter._current_tool_messages.pop(key)
+                                            )
                                             logger.debug(
                                                 "Matched ToolMessage by _tool_call_id=%s to key=%s",
                                                 tool_id,
@@ -1036,7 +1088,10 @@ async def execute_task_textual(
                                                 # Sync the MessageStore index so that
                                                 # get_message_by_tool_call_id(tool_id) finds
                                                 # this record after pruning/hydration.
-                                                if tool_msg.id and adapter._message_store:
+                                                if (
+                                                    tool_msg.id
+                                                    and adapter._message_store
+                                                ):
                                                     try:
                                                         adapter._message_store.update_message(
                                                             tool_msg.id,
@@ -1052,18 +1107,26 @@ async def execute_task_textual(
                                                             exc_info=True,
                                                         )
                                             break
-        
+
                                 # Strategy 3: Match by tool_name (fallback for missing IDs)
-                                if not tool_msg and tool_name and adapter._current_tool_messages:
+                                if (
+                                    not tool_msg
+                                    and tool_name
+                                    and adapter._current_tool_messages
+                                ):
                                     candidates = [
                                         (key, msg)
-                                        for key, msg in list(adapter._current_tool_messages.items())
+                                        for key, msg in list(
+                                            adapter._current_tool_messages.items()
+                                        )
                                         if getattr(msg, "_tool_name", None) == tool_name
                                         and getattr(msg, "is_attached", True)
                                     ]
                                     if len(candidates) == 1:
                                         key, msg = candidates[0]
-                                        tool_msg = adapter._current_tool_messages.pop(key)
+                                        tool_msg = adapter._current_tool_messages.pop(
+                                            key
+                                        )
                                         logger.debug(
                                             "Matched ToolMessage by tool_name=%s to key=%s",
                                             tool_name,
@@ -1073,7 +1136,11 @@ async def execute_task_textual(
                                         for key, msg in candidates:
                                             status = getattr(msg, "_status", "pending")
                                             if status in ("pending", "running"):
-                                                tool_msg = adapter._current_tool_messages.pop(key)
+                                                tool_msg = (
+                                                    adapter._current_tool_messages.pop(
+                                                        key
+                                                    )
+                                                )
                                                 logger.debug(
                                                     "Matched ToolMessage by tool_name=%s status=%s to key=%s",
                                                     tool_name,
@@ -1083,42 +1150,53 @@ async def execute_task_textual(
                                                 break
                                         if not tool_msg and candidates:
                                             key, msg = candidates[0]
-                                            tool_msg = adapter._current_tool_messages.pop(key)
+                                            tool_msg = (
+                                                adapter._current_tool_messages.pop(key)
+                                            )
                                             logger.debug(
                                                 "Matched ToolMessage by tool_name=%s (first candidate) to key=%s",
                                                 tool_name,
                                                 key,
                                             )
-        
+
                                 # Extract args from matched widget for file_op_tracker matching
                                 if tool_msg:
-                                    tool_args_for_match = getattr(tool_msg, "_args", None)
-        
+                                    tool_args_for_match = getattr(
+                                        tool_msg, "_args", None
+                                    )
+
                                 # Now call complete_with_message with args for better matching
                                 record = file_op_tracker.complete_with_message(
                                     message, tool_args_for_match
                                 )
-                                
+
                                 logger.debug(
                                     "File op record lookup result: %s (diff=%s)",
                                     "found" if record else "not found",
-                                    record.diff[:100] + "..." if record and record.diff else "empty/N/A",
+                                    record.diff[:100] + "..."
+                                    if record and record.diff
+                                    else "empty/N/A",
                                 )
-        
+
                                 if not tool_msg and tool_id:
                                     logger.warning(
                                         "ToolMessage unmatched: tool_id=%s name=%s "
                                         "remaining keys=%s; widget may be pruned or ID mismatch",
                                         tool_id,
                                         tool_name,
-                                        [(k, type(k).__name__) for k in adapter._current_tool_messages.keys()],
+                                        [
+                                            (k, type(k).__name__)
+                                            for k in adapter._current_tool_messages.keys()
+                                        ],
                                     )
-        
+
                                 # FIX: normalize output_str — never pass empty string to
                                 # set_success/set_error; use a placeholder so the result
                                 # frame is never silently blank.
-                                output_str = str(tool_content) if tool_content else "(no output)"
-        
+                                output_str = (
+                                    str(tool_content) if tool_content else "(no output)"
+                                )
+
                                 # If the file-op tracker recorded an internal error
                                 # (e.g. couldn't read back the file after writing) but
                                 # the ToolMessage status is still "success", surface the
@@ -1148,7 +1226,7 @@ async def execute_task_textual(
                                         tool_id,
                                     )
                                     output_str = f"{output_str}\n\n[diff unavailable: operation was not tracked]"
-        
+
                                 if tool_msg:
                                     if tool_status == "success":
                                         tool_msg.set_success(output_str)
@@ -1162,6 +1240,7 @@ async def execute_task_textual(
                                         from invincat_cli.widgets.message_store import (
                                             ToolStatus as _TS,
                                         )
+
                                         _final = (
                                             _TS.SUCCESS
                                             if tool_status == "success"
@@ -1183,7 +1262,7 @@ async def execute_task_textual(
                                         msg_data = adapter._message_store.get_message_by_tool_call_id(
                                             tool_id
                                         )
-        
+
                                     if msg_data:
                                         logger.debug(
                                             "ToolMessage tool_call_id=%s widget pruned "
@@ -1196,7 +1275,7 @@ async def execute_task_textual(
                                             tool_call_id=tool_id,
                                         )
                                         await adapter._mount_message(tool_msg)
-        
+
                                         if tool_status == "success":
                                             tool_msg.set_success(output_str)
                                             # Any associated DiffMessage is shown via the
@@ -1241,22 +1320,31 @@ async def execute_task_textual(
                                             fallback_msg.set_error(output_str)
                                             await dispatch_hook(
                                                 "tool.error",
-                                                {"tool_names": [tool_name or "unknown"]},
+                                                {
+                                                    "tool_names": [
+                                                        tool_name or "unknown"
+                                                    ]
+                                                },
                                             )
                                         # Also persist to store so future lookups work
                                         adapter._update_tool_message_in_store(
                                             tool_id, tool_status, output_str
                                         )
-        
+
                                 # Reshow spinner only when all in-flight tools have
                                 # completed (avoids premature "Thinking..." when
                                 # parallel tool calls are active).
-                                if adapter._set_spinner and not adapter._current_tool_messages:
+                                if (
+                                    adapter._set_spinner
+                                    and not adapter._current_tool_messages
+                                ):
                                     await adapter._set_spinner(t("status.thinking"))
-        
+
                                 # Show file operation results - always show diffs in chat
                                 if record:
-                                    pending_text = pending_text_by_namespace.get(ns_key, "")
+                                    pending_text = pending_text_by_namespace.get(
+                                        ns_key, ""
+                                    )
                                     if pending_text:
                                         await _flush_assistant_text_ns(
                                             adapter,
@@ -1266,7 +1354,9 @@ async def execute_task_textual(
                                         )
                                         pending_text_by_namespace[ns_key] = ""
                                     if record.diff:
-                                        diff_msg = DiffMessage(record.diff, record.display_path)
+                                        diff_msg = DiffMessage(
+                                            record.diff, record.display_path
+                                        )
                                         await adapter._mount_message(diff_msg)
                                     else:
                                         logger.debug(
@@ -1288,7 +1378,7 @@ async def execute_task_textual(
                                             tool_id,
                                         )
                                 continue
-        
+
                             # Extract token usage (before content_blocks check
                             # - usage may be on any chunk)
                             if hasattr(message, "usage_metadata"):
@@ -1298,7 +1388,7 @@ async def execute_task_textual(
                                     output_toks = usage.get("output_tokens", 0)
                                     total_toks = usage.get("total_tokens", 0)
                                     from invincat_cli.config import settings
-        
+
                                     active_model = settings.model_name or ""
                                     if input_toks or output_toks:
                                         # Model gives split counts — preferred path
@@ -1306,19 +1396,22 @@ async def execute_task_textual(
                                             active_model, input_toks, output_toks
                                         )
                                         captured_input_tokens = max(
-                                            captured_input_tokens, input_toks + output_toks
+                                            captured_input_tokens,
+                                            input_toks + output_toks,
                                         )
                                     elif total_toks:
                                         # Fallback: model gives only total (no split)
-                                        turn_stats.record_request(active_model, total_toks, 0)
+                                        turn_stats.record_request(
+                                            active_model, total_toks, 0
+                                        )
                                         captured_input_tokens = max(
                                             captured_input_tokens, total_toks
                                         )
-        
+
                                     # Immediately update UI with current token count
                                     if adapter._on_tokens_update:
                                         adapter._on_tokens_update(captured_input_tokens)
-        
+
                             # Check if this is an AIMessageChunk with content
                             if not has_content_blocks:
                                 logger.debug(
@@ -1326,7 +1419,7 @@ async def execute_task_textual(
                                     type(message).__name__,
                                 )
                                 continue
-        
+
                             # Process content blocks
                             blocks = content_blocks or []
                             if blocks:
@@ -1342,7 +1435,9 @@ async def execute_task_textual(
                                     text = block.get("text", "")
                                     if text:
                                         # Track accumulated text for reference
-                                        pending_text = pending_text_by_namespace.get(ns_key, "")
+                                        pending_text = pending_text_by_namespace.get(
+                                            ns_key, ""
+                                        )
                                         pending_text += text
                                         pending_text_by_namespace[ns_key] = pending_text
                                         if on_text_delta is not None:
@@ -1355,7 +1450,9 @@ async def execute_task_textual(
                                                 )
 
                                         # Get or create assistant message for this namespace
-                                        current_msg = assistant_message_by_namespace.get(ns_key)
+                                        current_msg = (
+                                            assistant_message_by_namespace.get(ns_key)
+                                        )
                                         if current_msg is None:
                                             # Hide spinner when assistant starts responding
                                             if adapter._set_spinner:
@@ -1370,8 +1467,10 @@ async def execute_task_textual(
                                                 adapter._set_active_message(msg_id)
                                             current_msg = AssistantMessage(id=msg_id)
                                             await adapter._mount_message(current_msg)
-                                            assistant_message_by_namespace[ns_key] = current_msg
-        
+                                            assistant_message_by_namespace[ns_key] = (
+                                                current_msg
+                                            )
+
                                         # Append just the new text chunk for smoother
                                         # streaming (uses MarkdownStream internally for
                                         # better performance)
@@ -1381,7 +1480,8 @@ async def execute_task_textual(
                                         # can read partial content while streaming is live.
                                         if adapter._message_store and current_msg.id:
                                             adapter._message_store.update_message(
-                                                current_msg.id, content=current_msg._content
+                                                current_msg.id,
+                                                content=current_msg._content,
                                             )
 
                                 elif block_type in {"reasoning", "non_standard"}:
@@ -1392,7 +1492,7 @@ async def execute_task_textual(
                                     chunk_args = block.get("args")
                                     chunk_id = block.get("id")
                                     chunk_index = block.get("index")
-        
+
                                     # Normalize buffer key — always str for consistent
                                     # lookup in _current_tool_messages.
                                     raw_buffer_key: str | int
@@ -1404,8 +1504,10 @@ async def execute_task_textual(
                                         # Use a UUID so parallel chunks without id/index
                                         # don't collide — f"unknown-{len(buffers)}" would
                                         # repeat when a previous buffer was already popped.
-                                        raw_buffer_key = f"unknown-{uuid.uuid4().hex[:8]}"
-        
+                                        raw_buffer_key = (
+                                            f"unknown-{uuid.uuid4().hex[:8]}"
+                                        )
+
                                     buffer = tool_call_buffers.setdefault(
                                         raw_buffer_key,
                                         {
@@ -1416,12 +1518,12 @@ async def execute_task_textual(
                                             "args_finalized": False,
                                         },
                                     )
-        
+
                                     if chunk_name:
                                         buffer["name"] = chunk_name
                                     if chunk_id:
                                         buffer["id"] = chunk_id
-        
+
                                     if isinstance(chunk_args, dict):
                                         buffer["args"] = chunk_args
                                         buffer["args_parts"] = []
@@ -1435,17 +1537,23 @@ async def execute_task_textual(
                                             buffer["args"] = "".join(parts)
                                     elif chunk_args is not None:
                                         buffer["args"] = chunk_args
-        
+
                                     buffer_name = buffer.get("name")
                                     buffer_id = buffer.get("id")
-        
+
                                     # Need at least a name before doing anything
                                     if buffer_name is None:
                                         continue
 
                                     # Normalize display_key to str for consistent map keys
-                                    raw_display_key = buffer_id if buffer_id is not None else raw_buffer_key
-                                    display_key = _normalize_tool_id(raw_display_key) or str(raw_display_key)
+                                    raw_display_key = (
+                                        buffer_id
+                                        if buffer_id is not None
+                                        else raw_buffer_key
+                                    )
+                                    display_key = _normalize_tool_id(
+                                        raw_display_key
+                                    ) or str(raw_display_key)
 
                                     tool_blocked_in_plan_mode = (
                                         planner_mode_enforced
@@ -1461,12 +1569,24 @@ async def execute_task_textual(
                                         # index-based key (when buffer_id was not yet available).
                                         # If so, re-key the existing widget instead of creating a
                                         # new one — this prevents zombie widget accumulation.
-                                        index_key = _normalize_tool_id(raw_buffer_key) or str(raw_buffer_key)
-                                        if display_key != index_key and index_key in adapter._current_tool_messages:
+                                        index_key = _normalize_tool_id(
+                                            raw_buffer_key
+                                        ) or str(raw_buffer_key)
+                                        if (
+                                            display_key != index_key
+                                            and index_key
+                                            in adapter._current_tool_messages
+                                        ):
                                             # Re-key: move existing widget to the real ID key
-                                            existing = adapter._current_tool_messages.pop(index_key)
+                                            existing = (
+                                                adapter._current_tool_messages.pop(
+                                                    index_key
+                                                )
+                                            )
                                             existing._tool_call_id = display_key
-                                            adapter._current_tool_messages[display_key] = existing
+                                            adapter._current_tool_messages[
+                                                display_key
+                                            ] = existing
                                             displayed_tool_ids.add(display_key)
                                             # Also update the store so that if this widget is
                                             # later pruned, the fallback hydration path uses
@@ -1474,7 +1594,8 @@ async def execute_task_textual(
                                             if existing.id and adapter._message_store:
                                                 try:
                                                     adapter._message_store.update_message(
-                                                        existing.id, tool_call_id=display_key
+                                                        existing.id,
+                                                        tool_call_id=display_key,
                                                     )
                                                 except Exception:  # noqa: BLE001
                                                     logger.warning(
@@ -1512,9 +1633,13 @@ async def execute_task_textual(
                                             )
                                         else:
                                             displayed_tool_ids.add(display_key)
-        
+
                                             # Flush any pending assistant text first
-                                            pending_text = pending_text_by_namespace.get(ns_key, "")
+                                            pending_text = (
+                                                pending_text_by_namespace.get(
+                                                    ns_key, ""
+                                                )
+                                            )
                                             if pending_text:
                                                 await _flush_assistant_text_ns(
                                                     adapter,
@@ -1523,12 +1648,14 @@ async def execute_task_textual(
                                                     assistant_message_by_namespace,
                                                 )
                                                 pending_text_by_namespace[ns_key] = ""
-                                                assistant_message_by_namespace.pop(ns_key, None)
-        
+                                                assistant_message_by_namespace.pop(
+                                                    ns_key, None
+                                                )
+
                                             # Hide spinner before showing tool call widget
                                             if adapter._set_spinner:
                                                 await adapter._set_spinner(None)
-        
+
                                             # Mount immediately with empty args — args will be
                                             # filled in via update_args() once fully parsed.
                                             logger.debug(
@@ -1543,10 +1670,14 @@ async def execute_task_textual(
                                                 args_finalized=False,
                                             )
                                             await adapter._mount_message(tool_msg)
-                                            adapter._current_tool_messages[display_key] = tool_msg
+                                            adapter._current_tool_messages[
+                                                display_key
+                                            ] = tool_msg
 
                                     if tool_blocked_in_plan_mode:
-                                        tool_msg = adapter._current_tool_messages.get(display_key)
+                                        tool_msg = adapter._current_tool_messages.get(
+                                            display_key
+                                        )
                                         if tool_msg is not None:
                                             tool_msg.set_error(
                                                 t("plan.blocked_tool_error")
@@ -1560,7 +1691,7 @@ async def execute_task_textual(
                                     if not buffer.get("args_finalized"):
                                         raw_args = buffer.get("args")
                                         parsed_args = None
-        
+
                                         if isinstance(raw_args, dict):
                                             parsed_args = raw_args
                                         elif isinstance(raw_args, str) and raw_args:
@@ -1568,29 +1699,37 @@ async def execute_task_textual(
                                                 parsed_args = json.loads(raw_args)
                                             except json.JSONDecodeError:
                                                 pass  # Still streaming — will retry next chunk
-        
+
                                         if parsed_args is not None:
                                             if not isinstance(parsed_args, dict):
                                                 parsed_args = {"value": parsed_args}
-        
+
                                             buffer["args_finalized"] = True
-        
+
                                             logger.debug(
                                                 "Args finalized for tool key=%s args=%s",
                                                 display_key,
                                                 repr(parsed_args)[:200],
                                             )
-        
+
                                             # Update the widget with real args now that
                                             # they have fully streamed in.
-                                            tool_msg = adapter._current_tool_messages.get(display_key)
+                                            tool_msg = (
+                                                adapter._current_tool_messages.get(
+                                                    display_key
+                                                )
+                                            )
                                             if tool_msg is not None:
                                                 tool_msg.update_args(parsed_args)
-                                                if tool_msg.id and adapter._message_store:
+                                                if (
+                                                    tool_msg.id
+                                                    and adapter._message_store
+                                                ):
                                                     adapter._message_store.update_message(
-                                                        tool_msg.id, tool_args=parsed_args
+                                                        tool_msg.id,
+                                                        tool_args=parsed_args,
                                                     )
-        
+
                                             # Register file op only once args are final.
                                             # Use display_key (always a str) rather than
                                             # buffer_id (which may still be None when the
@@ -1607,9 +1746,9 @@ async def execute_task_textual(
                                             file_op_tracker.start_operation(
                                                 buffer_name, parsed_args, display_key
                                             )
-        
+
                                             tool_call_buffers.pop(raw_buffer_key, None)
-        
+
                             if getattr(message, "chunk_position", None) == "last":
                                 pending_text = pending_text_by_namespace.get(ns_key, "")
                                 if pending_text:
@@ -1761,10 +1900,19 @@ async def execute_task_textual(
                                 resume_payload[interrupt_id] = {"answers": answers}
                                 tool_id = ask_req["tool_call_id"]
                                 norm_tool_id = _normalize_tool_id(tool_id)
-                                if norm_tool_id and norm_tool_id in adapter._current_tool_messages:
-                                    tool_msg = adapter._current_tool_messages[norm_tool_id]
-                                    tool_msg.set_success(t("ask_user.tool_result_answered"))
-                                    adapter._current_tool_messages.pop(norm_tool_id, None)
+                                if (
+                                    norm_tool_id
+                                    and norm_tool_id in adapter._current_tool_messages
+                                ):
+                                    tool_msg = adapter._current_tool_messages[
+                                        norm_tool_id
+                                    ]
+                                    tool_msg.set_success(
+                                        t("ask_user.tool_result_answered")
+                                    )
+                                    adapter._current_tool_messages.pop(
+                                        norm_tool_id, None
+                                    )
                             else:
                                 logger.error(
                                     "ask_user answered payload had non-list "
@@ -1858,7 +2006,10 @@ async def execute_task_textual(
                             resume_payload[interrupt_id] = {"type": "approved"}
                             tool_id = approve_req["tool_call_id"]
                             norm_tool_id = _normalize_tool_id(tool_id)
-                            if norm_tool_id and norm_tool_id in adapter._current_tool_messages:
+                            if (
+                                norm_tool_id
+                                and norm_tool_id in adapter._current_tool_messages
+                            ):
                                 tool_msg = adapter._current_tool_messages[norm_tool_id]
                                 tool_msg.set_success(t("approve.tool_result_approved"))
                                 adapter._current_tool_messages.pop(norm_tool_id, None)
@@ -2208,6 +2359,7 @@ async def _persist_context_tokens(
         config: Runnable config with `thread_id`.
         tokens: Total context tokens to persist.
     """
+
     def _is_connectivity_error(exc: Exception) -> bool:
         names = {cls.__name__ for cls in type(exc).__mro__}
         if names & {

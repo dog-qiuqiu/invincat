@@ -33,9 +33,7 @@ def start_scheduler(app: Any) -> None:  # noqa: ANN401
 
     runner_store = FilteredSchedulerStore(
         db_path=getattr(app._scheduler_store, "_db_path", None),
-        exclude_task=lambda task: wecom_daemon_claims_scheduled_task(
-            task, app._cwd
-        ),
+        exclude_task=lambda task: wecom_daemon_claims_scheduled_task(task, app._cwd),
     )
 
     app._scheduler_runner = SchedulerRunner(
@@ -232,7 +230,7 @@ async def deliver_scheduled_result_to_wecom(
     report_path = scheduled_report_path_for_wecom(task, run)
 
     all_messages = app._message_store.get_all_messages()
-    run_messages = all_messages[app._scheduled_run_message_offset:]
+    run_messages = all_messages[app._scheduled_run_message_offset :]
     content = build_scheduled_wecom_text(
         title=task.title,
         status=status,

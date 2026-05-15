@@ -971,9 +971,7 @@ class ChatInput(Vertical):
         self._file_controller = FuzzyFileController(
             self._completion_view, cwd=self._cwd
         )
-        self._slash_controller = SlashCommandController(
-            [], self._completion_view
-        )
+        self._slash_controller = SlashCommandController([], self._completion_view)
         self._shell_controller = ShellCompletionController(
             self._completion_view, cwd=self._cwd
         )
@@ -1592,6 +1590,7 @@ class ChatInput(Vertical):
             and self.mode != "shell"
             and self._get_cursor_offset() == 0
         ):
+
             def _deferred_reset() -> None:
                 if self._completion_manager is not None:
                     self._completion_manager.reset()

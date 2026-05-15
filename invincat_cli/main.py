@@ -588,8 +588,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--trust-project-mcp",
         action="store_true",
-        help="Trust project-level MCP configs "
-        "(skip interactive approval prompt)",
+        help="Trust project-level MCP configs (skip interactive approval prompt)",
     )
 
     try:
@@ -1146,9 +1145,7 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
         "[bold yellow]Project MCP servers require approval:[/bold yellow]"
     )
     for name, transport, detail in all_servers:
-        prompt_console.print(
-            f'  [bold]"{name}"[/bold] ({transport}):  {detail}'
-        )
+        prompt_console.print(f'  [bold]"{name}"[/bold] ({transport}):  {detail}')
     prompt_console.print()
 
     try:
@@ -1660,12 +1657,22 @@ def cli_main() -> None:
                     )
 
             # Show resume hint on exit for threads with checkpointed content.
-            if thread_id and return_code == 0 and asyncio.run(thread_exists(thread_id)):
-                console.print()
-                console.print("[dim]Resume this thread with:[/dim]")
-                hint = Text("deepagents -r ", style="cyan")
-                hint.append(str(thread_id), style="cyan")
-                console.print(hint)
+            try:
+                if (
+                    thread_id
+                    and return_code == 0
+                    and asyncio.run(thread_exists(thread_id))
+                ):
+                    console.print()
+                    console.print("[dim]Resume this thread with:[/dim]")
+                    hint = Text("deepagents -r ", style="cyan")
+                    hint.append(str(thread_id), style="cyan")
+                    console.print(hint)
+            except Exception:
+                logger.debug(
+                    "Could not display resume hint on teardown",
+                    exc_info=True,
+                )
 
             # Warn about available update on exit
             try:

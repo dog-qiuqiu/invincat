@@ -552,11 +552,20 @@ class MessageStore:
 
         for msg_data in self._messages:
             if msg_data.id == message_id:
+                old_tool_call_key: str | None = None
+                if "tool_call_id" in updates and msg_data.tool_call_id is not None:
+                    old_tool_call_key = str(msg_data.tool_call_id)
                 for key, value in updates.items():
                     setattr(msg_data, key, value)
                 # Keep the tool_call_id index in sync when the ID is updated
                 # (e.g. after re-keying a widget from index key to real UUID).
                 if "tool_call_id" in updates:
+                    if (
+                        old_tool_call_key is not None
+                        and self._tool_call_id_index.get(old_tool_call_key)
+                        == msg_data.id
+                    ):
+                        self._tool_call_id_index.pop(old_tool_call_key, None)
                     self._index_tool_call_id(msg_data)
                 return True
         return False

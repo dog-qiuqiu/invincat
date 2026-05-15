@@ -143,7 +143,9 @@ class LanguageSelectorScreen(ModalScreen[Language | None]):
             except ValueError:
                 logger.warning("Invalid language id: %s", lang_id)
             except Exception:
-                logger.warning("Failed to preview language '%s'", lang_id, exc_info=True)
+                logger.warning(
+                    "Failed to preview language '%s'", lang_id, exc_info=True
+                )
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         """Commit the selected language.

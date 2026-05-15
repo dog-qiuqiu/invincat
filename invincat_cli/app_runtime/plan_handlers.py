@@ -78,8 +78,10 @@ async def ensure_planner_agent(app: Any) -> Any | None:  # noqa: ANN401
         from invincat_cli.project_utils import ProjectContext
         from invincat_cli.tools import fetch_url, web_search
 
-        model = app._model if app._model is not None else (
-            app._model_override or "claude-sonnet-4-6"
+        model = (
+            app._model
+            if app._model is not None
+            else (app._model_override or "claude-sonnet-4-6")
         )
         planner_assistant_id = f"{app._assistant_id or 'agent'}-planner"
         planner_tools: list[Any] = [fetch_url]
@@ -167,9 +169,7 @@ async def exit_plan_mode(app: Any) -> None:  # noqa: ANN401
         app._active_turn_is_planner = False
 
     app._deferred_actions = [
-        action
-        for action in app._deferred_actions
-        if action.kind != "plan_handoff"
+        action for action in app._deferred_actions if action.kind != "plan_handoff"
     ]
     app._pending_plan_handoff_prompt = None
 
@@ -325,7 +325,9 @@ async def execute_plan_handoff(app: Any, prompt: str) -> None:  # noqa: ANN401
         app._status_bar.set_plan_mode(enabled=False)
 
     await app._mount_message(AppMessage(t("plan.handoff_started")))
-    await app._mount_message(AppMessage(f"{t('plan.handoff_prompt_preview')}\n\n{prompt}"))
+    await app._mount_message(
+        AppMessage(f"{t('plan.handoff_prompt_preview')}\n\n{prompt}")
+    )
     started = await app._send_to_agent(prompt)
     if not started:
         app._pending_plan_handoff_prompt = prompt

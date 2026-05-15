@@ -44,33 +44,48 @@ def test_resolve_mcp_preload_result() -> None:
 
 
 def test_count_mcp_tools() -> None:
-    assert count_mcp_tools(
-        [
-            SimpleNamespace(tools=[object(), object()]),
-            SimpleNamespace(tools=[object()]),
-        ]
-    ) == 3
+    assert (
+        count_mcp_tools(
+            [
+                SimpleNamespace(tools=[object(), object()]),
+                SimpleNamespace(tools=[object()]),
+            ]
+        )
+        == 3
+    )
     assert count_mcp_tools(None) == 0
 
 
 def test_server_ready_drain_decisions() -> None:
-    assert should_drain_deferred_on_server_ready(
-        deferred_action_count=1,
-        agent_running=False,
-    ) is True
-    assert should_drain_deferred_on_server_ready(
-        deferred_action_count=1,
-        agent_running=True,
-    ) is False
+    assert (
+        should_drain_deferred_on_server_ready(
+            deferred_action_count=1,
+            agent_running=False,
+        )
+        is True
+    )
+    assert (
+        should_drain_deferred_on_server_ready(
+            deferred_action_count=1,
+            agent_running=True,
+        )
+        is False
+    )
 
-    assert should_drain_queue_on_server_ready(
-        pending_message_count=1,
-        initial_prompt=None,
-    ) is True
-    assert should_drain_queue_on_server_ready(
-        pending_message_count=1,
-        initial_prompt="hello",
-    ) is False
+    assert (
+        should_drain_queue_on_server_ready(
+            pending_message_count=1,
+            initial_prompt=None,
+        )
+        is True
+    )
+    assert (
+        should_drain_queue_on_server_ready(
+            pending_message_count=1,
+            initial_prompt="hello",
+        )
+        is False
+    )
 
 
 def test_resume_agent_helpers() -> None:

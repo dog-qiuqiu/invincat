@@ -347,8 +347,6 @@ async def prewarm_model_caches(app: Any) -> None:  # noqa: ANN401
         )
 
         await asyncio.to_thread(get_available_models)
-        await asyncio.to_thread(
-            get_model_profiles, cli_override=app._profile_override
-        )
+        await asyncio.to_thread(get_model_profiles, cli_override=app._profile_override)
     except Exception:
         logger.warning("Could not prewarm model caches", exc_info=True)

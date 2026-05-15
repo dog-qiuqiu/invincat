@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from invincat_cli.app_runtime import thread_history
 from invincat_cli.app_runtime.thread_history import (
     build_resume_summary,
     convert_messages_to_data,
@@ -85,6 +86,24 @@ def test_thread_history_payload_from_state_values_converts_messages() -> None:
     assert payload.messages[0].content == "hello"
 
 
+def test_thread_history_payload_handles_empty_and_serialized_messages() -> None:
+    empty = thread_history_payload_from_state_values({"_context_tokens": -1})
+
+    assert empty.context_tokens == 0
+    assert empty.messages == []
+
+    payload = thread_history_payload_from_state_values(
+        {
+            "_context_tokens": 5,
+            "messages": [{"type": "human", "content": "serialized"}],
+        }
+    )
+
+    assert payload.context_tokens == 5
+    assert payload.messages[0].type == MessageType.USER
+    assert payload.messages[0].content == "serialized"
+
+
 def test_convert_messages_to_data_skips_system_and_preserves_skill_invocation() -> None:
     data = convert_messages_to_data(
         [
@@ -127,6 +146,24 @@ def test_convert_messages_to_data_rejects_unmatched_tool_calls() -> None:
     assert data[0].tool_status == ToolStatus.REJECTED
 
 
+def test_convert_messages_to_data_handles_unmatched_and_unsupported_messages() -> None:
+    data = convert_messages_to_data(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[{"id": None, "name": "shell", "args": {"command": "ls"}}],
+            ),
+            ToolMessage("orphan", tool_call_id="missing"),
+            object(),
+        ]
+    )
+
+    assert len(data) == 1
+    assert data[0].type == MessageType.TOOL
+    assert data[0].tool_status == ToolStatus.REJECTED
+    assert thread_history._extract_ai_text({"not": "text"}) == ""
+
+
 def test_build_resume_summary_uses_first_last_user_messages_and_tokens() -> None:
     summary = build_resume_summary(
         [
@@ -141,6 +178,16 @@ def test_build_resume_summary_uses_first_last_user_messages_and_tokens() -> None
         "3 messages, 1.2K tokens · Started with: “first topic” · "
         "Last topic: “second topic”"
     )
+
+
+def test_build_resume_summary_truncates_long_preview() -> None:
+    summary = build_resume_summary(
+        [MessageData(type=MessageType.USER, content="x" * 100)],
+        context_tokens=0,
+    )
+
+    assert "x" * 80 in summary
+    assert summary.endswith("…”")
 
 
 def test_build_resume_summary_returns_empty_without_user_messages() -> None:

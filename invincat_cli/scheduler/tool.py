@@ -29,14 +29,16 @@ SCHEDULE_UPDATE_TYPE = "schedule_update"
 SCHEDULE_CANCEL_TYPE = "schedule_cancel"
 SCHEDULE_RUN_NOW_TYPE = "schedule_run_now"
 
-_MANAGEMENT_TOOLS = frozenset({
-    "create_scheduled_task",
-    "list_scheduled_tasks",
-    "update_scheduled_task",
-    "cancel_scheduled_task",
-    "delete_scheduled_task",
-    "run_scheduled_task_now",
-})
+_MANAGEMENT_TOOLS = frozenset(
+    {
+        "create_scheduled_task",
+        "list_scheduled_tasks",
+        "update_scheduled_task",
+        "cancel_scheduled_task",
+        "delete_scheduled_task",
+        "run_scheduled_task_now",
+    }
+)
 
 
 def _is_scheduled_run(runtime: Any) -> bool:  # noqa: ANN401
@@ -141,7 +143,9 @@ def parse_schedule_tool_result(content: Any) -> dict[str, Any] | None:  # noqa: 
     """Try to parse a ToolMessage content as a schedule management payload."""
     if isinstance(content, list):
         parts = [
-            str(p.get("text", "")) for p in content if isinstance(p, dict) and p.get("type") == "text"
+            str(p.get("text", ""))
+            for p in content
+            if isinstance(p, dict) and p.get("type") == "text"
         ]
         raw = "\n".join(parts).strip()
     else:
@@ -315,26 +319,28 @@ class ScheduleMiddleware(AgentMiddleware):
             result = []
             for t in tasks:
                 channels = getattr(t.delivery, "channels", []) or []
-                result.append({
-                    "id": t.id,
-                    "title": t.title,
-                    "enabled": t.enabled,
-                    "cron": t.cron,
-                    "schedule_type": t.schedule_type,
-                    "run_at": t.run_at,
-                    "delete_after_run": t.delete_after_run,
-                    "timezone": t.timezone,
-                    "next_run_at": t.next_run_at,
-                    "next_run_display": format_schedule_time_for_display(
-                        t.next_run_at,
-                        t.timezone,
-                        missing="—",
-                    ),
-                    "last_status": t.last_status,
-                    "run_count": t.run_count,
-                    "delivery": channels,
-                    "output_mode": getattr(t.report, "mode", "message"),
-                })
+                result.append(
+                    {
+                        "id": t.id,
+                        "title": t.title,
+                        "enabled": t.enabled,
+                        "cron": t.cron,
+                        "schedule_type": t.schedule_type,
+                        "run_at": t.run_at,
+                        "delete_after_run": t.delete_after_run,
+                        "timezone": t.timezone,
+                        "next_run_at": t.next_run_at,
+                        "next_run_display": format_schedule_time_for_display(
+                            t.next_run_at,
+                            t.timezone,
+                            missing="—",
+                        ),
+                        "last_status": t.last_status,
+                        "run_count": t.run_count,
+                        "delivery": channels,
+                        "output_mode": getattr(t.report, "mode", "message"),
+                    }
+                )
             payload = {
                 "type": SCHEDULE_LIST_TYPE,
                 "tasks": result,
@@ -371,7 +377,9 @@ class ScheduleMiddleware(AgentMiddleware):
 
             task = store.load_task(task_id)
             if task is None:
-                return json.dumps({"error": f"Task {task_id!r} not found"}, ensure_ascii=False)
+                return json.dumps(
+                    {"error": f"Task {task_id!r} not found"}, ensure_ascii=False
+                )
             if schedule is not None and task.schedule_type == "once":
                 return json.dumps(
                     {
@@ -400,14 +408,16 @@ class ScheduleMiddleware(AgentMiddleware):
                 "type": SCHEDULE_UPDATE_TYPE,
                 "task_id": task_id,
                 "updates": {
-                    k: v for k, v in {
+                    k: v
+                    for k, v in {
                         "title": title,
                         "cron": cron if schedule else None,
                         "schedule_input": schedule,
                         "prompt": prompt,
                         "enabled": enabled,
                         "timezone": timezone,
-                    }.items() if v is not None
+                    }.items()
+                    if v is not None
                 },
                 "tool_call_id": tool_call_id,
             }
@@ -489,7 +499,9 @@ class ScheduleMiddleware(AgentMiddleware):
             """
             task = store.load_task(task_id)
             if task is None:
-                return json.dumps({"error": f"Task {task_id!r} not found"}, ensure_ascii=False)
+                return json.dumps(
+                    {"error": f"Task {task_id!r} not found"}, ensure_ascii=False
+                )
             payload = {
                 "type": SCHEDULE_RUN_NOW_TYPE,
                 "task_id": task_id,
@@ -546,7 +558,9 @@ class ScheduleMiddleware(AgentMiddleware):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
     ) -> ToolMessage | Command[Any]:
-        if (rejection := self._reject_management_tool_during_scheduled_run(request)) is not None:
+        if (
+            rejection := self._reject_management_tool_during_scheduled_run(request)
+        ) is not None:
             return rejection
         return handler(request)
 
@@ -555,6 +569,8 @@ class ScheduleMiddleware(AgentMiddleware):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
     ) -> ToolMessage | Command[Any]:
-        if (rejection := self._reject_management_tool_during_scheduled_run(request)) is not None:
+        if (
+            rejection := self._reject_management_tool_during_scheduled_run(request)
+        ) is not None:
             return rejection
         return await handler(request)

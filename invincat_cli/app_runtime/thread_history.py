@@ -104,12 +104,16 @@ def convert_messages_to_data(messages: list[Any]) -> list[MessageData]:
 
         elif isinstance(msg, ToolMessage):
             raw_tool_call_id = getattr(msg, "tool_call_id", None)
-            tool_call_id = str(raw_tool_call_id) if raw_tool_call_id is not None else None
+            tool_call_id = (
+                str(raw_tool_call_id) if raw_tool_call_id is not None else None
+            )
             if tool_call_id and tool_call_id in pending_tool_indices:
                 idx = pending_tool_indices.pop(tool_call_id)
                 data = result[idx]
                 status = getattr(msg, "status", "success")
-                content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                content = (
+                    msg.content if isinstance(msg.content, str) else str(msg.content)
+                )
                 data.tool_status = (
                     ToolStatus.SUCCESS if status == "success" else ToolStatus.ERROR
                 )

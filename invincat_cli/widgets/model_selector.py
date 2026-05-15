@@ -129,7 +129,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str, ModelTarget] | None]):
         Binding("1", "target_primary", "Primary target", show=False, priority=True),
         Binding("2", "target_memory", "Memory target", show=False, priority=True),
         Binding("enter", "select", "Select", show=False, priority=True),
-        Binding("ctrl+n", "register_model", "Register model", show=False, priority=True),
+        Binding(
+            "ctrl+n", "register_model", "Register model", show=False, priority=True
+        ),
         Binding("ctrl+e", "edit_model", "Edit model", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
     ]
@@ -269,7 +271,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str, ModelTarget] | None]):
             self._current_spec = current_model
         self._current_memory_spec: str | None = None
         if current_memory_model and current_memory_provider:
-            self._current_memory_spec = f"{current_memory_provider}:{current_memory_model}"
+            self._current_memory_spec = (
+                f"{current_memory_provider}:{current_memory_model}"
+            )
         elif current_memory_model:
             self._current_memory_spec = current_memory_model
         self._profiles: Mapping[str, ModelProfileEntry] = {}
@@ -351,7 +355,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str, ModelTarget] | None]):
                     f"{t('model.title')} "
                     f"[{t('model.target_short', target=self._target_label())}]"
                 )
-            yield Static(title, classes="model-selector-title", id="model-selector-title")
+            yield Static(
+                title, classes="model-selector-title", id="model-selector-title"
+            )
 
             # Search input
             yield Input(
@@ -481,7 +487,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str, ModelTarget] | None]):
             if filter_input.value.strip() in {"1", "2"}:
                 filter_input.value = ""
         except Exception:
-            logger.debug("Failed to clear model filter after target shortcut", exc_info=True)
+            logger.debug(
+                "Failed to clear model filter after target shortcut", exc_info=True
+            )
         return True
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -726,7 +734,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str, ModelTarget] | None]):
             spec = Content.styled(model_spec, colors.warning)
         else:
             spec = Content(model_spec)
-        suffix = Content.styled(f" ({t('model.current')})", "dim") if current else Content("")
+        suffix = (
+            Content.styled(f" ({t('model.current')})", "dim")
+            if current
+            else Content("")
+        )
         if status == "deprecated":
             status_suffix = Content.styled(" (deprecated)", colors.error)
         elif status:
@@ -812,7 +824,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str, ModelTarget] | None]):
         model_name = spec.split(":", 1)[1] if ":" in spec else spec
         entry = self._profiles.get(spec)
         try:
-            text = self._format_footer(entry, get_glyphs(), provider=provider, model_name=model_name)
+            text = self._format_footer(
+                entry, get_glyphs(), provider=provider, model_name=model_name
+            )
         except (KeyError, ValueError, TypeError):  # Resilient footer rendering
             logger.warning("Failed to format footer for %s", spec, exc_info=True)
             text = Content.styled(f"{t('model.could_not_load')}\n\n\n", "dim")
@@ -1072,9 +1086,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str, ModelTarget] | None]):
             for p, models in get_available_models().items()
             for m in models
         ]
-        self._profiles = get_model_profiles(
-            cli_override=self._cli_profile_override
-        )
+        self._profiles = get_model_profiles(cli_override=self._cli_profile_override)
 
         self._filter_text = ""
         filter_input = self.query_one("#model-filter", Input)
@@ -1208,10 +1220,14 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
     def compose(self) -> ComposeResult:
         """Compose the registration form layout."""
         with Vertical():
-            title_key = "model.edit_title" if self._edit_mode else "model.register_title"
+            title_key = (
+                "model.edit_title" if self._edit_mode else "model.register_title"
+            )
             yield Static(t(title_key), classes="register-title")
 
-            yield Static(t("model.register_provider_label"), classes="register-field-label")
+            yield Static(
+                t("model.register_provider_label"), classes="register-field-label"
+            )
             yield ProviderSelect(
                 [(provider, provider) for provider in self.PROVIDER_OPTIONS],
                 value=self._initial_values.get("provider") or self.PROVIDER_OPTIONS[0],
@@ -1220,7 +1236,9 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
                 classes="register-input",
             )
 
-            yield Static(t("model.register_model_label"), classes="register-field-label")
+            yield Static(
+                t("model.register_model_label"), classes="register-field-label"
+            )
             yield Input(
                 placeholder=t("model.register_model_placeholder"),
                 value=self._initial_values.get("model", ""),
@@ -1228,10 +1246,10 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
                 classes="register-input",
             )
 
-            yield Static(t("model.register_apikey_label"), classes="register-field-label")
             yield Static(
-                t("model.register_apikey_hint"), classes="register-field-hint"
+                t("model.register_apikey_label"), classes="register-field-label"
             )
+            yield Static(t("model.register_apikey_hint"), classes="register-field-hint")
             yield Input(
                 placeholder=t("model.register_apikey_placeholder"),
                 value=self._initial_values.get("api_key_env", ""),
@@ -1239,7 +1257,9 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
                 classes="register-input",
             )
 
-            yield Static(t("model.register_baseurl_label"), classes="register-field-label")
+            yield Static(
+                t("model.register_baseurl_label"), classes="register-field-label"
+            )
             yield Input(
                 placeholder=t("model.register_baseurl_placeholder"),
                 value=self._initial_values.get("base_url", ""),
@@ -1247,7 +1267,10 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
                 classes="register-input",
             )
 
-            yield Static(t("model.register_max_input_tokens_label"), classes="register-field-label")
+            yield Static(
+                t("model.register_max_input_tokens_label"),
+                classes="register-field-label",
+            )
             yield Input(
                 placeholder=t("model.register_max_input_tokens_placeholder"),
                 value=self._initial_values.get("max_input_tokens", ""),
@@ -1400,10 +1423,14 @@ class ModelRegisterScreen(ModalScreen[tuple[str, str] | None]):
         model_name = self.query_one("#reg-model", Input).value.strip()
         api_key_env = self.query_one("#reg-api-key-env", Input).value.strip() or None
         base_url = self.query_one("#reg-base-url", Input).value.strip()
-        max_input_tokens_str = self.query_one("#reg-max-input-tokens", Input).value.strip()
+        max_input_tokens_str = self.query_one(
+            "#reg-max-input-tokens", Input
+        ).value.strip()
         extra_params: dict[str, Any] = {}
         if self._deepseek_options_enabled():
-            thinking_value = self.query_one("#reg-deepseek-thinking", ProviderSelect).value
+            thinking_value = self.query_one(
+                "#reg-deepseek-thinking", ProviderSelect
+            ).value
             effort_value = self.query_one("#reg-deepseek-effort", ProviderSelect).value
             if isinstance(thinking_value, str) and thinking_value:
                 extra_params.setdefault("extra_body", {})["thinking"] = {

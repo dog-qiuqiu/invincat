@@ -34,8 +34,7 @@ APPROVAL_PENDING_TIMEOUT_LOG = (
     "proceeding with new approval"
 )
 ASK_USER_PENDING_TIMEOUT_LOG = (
-    "Timed out waiting for previous ask-user widget to clear. "
-    "Forcefully cleaning up."
+    "Timed out waiting for previous ask-user widget to clear. Forcefully cleaning up."
 )
 
 

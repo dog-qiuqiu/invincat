@@ -150,20 +150,26 @@ def test_resolve_wecom_bridge_availability() -> None:
 
 
 def test_wecom_turn_is_busy() -> None:
-    assert wecom_turn_is_busy(
-        connecting=False,
-        thread_switching=False,
-        model_switching=False,
-        agent_running=False,
-        shell_running=False,
-    ) is False
-    assert wecom_turn_is_busy(
-        connecting=False,
-        thread_switching=True,
-        model_switching=False,
-        agent_running=False,
-        shell_running=False,
-    ) is True
+    assert (
+        wecom_turn_is_busy(
+            connecting=False,
+            thread_switching=False,
+            model_switching=False,
+            agent_running=False,
+            shell_running=False,
+        )
+        is False
+    )
+    assert (
+        wecom_turn_is_busy(
+            connecting=False,
+            thread_switching=True,
+            model_switching=False,
+            agent_running=False,
+            shell_running=False,
+        )
+        is True
+    )
 
 
 def test_wecom_turn_context_restores_previous_frame() -> None:

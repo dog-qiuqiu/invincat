@@ -147,12 +147,18 @@ async def execute_schedule_action(app: Any, action: Any) -> None:  # noqa: ANN40
 
     elif action.kind == "pause":
         app._scheduler_store.set_task_enabled(task.id, False)
-        await app._mount_message(AppMessage(t("schedule.paused").format(title=task.title)))
+        await app._mount_message(
+            AppMessage(t("schedule.paused").format(title=task.title))
+        )
 
     elif action.kind == "resume":
         app._scheduler_store.set_task_enabled(task.id, True)
-        await app._mount_message(AppMessage(t("schedule.resumed").format(title=task.title)))
+        await app._mount_message(
+            AppMessage(t("schedule.resumed").format(title=task.title))
+        )
 
     elif action.kind == "delete":
         app._scheduler_store.delete_task(task.id)
-        await app._mount_message(AppMessage(t("schedule.deleted").format(title=task.title)))
+        await app._mount_message(
+            AppMessage(t("schedule.deleted").format(title=task.title))
+        )

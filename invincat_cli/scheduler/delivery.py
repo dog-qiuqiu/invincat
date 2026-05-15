@@ -53,7 +53,9 @@ def resolve_report_path(task: ScheduledTask, date_str: str) -> Path:
     try:
         report_path.relative_to(cwd)
     except ValueError as exc:
-        raise ValueError("Scheduled report path escapes the task working directory") from exc
+        raise ValueError(
+            "Scheduled report path escapes the task working directory"
+        ) from exc
     return report_path
 
 
@@ -75,7 +77,9 @@ def check_report_exists(task: ScheduledTask, date_str: str) -> str | None:
     return None
 
 
-def save_fallback_report(task: ScheduledTask, content: str, date_str: str) -> str | None:
+def save_fallback_report(
+    task: ScheduledTask, content: str, date_str: str
+) -> str | None:
     """Write agent response text as a fallback report and return the path."""
     if not content.strip():
         return None

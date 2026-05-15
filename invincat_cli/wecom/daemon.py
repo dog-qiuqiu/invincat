@@ -34,11 +34,11 @@ _LOCK_FILENAME = ".invincat/wecom_daemon.lock"
 _SOCKET_TIMEOUT = 5.0
 _STARTUP_TIMEOUT = 120.0
 _BRIDGE_STARTUP_READY_TIMEOUT = 45.0
-_DELIVERY_RETRIES = 8                 # 1 initial attempt + 7 retries
-_DELIVERY_RETRY_DELAY = 15            # seconds between retries
-_DELIVERY_READY_TIMEOUT = 30          # per-attempt wait for bridge subscribe ACK
-_DELIVERY_REQUEST_TIMEOUT = 30        # per-attempt WeCom request response timeout
-_FILE_PERMS = 0o600                   # log / socket / state / lock — owner-only
+_DELIVERY_RETRIES = 8  # 1 initial attempt + 7 retries
+_DELIVERY_RETRY_DELAY = 15  # seconds between retries
+_DELIVERY_READY_TIMEOUT = 30  # per-attempt wait for bridge subscribe ACK
+_DELIVERY_REQUEST_TIMEOUT = 30  # per-attempt WeCom request response timeout
+_FILE_PERMS = 0o600  # log / socket / state / lock — owner-only
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +336,9 @@ def _write_startup_status(fd: int | None, status: str) -> None:
     if fd is None:
         return
     try:
-        os.write(fd, (status.replace("\n", " ") + "\n").encode("utf-8", errors="replace"))
+        os.write(
+            fd, (status.replace("\n", " ") + "\n").encode("utf-8", errors="replace")
+        )
     except OSError:
         pass
     finally:
@@ -428,7 +430,9 @@ def _fork_daemon(config: WeComDaemonConfig) -> int:
         lock_fd = acquire_daemon_lock(config.cwd)
     except BlockingIOError:
         logger.error("WeCom daemon: another instance acquired the lock — exiting.")
-        _write_startup_status(startup_write_fd, "ERROR another instance acquired the lock")
+        _write_startup_status(
+            startup_write_fd, "ERROR another instance acquired the lock"
+        )
         os._exit(0)
     try:
         asyncio.run(_daemon_main(config, startup_fd=startup_write_fd))
@@ -457,7 +461,9 @@ async def start_daemon_async(config: WeComDaemonConfig) -> None:
 
 def run_daemon_foreground(config: WeComDaemonConfig) -> None:
     """Run the daemon in the foreground (for debugging). Blocking."""
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
+    )
     try:
         lock_fd = acquire_daemon_lock(config.cwd)
     except BlockingIOError as exc:
@@ -520,7 +526,9 @@ def _redirect_stdio(log_file: Path, *, preserve_fds: tuple[int, ...] = ()) -> No
 # ---------------------------------------------------------------------------
 
 
-async def _daemon_main(config: WeComDaemonConfig, *, startup_fd: int | None = None) -> None:
+async def _daemon_main(
+    config: WeComDaemonConfig, *, startup_fd: int | None = None
+) -> None:
     """Async entry point that runs inside the daemon process."""
     logger.info("WeCom daemon starting cwd=%s bot_id=%s", config.cwd, config.bot_id)
 
@@ -566,7 +574,9 @@ async def _daemon_main(config: WeComDaemonConfig, *, startup_fd: int | None = No
             else None
         )
         if not shell_enabled:
-            logger.info("Daemon shell tool disabled; set a shell allow-list to enable it.")
+            logger.info(
+                "Daemon shell tool disabled; set a shell allow-list to enable it."
+            )
         elif restrictive_shell_allow_list is not None:
             logger.info("Daemon shell tool enabled with restrictive allow-list.")
         else:
@@ -625,7 +635,9 @@ async def _daemon_main(config: WeComDaemonConfig, *, startup_fd: int | None = No
 
         async def _on_message(frame: dict[str, Any]) -> None:
             responder = WeComMessageResponder(
-                enqueue=lambda p: bridge_holder[0].enqueue(p) if bridge_holder else None,
+                enqueue=lambda p: (
+                    bridge_holder[0].enqueue(p) if bridge_holder else None
+                ),
                 flush=_flush_outbox,
                 build_agent_input=_make_build_agent_input(config.cwd),
                 run_turn=handler.run_turn,
@@ -674,7 +686,9 @@ async def _daemon_main(config: WeComDaemonConfig, *, startup_fd: int | None = No
 
         # --- Scheduler ---
         scheduler_task = asyncio.create_task(
-            _run_scheduler(config, handler, bridge_holder, stop_event, scheduler_runner_holder)
+            _run_scheduler(
+                config, handler, bridge_holder, stop_event, scheduler_runner_holder
+            )
         )
 
         logger.info("WeCom daemon ready")
@@ -712,7 +726,9 @@ async def _daemon_main(config: WeComDaemonConfig, *, startup_fd: int | None = No
         logger.info("WeCom daemon stopped")
 
 
-async def _wait_for_bridge_startup(bridge: Any, bridge_task: asyncio.Task[None]) -> None:
+async def _wait_for_bridge_startup(
+    bridge: Any, bridge_task: asyncio.Task[None]
+) -> None:
     """Wait until the WeCom subscribe ACK is observed, or fail startup."""
     ready_wait = asyncio.create_task(bridge.ready.wait())
     try:
@@ -725,7 +741,9 @@ async def _wait_for_bridge_startup(bridge: Any, bridge_task: asyncio.Task[None])
             return
         if bridge_task in done:
             if bridge_task.cancelled():
-                raise RuntimeError("WeCom bridge was cancelled before subscription acknowledgement")
+                raise RuntimeError(
+                    "WeCom bridge was cancelled before subscription acknowledgement"
+                )
             exc = bridge_task.exception()
             if exc is not None:
                 raise RuntimeError(
@@ -765,7 +783,9 @@ def _make_build_agent_input(cwd: Path):
         from invincat_cli.wecom.media import (
             build_wecom_agent_input_with_media_downloads,
         )
+
         return await build_wecom_agent_input_with_media_downloads(frame, cwd=cwd)
+
     return _build
 
 
@@ -798,7 +818,8 @@ async def _run_scheduler(
 
         def list_tasks(self, *, enabled_only: bool = False, cwd: str | None = None):
             return [
-                t for t in super().list_tasks(enabled_only=enabled_only, cwd=cwd)
+                t
+                for t in super().list_tasks(enabled_only=enabled_only, cwd=cwd)
                 if _task_visible_to_wecom_daemon(t, config.cwd)
             ]
 
@@ -909,7 +930,11 @@ async def _run_scheduler(
                     content = f"✅ 定时任务已完成：{task.title}"
                     if result:
                         # Mirror TUI's 1200-char truncation for scheduled results.
-                        summary = result if len(result) <= 1200 else result[:1200].rstrip() + "\n\n(摘要过长，已截断)"
+                        summary = (
+                            result
+                            if len(result) <= 1200
+                            else result[:1200].rstrip() + "\n\n(摘要过长，已截断)"
+                        )
                         content += f"\n\n{summary}"
                 else:
                     content = f"❌ 定时任务执行失败：{task.title}"
@@ -951,7 +976,10 @@ async def _run_scheduler(
             if runner_holder:
                 try:
                     runner_holder[0].finish_run(
-                        run_id, task_id, status=status, error=error_msg,
+                        run_id,
+                        task_id,
+                        status=status,
+                        error=error_msg,
                     )
                 except Exception:
                     logger.exception("finish_run failed for run_id=%s", run_id)
@@ -967,7 +995,9 @@ async def _run_scheduler(
             try:
                 done.result()
             except Exception:
-                logger.exception("Scheduled task injection task failed run_id=%s", run_id)
+                logger.exception(
+                    "Scheduled task injection task failed run_id=%s", run_id
+                )
 
         task.add_done_callback(_done)
 
@@ -1010,7 +1040,9 @@ async def _run_scheduler(
         try:
             if bridge_holder:
                 try:
-                    await asyncio.wait_for(bridge_holder[0].ready.wait(), timeout=_BRIDGE_READY_TIMEOUT)
+                    await asyncio.wait_for(
+                        bridge_holder[0].ready.wait(), timeout=_BRIDGE_READY_TIMEOUT
+                    )
                     logger.info("Scheduler: WeCom bridge ready, starting first tick")
                 except TimeoutError:
                     logger.warning(
@@ -1104,7 +1136,11 @@ async def _deliver_scheduled_text(
         except TimeoutError:
             logger.warning(
                 "wecom scheduled delivery (%s) bridge not ready after %ds (attempt %d/%d, task=%r)",
-                label, _DELIVERY_READY_TIMEOUT, attempt, _DELIVERY_RETRIES, task_title,
+                label,
+                _DELIVERY_READY_TIMEOUT,
+                attempt,
+                _DELIVERY_RETRIES,
+                task_title,
             )
             if attempt < _DELIVERY_RETRIES:
                 await asyncio.sleep(_DELIVERY_RETRY_DELAY)
@@ -1114,7 +1150,10 @@ async def _deliver_scheduled_text(
             await bridge.send_request(payload, timeout=_DELIVERY_REQUEST_TIMEOUT)
             logger.info(
                 "wecom scheduled delivery (%s) succeeded chatid=%s task=%r attempt=%d",
-                label, chatid, task_title, attempt,
+                label,
+                chatid,
+                task_title,
+                attempt,
             )
             return True
         except WeComServerError as exc:
@@ -1123,32 +1162,52 @@ async def _deliver_scheduled_text(
             logger.error(
                 "wecom scheduled delivery (%s) rejected by server: errcode=%s errmsg=%s "
                 "chatid=%s task=%r — not retrying",
-                label, exc.errcode, exc.errmsg, chatid, task_title,
+                label,
+                exc.errcode,
+                exc.errmsg,
+                chatid,
+                task_title,
             )
             return False
         except WeComOfflineError:
             logger.warning(
                 "wecom scheduled delivery (%s) offline (attempt %d/%d, chatid=%s task=%r)",
-                label, attempt, _DELIVERY_RETRIES, chatid, task_title,
+                label,
+                attempt,
+                _DELIVERY_RETRIES,
+                chatid,
+                task_title,
             )
         except TimeoutError:
             logger.warning(
                 "wecom scheduled delivery (%s) timed out (attempt %d/%d, chatid=%s task=%r)",
-                label, attempt, _DELIVERY_RETRIES, chatid, task_title,
+                label,
+                attempt,
+                _DELIVERY_RETRIES,
+                chatid,
+                task_title,
             )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.warning(
                 "wecom scheduled delivery (%s) transient error (attempt %d/%d, chatid=%s task=%r): %s",
-                label, attempt, _DELIVERY_RETRIES, chatid, task_title, exc,
+                label,
+                attempt,
+                _DELIVERY_RETRIES,
+                chatid,
+                task_title,
+                exc,
             )
         if attempt < _DELIVERY_RETRIES:
             await asyncio.sleep(_DELIVERY_RETRY_DELAY)
 
     logger.error(
         "wecom scheduled delivery (%s) permanently failed after %d attempts chatid=%s task=%r",
-        label, _DELIVERY_RETRIES, chatid, task_title,
+        label,
+        _DELIVERY_RETRIES,
+        chatid,
+        task_title,
     )
     return False
 

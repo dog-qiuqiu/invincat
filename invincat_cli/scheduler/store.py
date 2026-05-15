@@ -389,9 +389,7 @@ class SchedulerStore:
 
     def delete_task(self, task_id: str) -> bool:
         with _connect(self._db_path) as conn:
-            cur = conn.execute(
-                "DELETE FROM scheduled_tasks WHERE id=?", (task_id,)
-            )
+            cur = conn.execute("DELETE FROM scheduled_tasks WHERE id=?", (task_id,))
             conn.commit()
         return cur.rowcount > 0
 
@@ -514,14 +512,12 @@ class SchedulerStore:
         reconciled; otherwise all are.  Returns the number of rows updated.
         """
         select_params: list[Any] = []
-        select_sql = (
-            """
+        select_sql = """
             SELECT r.*, t.timeout_seconds
             FROM scheduled_task_runs r
             LEFT JOIN scheduled_tasks t ON t.id = r.task_id
             WHERE r.status='running' AND r.finished_at IS NULL
             """
-        )
         if cwd is not None:
             select_sql += " AND r.cwd=?"
             select_params.append(cwd)
@@ -625,7 +621,8 @@ class FilteredSchedulerStore(SchedulerStore):
         cwd: str | None = None,
     ) -> list[ScheduledTask]:  # noqa: F821
         return [
-            task for task in super().list_tasks(enabled_only=enabled_only, cwd=cwd)
+            task
+            for task in super().list_tasks(enabled_only=enabled_only, cwd=cwd)
             if not self._is_excluded(task)
         ]
 

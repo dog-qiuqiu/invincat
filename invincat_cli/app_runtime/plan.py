@@ -104,7 +104,11 @@ def prefer_zh_for_text(text: str) -> bool:
 
 def normalize_state_messages(raw_messages: Any) -> list[Any]:  # noqa: ANN401
     """Normalize checkpoint `messages` into LangChain message objects."""
-    if isinstance(raw_messages, list) and raw_messages and isinstance(raw_messages[0], dict):
+    if (
+        isinstance(raw_messages, list)
+        and raw_messages
+        and isinstance(raw_messages[0], dict)
+    ):
         from langchain_core.messages.utils import convert_to_messages
 
         return convert_to_messages(raw_messages)
@@ -119,9 +123,7 @@ def build_plan_handoff_prompt(
     planner_state_values: dict[str, Any] | None = None,
 ) -> str:
     """Build structured main-agent handoff prompt from approved todo items."""
-    plan_text = "\n".join(
-        f"{i + 1}. {todo['content']}" for i, todo in enumerate(todos)
-    )
+    plan_text = "\n".join(f"{i + 1}. {todo['content']}" for i, todo in enumerate(todos))
     latest_user_text = ""
 
     if planner_state_values:
@@ -141,7 +143,9 @@ def build_plan_handoff_prompt(
             f"{i + 1}. {line}" for i, line in enumerate(context_lines)
         )
         if prefer_zh:
-            context_block = f"\noriginal_user_request:\n规划阶段关键上下文：\n{rendered_context}\n"
+            context_block = (
+                f"\noriginal_user_request:\n规划阶段关键上下文：\n{rendered_context}\n"
+            )
         else:
             context_block = (
                 "\noriginal_user_request:\n"

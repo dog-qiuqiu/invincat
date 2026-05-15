@@ -169,6 +169,106 @@ def test_malformed_items_are_filtered_from_injection(tmp_path: Path) -> None:
     assert "bad status" not in rendered
 
 
+def test_low_level_memory_store_validation_edges(tmp_path: Path) -> None:
+    assert auto_memory_module._normalize_text(123, max_chars=10) == ""
+    assert auto_memory_module._is_valid_store_item("bad") is False
+    assert (
+        auto_memory_module._is_valid_store_item(
+            {
+                "id": " ",
+                "section": "Rules",
+                "content": "content",
+                "status": "active",
+            }
+        )
+        is False
+    )
+    assert (
+        auto_memory_module._is_valid_store_item(
+            {
+                "id": "mem_p_000001",
+                "section": " ",
+                "content": "content",
+                "status": "active",
+            }
+        )
+        is False
+    )
+    assert auto_memory_module._render_store_content({"items": "bad"}) == ""
+    assert auto_memory_module._store_content_if_valid(tmp_path / "missing.json") == (
+        False,
+        "",
+    )
+
+    non_dict = tmp_path / "non_dict.json"
+    non_dict.write_text("[]", encoding="utf-8")
+    assert auto_memory_module._store_content_if_valid(non_dict) == (False, "")
+
+    bad_items = tmp_path / "bad_items.json"
+    bad_items.write_text('{"items": {}}', encoding="utf-8")
+    assert auto_memory_module._store_content_if_valid(bad_items) == (False, "")
+
+
+def test_rendering_truncates_hot_and_warm_sections() -> None:
+    hot_only = auto_memory_module._render_store_content(
+        {
+            "items": [
+                {
+                    "id": "mem_p_000001",
+                    "section": "Rules",
+                    "content": "x" * 100,
+                    "status": "active",
+                    "tier": "hot",
+                }
+            ]
+        },
+        max_chars=20,
+    )
+    assert hot_only == "### Always Apply"
+
+    warm_only = auto_memory_module._render_store_content(
+        {
+            "items": [
+                {
+                    "id": "mem_p_000001",
+                    "section": "Rules",
+                    "content": "x" * 100,
+                    "status": "active",
+                    "tier": "warm",
+                }
+            ]
+        },
+        max_chars=20,
+    )
+    assert warm_only == "### When Relevant"
+
+
+def test_archived_and_missing_store_entries_are_skipped(tmp_path: Path) -> None:
+    missing_store = tmp_path / "missing.json"
+    project_store = tmp_path / "memory_project.json"
+    _make_store(
+        project_store,
+        scope="project",
+        items=[
+            {
+                "id": "mem_p_000001",
+                "section": "Rules",
+                "content": "archived",
+                "status": "archived",
+            }
+        ],
+    )
+
+    mw = RefreshableMemoryMiddleware(
+        backend=object(),
+        memory_store_paths={"user": str(missing_store), "project": str(project_store)},
+    )
+
+    assert mw.before_agent({"memory_contents": None}, runtime=object()) == {
+        "memory_contents": {}
+    }
+
+
 def test_wrap_model_call_injects_agent_memory(tmp_path: Path) -> None:
     project_store = tmp_path / "memory_project.json"
     _make_store(
@@ -206,7 +306,9 @@ def test_wrap_model_call_injects_agent_memory(tmp_path: Path) -> None:
     assert "edit_file" not in text
 
 
-def test_wrap_model_call_reads_store_even_without_before_agent_state(tmp_path: Path) -> None:
+def test_wrap_model_call_reads_store_even_without_before_agent_state(
+    tmp_path: Path,
+) -> None:
     project_store = tmp_path / "memory_project.json"
     _make_store(
         project_store,
@@ -239,7 +341,9 @@ def test_wrap_model_call_reads_store_even_without_before_agent_state(tmp_path: P
     assert "Read directly in wrap." in final_req.system_message.text
 
 
-def test_wrap_model_call_reuses_cache_when_store_unchanged(tmp_path: Path, monkeypatch: Any) -> None:
+def test_wrap_model_call_reuses_cache_when_store_unchanged(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
     project_store = tmp_path / "memory_project.json"
     _make_store(
         project_store,
@@ -384,6 +488,38 @@ def test_awrap_model_call_reads_memory_contents_from_mapping_state() -> None:
     assert "concise output" in final_req.system_message.text
 
 
+def test_awrap_model_call_handles_state_get_failure() -> None:
+    class BrokenState:
+        def get(self, key: str, default: Any = None) -> Any:
+            raise RuntimeError("bad state")
+
+    mw = RefreshableMemoryMiddleware(backend=object(), memory_store_paths={})
+    req = _AsyncFakeRequest(state=BrokenState())  # type: ignore[arg-type]
+
+    async def _handler(request: _AsyncFakeRequest) -> str:
+        assert isinstance(request.system_message, SystemMessage)
+        assert "(No memory loaded)" in request.system_message.text
+        return "ok"
+
+    assert asyncio.run(mw.awrap_model_call(req, _handler)) == "ok"
+
+
+def test_awrap_model_call_handles_non_mapping_get_state_value() -> None:
+    class StringState:
+        def get(self, key: str, default: Any = None) -> Any:
+            return "not a dict"
+
+    mw = RefreshableMemoryMiddleware(backend=object(), memory_store_paths={})
+    req = _AsyncFakeRequest(state=StringState())  # type: ignore[arg-type]
+
+    async def _handler(request: _AsyncFakeRequest) -> str:
+        assert isinstance(request.system_message, SystemMessage)
+        assert "(No memory loaded)" in request.system_message.text
+        return "ok"
+
+    assert asyncio.run(mw.awrap_model_call(req, _handler)) == "ok"
+
+
 def test_abefore_agent_uses_to_thread(tmp_path: Path, monkeypatch: Any) -> None:
     project_store = tmp_path / "memory_project.json"
     _make_store(
@@ -452,6 +588,31 @@ def test_total_memory_injection_budget_is_enforced(tmp_path: Path) -> None:
     contents = update["memory_contents"]
     total_len = sum(len(v) for v in contents.values())
     assert total_len <= auto_memory_module._MAX_TOTAL_INJECTION_CHARS
+
+
+def test_total_memory_injection_stops_after_budget_is_exhausted(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    user_store = tmp_path / "memory_user.json"
+    project_store = tmp_path / "memory_project.json"
+    item = {
+        "id": "mem_000001",
+        "section": "Rules",
+        "content": "long content",
+        "status": "active",
+    }
+    _make_store(user_store, scope="user", items=[item])
+    _make_store(project_store, scope="project", items=[item])
+    monkeypatch.setattr(auto_memory_module, "_MAX_TOTAL_INJECTION_CHARS", 1)
+
+    mw = RefreshableMemoryMiddleware(
+        backend=object(),
+        memory_store_paths={"user": str(user_store), "project": str(project_store)},
+    )
+
+    update = mw.before_agent({"memory_contents": None}, runtime=object())
+    assert isinstance(update, dict)
+    assert update["memory_contents"] == {"User Memory": "#"}
 
 
 def test_hot_priority_and_cold_exclusion_in_injection(tmp_path: Path) -> None:
@@ -557,7 +718,9 @@ def test_legacy_item_without_tier_score_is_handled(tmp_path: Path) -> None:
     assert "Legacy item" in rendered
 
 
-def test_reload_when_store_changes_even_if_state_has_cached_empty_dict(tmp_path: Path) -> None:
+def test_reload_when_store_changes_even_if_state_has_cached_empty_dict(
+    tmp_path: Path,
+) -> None:
     project_store = tmp_path / "memory_project.json"
     _make_store(project_store, scope="project", items=[])
     mw = RefreshableMemoryMiddleware(
@@ -586,3 +749,8 @@ def test_reload_when_store_changes_even_if_state_has_cached_empty_dict(tmp_path:
     assert isinstance(second, dict)
     rendered = "\n".join(second["memory_contents"].values())
     assert "Use uv." in rendered
+
+
+def test_empty_memory_sections_format_as_no_memory_loaded() -> None:
+    formatted = RefreshableMemoryMiddleware._format_agent_memory({"User Memory": ""})
+    assert "(No memory loaded)" in formatted

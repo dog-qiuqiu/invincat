@@ -273,7 +273,7 @@ def _format_column_value(
     else:
         value = ""
 
-    return _truncate_value(value, _COLUMN_WIDTHS[key])
+    return _truncate_value(value, _COLUMN_WIDTHS.get(key))
 
 
 def _format_header_label(key: str) -> str:
@@ -821,7 +821,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     def _format_sort_toggle_label(self) -> str:
         """Return the control-panel sort label for the toggle switch."""
-        label = t("thread.sort_updated") if self._sort_by_updated else t("thread.sort_created")
+        label = (
+            t("thread.sort_updated")
+            if self._sort_by_updated
+            else t("thread.sort_created")
+        )
         return t("thread.sort_by", field=label)
 
     def _get_filter_input(self) -> Input:
@@ -877,7 +881,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                             for key in _visible_column_keys(self._columns):
                                 cell = Static(
                                     _format_header_label(key),
-                                    classes=_header_cell_classes(key, sort_key=sort_key),
+                                    classes=_header_cell_classes(
+                                        key, sort_key=sort_key
+                                    ),
                                     expand=key == "initial_prompt",
                                     markup=False,
                                 )
@@ -894,7 +900,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                                     classes="thread-empty",
                                 )
                 else:
-                    with Vertical(classes="thread-table-pane", id="thread-loading-container"):
+                    with Vertical(
+                        classes="thread-table-pane", id="thread-loading-container"
+                    ):
                         with Vertical(classes="thread-loading-overlay"):
                             yield Static(t("thread.loading"))
 
@@ -1403,9 +1411,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if not self._has_initial_threads:
             await self._build_table_pane()
             self._has_initial_threads = True
-        elif (
-            self._option_widgets
-            and self._threads_match(old_threads, self._filtered_threads)
+        elif self._option_widgets and self._threads_match(
+            old_threads, self._filtered_threads
         ):
             for widget, thread in zip(
                 self._option_widgets,
@@ -1578,7 +1585,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 return
 
             try:
-                loading_container = self.query_one("#thread-loading-container", Vertical)
+                loading_container = self.query_one(
+                    "#thread-loading-container", Vertical
+                )
                 await loading_container.remove()
             except NoMatches:
                 pass

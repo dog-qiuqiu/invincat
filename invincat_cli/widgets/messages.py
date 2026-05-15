@@ -1339,9 +1339,7 @@ class ToolCallMessage(Vertical):
                 else:
                     args_widget.display = False
             except Exception:
-                logger.debug(
-                    "update_args: could not update .tool-args", exc_info=True
-                )
+                logger.debug("update_args: could not update .tool-args", exc_info=True)
 
 
 class DiffMessage(_TimestampClickMixin, Static):

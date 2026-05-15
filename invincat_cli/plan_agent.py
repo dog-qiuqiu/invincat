@@ -218,9 +218,11 @@ def extract_todos_from_message(message: str) -> list[dict[str, str]] | None:
         if match:
             content = match.group(2).strip()
             if content:
-                todos.append({
-                    "content": content,
-                    "status": "in_progress" if len(todos) == 0 else "pending",
-                })
+                todos.append(
+                    {
+                        "content": content,
+                        "status": "in_progress" if len(todos) == 0 else "pending",
+                    }
+                )
 
     return todos if todos else None

@@ -180,6 +180,7 @@ class HeadlessWeComHandler:
             self._sessions.move_to_end(chatid)
             return existing
         from invincat_cli.sessions import generate_thread_id
+
         self._sessions[chatid] = (generate_thread_id(), asyncio.Lock())
         self._evict_idle_sessions()
         return self._sessions[chatid]
@@ -257,7 +258,10 @@ class HeadlessWeComHandler:
                     subgraphs=True,
                     durability="exit",
                 ):
-                    if not isinstance(chunk, tuple) or len(chunk) != _STREAM_CHUNK_LENGTH:
+                    if (
+                        not isinstance(chunk, tuple)
+                        or len(chunk) != _STREAM_CHUNK_LENGTH
+                    ):
                         continue
                     namespace, mode, data = chunk
 
@@ -266,14 +270,21 @@ class HeadlessWeComHandler:
                         continue
 
                     if mode == "messages":
-                        if not isinstance(data, tuple) or len(data) != _MESSAGE_DATA_LENGTH:
+                        if (
+                            not isinstance(data, tuple)
+                            or len(data) != _MESSAGE_DATA_LENGTH
+                        ):
                             continue
                         message_obj, _meta = data
 
                         if isinstance(message_obj, AIMessage):
                             # Skip internal middleware LLM runs (memory agent, summarization).
                             # These have lc_source set in metadata and must never reach the user.
-                            lc_source = _meta.get("lc_source") if isinstance(_meta, dict) else None
+                            lc_source = (
+                                _meta.get("lc_source")
+                                if isinstance(_meta, dict)
+                                else None
+                            )
                             if lc_source in {"memory_agent", "summarization"}:
                                 continue
 
@@ -283,17 +294,26 @@ class HeadlessWeComHandler:
                             # 2. tool_call_chunks with name — OpenAI-style streaming delta
                             # 3. content[{"type":"tool_use","name":...}] — Anthropic streaming delta
                             detected_tool: str | None = None
-                            tool_calls = list(getattr(message_obj, "tool_calls", None) or [])
+                            tool_calls = list(
+                                getattr(message_obj, "tool_calls", None) or []
+                            )
                             if tool_calls:
                                 first = tool_calls[0]
                                 detected_tool = (
-                                    first.get("name") if isinstance(first, dict)
+                                    first.get("name")
+                                    if isinstance(first, dict)
                                     else getattr(first, "name", None)
                                 ) or None
                             if not detected_tool:
-                                raw_chunks = getattr(message_obj, "tool_call_chunks", None) or []
+                                raw_chunks = (
+                                    getattr(message_obj, "tool_call_chunks", None) or []
+                                )
                                 for c in raw_chunks:
-                                    name = c.get("name") if isinstance(c, dict) else getattr(c, "name", "")
+                                    name = (
+                                        c.get("name")
+                                        if isinstance(c, dict)
+                                        else getattr(c, "name", "")
+                                    )
                                     if name:
                                         detected_tool = name
                                         break
@@ -334,12 +354,20 @@ class HeadlessWeComHandler:
                             from invincat_cli.scheduler.tool import (
                                 parse_schedule_tool_result,
                             )
-                            sched_payload = parse_schedule_tool_result(message_obj.content)
+
+                            sched_payload = parse_schedule_tool_result(
+                                message_obj.content
+                            )
                             if sched_payload is not None:
                                 try:
-                                    await self._process_schedule_payload(sched_payload, inbound_frame)
+                                    await self._process_schedule_payload(
+                                        sched_payload, inbound_frame
+                                    )
                                 except Exception:
-                                    logger.warning("Schedule payload processing failed", exc_info=True)
+                                    logger.warning(
+                                        "Schedule payload processing failed",
+                                        exc_info=True,
+                                    )
                                     raise
 
                             if tool_name == WECOM_FILE_TOOL_NAME:
@@ -361,7 +389,9 @@ class HeadlessWeComHandler:
                                             )
                                         except Exception as exc:
                                             logger.warning(
-                                                "WeCom file send failed: %s", exc, exc_info=True
+                                                "WeCom file send failed: %s",
+                                                exc,
+                                                exc_info=True,
                                             )
 
                             # Tool completed — update counters and emit progress.
@@ -493,7 +523,9 @@ class HeadlessWeComHandler:
                         exc_info=True,
                     )
                 if chatid_to_use:
-                    delivery = DeliverySpec(channels=[{"type": "wecom", "chatid": chatid_to_use}])
+                    delivery = DeliverySpec(
+                        channels=[{"type": "wecom", "chatid": chatid_to_use}]
+                    )
                     logger.info(
                         "Scheduled task %r WeCom delivery configured: chatid=%s (single-chat fallback=%s)",
                         payload.get("task_id", ""),
@@ -507,7 +539,11 @@ class HeadlessWeComHandler:
                     )
 
             now = datetime.now(UTC)
-            next_run = _parse_dt(run_at) if schedule_type == "once" else compute_next_run(cron, now, tz)
+            next_run = (
+                _parse_dt(run_at)
+                if schedule_type == "once"
+                else compute_next_run(cron, now, tz)
+            )
             if next_run is None:
                 raise ValueError(
                     "Could not compute the next scheduled run time. "
@@ -545,7 +581,9 @@ class HeadlessWeComHandler:
             store.save_task(task)
             logger.info(
                 "Scheduled task created: %r id=%s next_run=%s delivery=%s",
-                title, task_id, task.next_run_at,
+                title,
+                task_id,
+                task.next_run_at,
                 [c.get("type") for c in (delivery.channels or [])],
             )
 
@@ -590,7 +628,9 @@ class HeadlessWeComHandler:
                 task_id = payload.get("task_id", "")
                 task = _load_current_cwd_task(task_id, "schedule_run_now")
                 await self._on_schedule_run_now(task)
-                logger.info("Scheduled task fired immediately: %r id=%s", task.title, task_id)
+                logger.info(
+                    "Scheduled task fired immediately: %r id=%s", task.title, task_id
+                )
 
     @staticmethod
     def _extract_ai_text(message: Any) -> str:

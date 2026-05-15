@@ -375,7 +375,7 @@ def _fuzzy_score(query: str, candidate: str) -> float:
     if query_lower in candidate_lower:
         idx = candidate_lower.find(query_lower)
         # At start of filename
-        if idx == filename_start:
+        if idx == filename_start:  # pragma: no cover - filename match is handled first
             return 80 + (1 / len(candidate))
         # At word boundary in path
         if idx == 0 or candidate[idx - 1] in "/_-.":
@@ -509,7 +509,7 @@ class FuzzyFileController:
             return False
 
         at_index = before_cursor.rfind("@")
-        if cursor_index <= at_index:
+        if cursor_index <= at_index:  # pragma: no cover - rfind is bounded by slice end
             return False
 
         # Fragment from @ to cursor must not contain spaces
@@ -670,22 +670,99 @@ def _get_common_commands() -> list[str]:
         List of commonly used command names.
     """
     return [
-        "ls", "cd", "pwd", "cat", "echo", "mkdir", "rm", "rmdir",
-        "cp", "mv", "touch", "find", "grep", "sed", "awk", "sort",
-        "head", "tail", "wc", "diff", "chmod", "chown", "ln",
-        "ps", "kill", "top", "htop", "df", "du", "free", "uname",
-        "date", "cal", "which", "whereis", "whoami", "id",
-        "tar", "gzip", "gunzip", "zip", "unzip",
-        "curl", "wget", "ssh", "scp", "rsync", "ftp",
-        "git", "svn", "hg",
-        "python", "python3", "pip", "pip3", "node", "npm", "yarn",
-        "docker", "docker-compose", "kubectl",
-        "make", "cmake", "gcc", "g++", "clang", "clang++",
-        "vi", "vim", "nvim", "nano", "emacs", "code",
-        "man", "less", "more", "clear", "history", "alias",
-        "export", "source", "env", "printenv",
-        "xargs", "tee", "tr", "cut", "paste", "join",
-        "nohup", "bg", "fg", "jobs",
+        "ls",
+        "cd",
+        "pwd",
+        "cat",
+        "echo",
+        "mkdir",
+        "rm",
+        "rmdir",
+        "cp",
+        "mv",
+        "touch",
+        "find",
+        "grep",
+        "sed",
+        "awk",
+        "sort",
+        "head",
+        "tail",
+        "wc",
+        "diff",
+        "chmod",
+        "chown",
+        "ln",
+        "ps",
+        "kill",
+        "top",
+        "htop",
+        "df",
+        "du",
+        "free",
+        "uname",
+        "date",
+        "cal",
+        "which",
+        "whereis",
+        "whoami",
+        "id",
+        "tar",
+        "gzip",
+        "gunzip",
+        "zip",
+        "unzip",
+        "curl",
+        "wget",
+        "ssh",
+        "scp",
+        "rsync",
+        "ftp",
+        "git",
+        "svn",
+        "hg",
+        "python",
+        "python3",
+        "pip",
+        "pip3",
+        "node",
+        "npm",
+        "yarn",
+        "docker",
+        "docker-compose",
+        "kubectl",
+        "make",
+        "cmake",
+        "gcc",
+        "g++",
+        "clang",
+        "clang++",
+        "vi",
+        "vim",
+        "nvim",
+        "nano",
+        "emacs",
+        "code",
+        "man",
+        "less",
+        "more",
+        "clear",
+        "history",
+        "alias",
+        "export",
+        "source",
+        "env",
+        "printenv",
+        "xargs",
+        "tee",
+        "tr",
+        "cut",
+        "paste",
+        "join",
+        "nohup",
+        "bg",
+        "fg",
+        "jobs",
     ]
 
 
@@ -936,7 +1013,7 @@ class ShellCompletionController:
             return
 
         tokens = _parse_shell_tokens(text_before_cursor)
-        if not tokens:
+        if not tokens:  # pragma: no cover - non-blank shell text always yields a token
             self.reset()
             return
 
@@ -986,8 +1063,10 @@ class ShellCompletionController:
         """
         raw_prefix = _unescape_token(prefix)
 
-        if raw_prefix.startswith("~"):
-            raw_prefix = str(Path.home() / raw_prefix[1:])
+        if raw_prefix == "~":
+            raw_prefix = str(Path.home())
+        elif raw_prefix.startswith("~/"):
+            raw_prefix = str(Path.home() / raw_prefix[2:])
         elif not raw_prefix.startswith("/"):
             raw_prefix = str(self._cwd / raw_prefix)
 
@@ -1039,9 +1118,11 @@ class ShellCompletionController:
                 if self._suggestions:
                     # Initialize original token if not already done
                     if not self._original_token:
-                        stripped_text, prefix_len = self._strip_prefix(text[:cursor_index])
+                        stripped_text, prefix_len = self._strip_prefix(
+                            text[:cursor_index]
+                        )
                         tokens = _parse_shell_tokens(stripped_text)
-                        
+
                         # Check if cursor is after a space (typing arguments)
                         if stripped_text.endswith(" ") or stripped_text.endswith("\t"):
                             self._original_token = ""
@@ -1049,7 +1130,7 @@ class ShellCompletionController:
                             self._original_token = tokens[-1]
                         else:
                             self._original_token = ""
-                        
+
                         self._original_completion_start = self._completion_start
                         self._current_completion_end = cursor_index
                     self._apply_completion_for_token()
@@ -1094,7 +1175,7 @@ class ShellCompletionController:
             # Extract the original token (without prefix) for cycling
             stripped_text, prefix_len = self._strip_prefix(text[:cursor_index])
             tokens = _parse_shell_tokens(stripped_text)
-            
+
             # Check if cursor is after a space (typing arguments)
             # In this case, the token to complete is empty
             if stripped_text.endswith(" ") or stripped_text.endswith("\t"):
@@ -1103,7 +1184,7 @@ class ShellCompletionController:
                 self._original_token = tokens[-1]
             else:
                 self._original_token = ""
-            
+
             self._original_completion_start = self._completion_start
             self._current_completion_end = cursor_index
             self._selected_index = 0
@@ -1140,7 +1221,7 @@ class ShellCompletionController:
         # Determine if this is a command (first token)
         is_command = type_hint == "command"
         is_dir = type_hint == "dir"
-        
+
         if is_command:
             # Add space after command completion
             escaped += " "

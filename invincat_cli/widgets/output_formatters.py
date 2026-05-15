@@ -155,7 +155,9 @@ def _build_todo_stats(
 ) -> Content:
     colors = theme.get_theme_colors(theme_context)
     completed = sum(
-        1 for item in items if isinstance(item, dict) and item.get("status") == "completed"
+        1
+        for item in items
+        if isinstance(item, dict) and item.get("status") == "completed"
     )
     active = sum(
         1

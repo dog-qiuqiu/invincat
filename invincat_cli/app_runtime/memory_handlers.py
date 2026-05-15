@@ -259,7 +259,9 @@ async def handle_offload(app: Any) -> None:  # noqa: ANN401
         await app._mount_message(ErrorMessage(str(exc)))
     except Exception as exc:
         logger.exception("Offload failed")
-        await app._mount_message(ErrorMessage(t("offload.failed").format(error=str(exc))))
+        await app._mount_message(
+            ErrorMessage(t("offload.failed").format(error=str(exc)))
+        )
     finally:
         app._agent_running = False
         try:

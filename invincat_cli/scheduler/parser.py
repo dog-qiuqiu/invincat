@@ -5,13 +5,20 @@ from __future__ import annotations
 import re
 
 _WEEKDAY_MAP = {
-    "mon": "1", "monday": "1",
-    "tue": "2", "tuesday": "2",
-    "wed": "3", "wednesday": "3",
-    "thu": "4", "thursday": "4",
-    "fri": "5", "friday": "5",
-    "sat": "6", "saturday": "6",
-    "sun": "0", "sunday": "0",
+    "mon": "1",
+    "monday": "1",
+    "tue": "2",
+    "tuesday": "2",
+    "wed": "3",
+    "wednesday": "3",
+    "thu": "4",
+    "thursday": "4",
+    "fri": "5",
+    "friday": "5",
+    "sat": "6",
+    "saturday": "6",
+    "sun": "0",
+    "sunday": "0",
 }
 
 _TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
@@ -99,7 +106,9 @@ def parse_schedule(expr: str) -> str:
             msg = "weekly requires a weekday: e.g. 'weekly mon 08:00'"
             raise ValueError(msg)
         if len(parts) > 3:
-            msg = "weekly accepts only weekday and optional time: e.g. 'weekly mon 08:00'"
+            msg = (
+                "weekly accepts only weekday and optional time: e.g. 'weekly mon 08:00'"
+            )
             raise ValueError(msg)
         day_str = parts[1].lower()
         dow = _WEEKDAY_MAP.get(day_str)
@@ -154,7 +163,13 @@ def describe_schedule(cron: str, timezone: str = "UTC") -> str:
     minute, hour, dom, month, dow = parts
 
     # daily at fixed time
-    if dom == "*" and month == "*" and dow == "*" and not minute.startswith("*/") and not hour.startswith("*/"):
+    if (
+        dom == "*"
+        and month == "*"
+        and dow == "*"
+        and not minute.startswith("*/")
+        and not hour.startswith("*/")
+    ):
         try:
             h, m = int(hour), int(minute)
             return f"daily {h:02d}:{m:02d}"
@@ -162,11 +177,23 @@ def describe_schedule(cron: str, timezone: str = "UTC") -> str:
             pass
 
     # interval hours
-    if minute == "0" and hour.startswith("*/") and dom == "*" and month == "*" and dow == "*":
+    if (
+        minute == "0"
+        and hour.startswith("*/")
+        and dom == "*"
+        and month == "*"
+        and dow == "*"
+    ):
         return f"every {hour[2:]} hours"
 
     # interval minutes
-    if minute.startswith("*/") and hour == "*" and dom == "*" and month == "*" and dow == "*":
+    if (
+        minute.startswith("*/")
+        and hour == "*"
+        and dom == "*"
+        and month == "*"
+        and dow == "*"
+    ):
         return f"every {minute[2:]} minutes"
 
     # weekly

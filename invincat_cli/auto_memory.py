@@ -63,7 +63,10 @@ def _is_valid_store_item(raw: Any) -> bool:
         return False
     if not isinstance(content, str) or not content.strip():
         return False
-    if not isinstance(status, str) or status.strip().lower() not in _ALLOWED_ITEM_STATUS:
+    if (
+        not isinstance(status, str)
+        or status.strip().lower() not in _ALLOWED_ITEM_STATUS
+    ):
         return False
     return True
 
@@ -100,7 +103,9 @@ def _select_items_for_injection(
         normalized.append(
             {
                 "id": str(raw.get("id", "")).strip(),
-                "section": _normalize_text(raw.get("section") or "Imported Notes", max_chars=80)
+                "section": _normalize_text(
+                    raw.get("section") or "Imported Notes", max_chars=80
+                )
                 or "Imported Notes",
                 "content": _normalize_text(raw.get("content"), max_chars=500),
                 "tier": tier,
@@ -119,7 +124,9 @@ def _select_items_for_injection(
     return hot_items, warm_items
 
 
-def _render_store_content(store: dict[str, Any], *, max_chars: int = _MAX_SCOPE_RENDER_CHARS) -> str:
+def _render_store_content(
+    store: dict[str, Any], *, max_chars: int = _MAX_SCOPE_RENDER_CHARS
+) -> str:
     items = store.get("items", [])
     if not isinstance(items, list):
         return ""
@@ -168,7 +175,9 @@ def _store_content_if_valid(path: Path) -> tuple[bool, str]:
         return False, ""
 
     if not isinstance(data, dict):
-        logger.warning("Memory store schema invalid at %s; skipping store content", path)
+        logger.warning(
+            "Memory store schema invalid at %s; skipping store content", path
+        )
         return False, ""
     if not isinstance(data.get("items"), list):
         logger.warning("Memory store items invalid at %s; skipping store content", path)
@@ -255,22 +264,32 @@ class RefreshableMemoryMiddleware(AgentMiddleware):
             return _MEMORY_INJECTION_TEMPLATE.format(agent_memory="(No memory loaded)")
         return _MEMORY_INJECTION_TEMPLATE.format(agent_memory="\n\n".join(sections))
 
-    def before_agent(self, state: dict[str, Any], runtime: Any) -> dict[str, Any] | None:
+    def before_agent(
+        self, state: dict[str, Any], runtime: Any
+    ) -> dict[str, Any] | None:
         logger.debug("Refreshing memory contents")
         return {"memory_contents": self._load_memory_contents_if_needed(force=True)}
 
-    async def abefore_agent(self, state: dict[str, Any], runtime: Any) -> dict[str, Any] | None:
+    async def abefore_agent(
+        self, state: dict[str, Any], runtime: Any
+    ) -> dict[str, Any] | None:
         logger.debug("Refreshing memory contents (async)")
-        contents = await asyncio.to_thread(self._load_memory_contents_if_needed, force=True)
+        contents = await asyncio.to_thread(
+            self._load_memory_contents_if_needed, force=True
+        )
         return {"memory_contents": contents}
 
     def wrap_model_call(self, request: ModelRequest, handler: Any) -> ModelResponse:
         contents = self._load_memory_contents_if_needed(force=False)
         memory_block = self._format_agent_memory(contents)
-        new_system: SystemMessage = append_to_system_message(request.system_message, memory_block)
+        new_system: SystemMessage = append_to_system_message(
+            request.system_message, memory_block
+        )
         return handler(request.override(system_message=new_system))
 
-    async def awrap_model_call(self, request: ModelRequest, handler: Any) -> ModelResponse:
+    async def awrap_model_call(
+        self, request: ModelRequest, handler: Any
+    ) -> ModelResponse:
         raw_state = request.state
         has_state_memory = False
         contents: Any = None
@@ -287,7 +306,9 @@ class RefreshableMemoryMiddleware(AgentMiddleware):
         if not has_state_memory or not isinstance(contents, dict):
             contents = {}
         memory_block = self._format_agent_memory(contents)
-        new_system: SystemMessage = append_to_system_message(request.system_message, memory_block)
+        new_system: SystemMessage = append_to_system_message(
+            request.system_message, memory_block
+        )
         return await handler(request.override(system_message=new_system))
 
 

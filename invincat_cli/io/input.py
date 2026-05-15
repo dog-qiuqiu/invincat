@@ -364,7 +364,7 @@ def parse_pasted_file_paths(text: str) -> list[Path]:
             return []
         tokens.extend(line_tokens)
 
-    if not tokens:
+    if not tokens:  # pragma: no cover - defensive guard after non-empty parsed lines
         return []
 
     paths: list[Path] = []
@@ -639,7 +639,7 @@ def _extract_unquoted_leading_path_with_spaces(text: str) -> tuple[Path, int] | 
     boundaries.append(len(text))
     for end in reversed(boundaries):
         candidate = text[:end].rstrip()
-        if not candidate:
+        if not candidate:  # pragma: no cover - defensive guard for impossible boundary
             continue
         path = parse_single_pasted_file_path(candidate)
         if path is not None:

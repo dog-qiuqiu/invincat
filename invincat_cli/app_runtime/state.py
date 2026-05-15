@@ -29,7 +29,9 @@ class QueuedMessage:
     scheduled_task_id: str | None = None
 
 
-DeferredActionKind = Literal["model_switch", "thread_switch", "chat_output", "plan_handoff"]
+DeferredActionKind = Literal[
+    "model_switch", "thread_switch", "chat_output", "plan_handoff"
+]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

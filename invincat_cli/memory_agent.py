@@ -288,7 +288,9 @@ def _last_human_text(messages: list[Any]) -> str:
             continue
         content = getattr(msg, "content", "")
         if isinstance(content, list):
-            parts = [p.get("text", "") if isinstance(p, dict) else str(p) for p in content]
+            parts = [
+                p.get("text", "") if isinstance(p, dict) else str(p) for p in content
+            ]
             return " ".join(filter(None, parts)).strip()
         return str(content).strip()
     return ""
@@ -463,7 +465,9 @@ def _message_content_to_text(content: Any) -> str:
                 if isinstance(part.get("text"), str):
                     text_parts.append(part["text"])
                 else:
-                    text_parts.append(json.dumps(part, ensure_ascii=False, sort_keys=True))
+                    text_parts.append(
+                        json.dumps(part, ensure_ascii=False, sort_keys=True)
+                    )
             else:
                 text_parts.append(str(part))
         return "\n".join(filter(None, text_parts))
@@ -486,7 +490,9 @@ def _format_messages_for_memory_transcript(messages: list[Any]) -> str:
         body = _message_content_to_text(getattr(msg, "content", ""))
         tool_calls = getattr(msg, "tool_calls", None)
         if tool_calls:
-            tool_calls_json = json.dumps(tool_calls, ensure_ascii=False, indent=2, sort_keys=True)
+            tool_calls_json = json.dumps(
+                tool_calls, ensure_ascii=False, indent=2, sort_keys=True
+            )
             body = (
                 (body + "\n" if body else "")
                 + "assistant_tool_calls_json:\n"
@@ -498,8 +504,7 @@ def _format_messages_for_memory_transcript(messages: list[Any]) -> str:
     return (
         "conversation_transcript:\n"
         "The following transcript is read-only context for memory extraction. "
-        "Do not answer it, continue it, or emit tool calls.\n"
-        + sep.join(parts)
+        "Do not answer it, continue it, or emit tool calls.\n" + sep.join(parts)
     )
 
 
@@ -509,6 +514,7 @@ def _normalize_hash(section: str, content: str) -> str:
 
 def _read_memory_store(path: Path, scope: str) -> dict[str, Any]:
     """Read memory store from JSON file or return a new validated store."""
+
     def _read_error_store(target_scope: str) -> dict[str, Any]:
         store = _new_store(target_scope)
         store["__read_error__"] = True
@@ -528,7 +534,10 @@ def _read_memory_store(path: Path, scope: str) -> dict[str, Any]:
         return _read_error_store(scope)
 
     normalized_scope = _normalize_scope(data.get("scope")) or scope
-    if isinstance(data.get("scope"), str) and _normalize_scope(data.get("scope")) is None:
+    if (
+        isinstance(data.get("scope"), str)
+        and _normalize_scope(data.get("scope")) is None
+    ):
         logger.warning("Memory store scope invalid at %s; marking as read-error", path)
         return _read_error_store(scope)
     store = {
@@ -553,20 +562,38 @@ def _read_memory_store(path: Path, scope: str) -> dict[str, Any]:
             continue
         if not _ITEM_ID_PATTERNS[normalized_scope].match(item_id):
             continue
-        section = _normalize_text(raw.get("section", ""), max_chars=MAX_SECTION_NAME_CHARS)
-        content = _normalize_text(raw.get("content", ""), max_chars=MAX_ITEM_CONTENT_CHARS)
+        section = _normalize_text(
+            raw.get("section", ""), max_chars=MAX_SECTION_NAME_CHARS
+        )
+        content = _normalize_text(
+            raw.get("content", ""), max_chars=MAX_ITEM_CONTENT_CHARS
+        )
         if not section or not content:
             continue
         status = _normalize_status(raw.get("status"))
-        created_at = raw.get("created_at") if isinstance(raw.get("created_at"), str) else _iso_now()
-        updated_at = raw.get("updated_at") if isinstance(raw.get("updated_at"), str) else created_at
-        archived_at = raw.get("archived_at") if isinstance(raw.get("archived_at"), str) else None
+        created_at = (
+            raw.get("created_at")
+            if isinstance(raw.get("created_at"), str)
+            else _iso_now()
+        )
+        updated_at = (
+            raw.get("updated_at")
+            if isinstance(raw.get("updated_at"), str)
+            else created_at
+        )
+        archived_at = (
+            raw.get("archived_at") if isinstance(raw.get("archived_at"), str) else None
+        )
         source_thread_id = (
             raw.get("source_thread_id")
             if isinstance(raw.get("source_thread_id"), str)
             else "__default_thread__"
         )
-        source_anchor = raw.get("source_anchor") if isinstance(raw.get("source_anchor"), str) else ""
+        source_anchor = (
+            raw.get("source_anchor")
+            if isinstance(raw.get("source_anchor"), str)
+            else ""
+        )
         confidence = _normalize_confidence(raw.get("confidence"), default="medium")
         score = _normalize_score(raw.get("score"), default=DEFAULT_SCORE)
         tier = _normalize_tier(raw.get("tier"), default=_derive_tier_from_score(score))
@@ -574,7 +601,9 @@ def _read_memory_store(path: Path, scope: str) -> dict[str, Any]:
         last_scored_at = (
             raw.get("last_scored_at")
             if isinstance(raw.get("last_scored_at"), str)
-            else (updated_at if isinstance(updated_at, str) and updated_at else created_at)
+            else (
+                updated_at if isinstance(updated_at, str) and updated_at else created_at
+            )
         )
 
         store["items"].append(
@@ -700,8 +729,12 @@ def _normalize_and_validate_operations(
         if op == "create":
             if raw.get("id") not in (None, ""):
                 continue
-            section = _normalize_text(raw.get("section"), max_chars=MAX_SECTION_NAME_CHARS)
-            content = _normalize_text(raw.get("content"), max_chars=MAX_ITEM_CONTENT_CHARS)
+            section = _normalize_text(
+                raw.get("section"), max_chars=MAX_SECTION_NAME_CHARS
+            )
+            content = _normalize_text(
+                raw.get("content"), max_chars=MAX_ITEM_CONTENT_CHARS
+            )
             if not section or not content:
                 continue
             confidence = _normalize_confidence(raw.get("confidence"), default="high")
@@ -711,7 +744,9 @@ def _normalize_and_validate_operations(
             ):
                 continue
             score = _normalize_score(raw.get("score"), default=DEFAULT_SCORE)
-            tier = _normalize_tier(raw.get("tier"), default=_derive_tier_from_score(score))
+            tier = _normalize_tier(
+                raw.get("tier"), default=_derive_tier_from_score(score)
+            )
             reason = _normalize_reason(_raw_reason(raw))
             normalized.append(
                 {
@@ -731,12 +766,16 @@ def _normalize_and_validate_operations(
             item_id = raw.get("id")
             if not isinstance(item_id, str) or not item_id.strip():
                 continue
-            content = _normalize_text(raw.get("content"), max_chars=MAX_ITEM_CONTENT_CHARS)
+            content = _normalize_text(
+                raw.get("content"), max_chars=MAX_ITEM_CONTENT_CHARS
+            )
             has_content = bool(content)
             has_confidence = raw.get("confidence") is not None
             has_tier = raw.get("tier") is not None
             has_score = raw.get("score") is not None
-            has_reason = raw.get("reason") is not None or raw.get("score_reason") is not None
+            has_reason = (
+                raw.get("reason") is not None or raw.get("score_reason") is not None
+            )
             if not any((has_content, has_confidence, has_tier, has_score, has_reason)):
                 continue
             if has_tier and (
@@ -745,7 +784,9 @@ def _normalize_and_validate_operations(
             ):
                 continue
             score = _normalize_score(raw.get("score"), default=DEFAULT_SCORE)
-            tier = _normalize_tier(raw.get("tier"), default=_derive_tier_from_score(score))
+            tier = _normalize_tier(
+                raw.get("tier"), default=_derive_tier_from_score(score)
+            )
             reason = _normalize_reason(_raw_reason(raw))
             confidence = _normalize_confidence(raw.get("confidence"), default="high")
             if (
@@ -819,7 +860,10 @@ def _normalize_and_validate_operations(
             if raw.get("tier") is None:
                 continue
             tier_raw = raw.get("tier")
-            if not isinstance(tier_raw, str) or tier_raw.strip().lower() not in _ALLOWED_TIER:
+            if (
+                not isinstance(tier_raw, str)
+                or tier_raw.strip().lower() not in _ALLOWED_TIER
+            ):
                 continue
             reason = _normalize_reason(_raw_reason(raw))
             tier = _normalize_tier(tier_raw)
@@ -999,7 +1043,8 @@ def _apply_operations(
             section = str(op["section"])
             content = str(op["content"])
             duplicate = any(
-                item.get("status") == "active" and item.get("content", "").strip() == content
+                item.get("status") == "active"
+                and item.get("content", "").strip() == content
                 for item in store.get("items", [])
                 if isinstance(item, dict)
             )
@@ -1007,7 +1052,9 @@ def _apply_operations(
                 continue
             item_id = _next_memory_id(store, scope)
             score = _normalize_score(op.get("score"), default=DEFAULT_SCORE)
-            tier = _normalize_tier(op.get("tier"), default=_derive_tier_from_score(score))
+            tier = _normalize_tier(
+                op.get("tier"), default=_derive_tier_from_score(score)
+            )
             score = _align_score_to_tier(score, tier)
             store["items"].append(
                 {
@@ -1021,7 +1068,9 @@ def _apply_operations(
                     "archived_at": None,
                     "source_thread_id": thread_id,
                     "source_anchor": source_anchor,
-                    "confidence": _normalize_confidence(op.get("confidence"), default="high"),
+                    "confidence": _normalize_confidence(
+                        op.get("confidence"), default="high"
+                    ),
                     "tier": tier,
                     "score": score,
                     "reason": _normalize_reason(op.get("reason")),
@@ -1048,7 +1097,9 @@ def _apply_operations(
                 if not content:
                     continue
                 item["content"] = content
-                item["norm_hash"] = _normalize_hash(str(item.get("section", "")), content)
+                item["norm_hash"] = _normalize_hash(
+                    str(item.get("section", "")), content
+                )
             item["updated_at"] = now_iso
             item["source_thread_id"] = thread_id
             item["source_anchor"] = source_anchor
@@ -1065,20 +1116,28 @@ def _apply_operations(
                     op.get("tier"),
                     default=_normalize_tier(
                         item.get("tier"),
-                        default=_derive_tier_from_score(_normalize_score(item.get("score"))),
+                        default=_derive_tier_from_score(
+                            _normalize_score(item.get("score"))
+                        ),
                     ),
                 )
-                score = _normalize_score(op.get("score"), default=_normalize_score(item.get("score")))
+                score = _normalize_score(
+                    op.get("score"), default=_normalize_score(item.get("score"))
+                )
                 item["tier"] = tier
                 item["score"] = _align_score_to_tier(score, tier)
             elif has_score:
-                score = _normalize_score(op.get("score"), default=_normalize_score(item.get("score")))
+                score = _normalize_score(
+                    op.get("score"), default=_normalize_score(item.get("score"))
+                )
                 item["score"] = score
                 item["tier"] = _derive_tier_from_score(score)
             elif has_tier:
                 default_tier = _normalize_tier(
                     item.get("tier"),
-                    default=_derive_tier_from_score(_normalize_score(item.get("score"))),
+                    default=_derive_tier_from_score(
+                        _normalize_score(item.get("score"))
+                    ),
                 )
                 item["tier"] = _normalize_tier(op.get("tier"), default=default_tier)
                 item["score"] = _align_score_to_tier(
@@ -1094,7 +1153,9 @@ def _apply_operations(
                 item["archived_at"] = None
             changed_scopes.add(scope)
         elif op_name == "rescore":
-            score = _normalize_score(op.get("score"), default=_normalize_score(item.get("score")))
+            score = _normalize_score(
+                op.get("score"), default=_normalize_score(item.get("score"))
+            )
             item["score"] = score
             item["tier"] = _derive_tier_from_score(score)
             item["reason"] = _normalize_reason(op.get("reason"))
@@ -1167,7 +1228,9 @@ def _backup_corrupt_store(path: Path) -> Path | None:
         _atomic_write_text(backup_path, raw.decode("utf-8", errors="replace"))
         return backup_path
     except (OSError, UnicodeDecodeError):
-        logger.warning("Memory agent: failed to back up unreadable store %s", path, exc_info=True)
+        logger.warning(
+            "Memory agent: failed to back up unreadable store %s", path, exc_info=True
+        )
         return None
 
 
@@ -1231,7 +1294,9 @@ class MemoryAgentMiddleware(AgentMiddleware):
         self._min_seconds_between_runs = max(0.0, min_seconds_between_runs)
         self._file_cooldown_seconds = max(0.0, file_cooldown_seconds)
 
-        self._allowed_paths: frozenset[str] = frozenset(self._memory_store_paths.values())
+        self._allowed_paths: frozenset[str] = frozenset(
+            self._memory_store_paths.values()
+        )
 
         self._captured_model: Any = None
         self._memory_model_cache_key: tuple[str, str] | None = None
@@ -1288,7 +1353,9 @@ class MemoryAgentMiddleware(AgentMiddleware):
             logger.debug("Memory agent: failed to resolve thread_id", exc_info=True)
         return "__default_thread__"
 
-    def _slice_incremental_messages(self, thread_id: str, messages: list[Any]) -> list[Any]:
+    def _slice_incremental_messages(
+        self, thread_id: str, messages: list[Any]
+    ) -> list[Any]:
         if not messages:
             return []
 
@@ -1365,7 +1432,9 @@ class MemoryAgentMiddleware(AgentMiddleware):
             store = _read_memory_store(store_path, scope)
             if not store.get("__read_error__"):
                 return store
-            logger.warning("Memory agent: attempting auto-recovery for unreadable %s store", scope)
+            logger.warning(
+                "Memory agent: attempting auto-recovery for unreadable %s store", scope
+            )
             backup = _backup_corrupt_store(store_path)
             if backup is not None:
                 logger.warning(
@@ -1416,7 +1485,9 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 continue
             store_path = Path(store_path_raw).expanduser().resolve()
             if not self._is_authorized_path(store_path):
-                logger.warning("Memory agent: rejected unauthorized write for %s scope", scope)
+                logger.warning(
+                    "Memory agent: rejected unauthorized write for %s scope", scope
+                )
                 continue
 
             await asyncio.to_thread(_write_memory_store, store_path, store)
@@ -1488,7 +1559,8 @@ class MemoryAgentMiddleware(AgentMiddleware):
         *,
         thread_id: str,
         source_anchor: str,
-        preloaded_stores: tuple[dict[str, Any] | None, dict[str, Any] | None] | None = None,
+        preloaded_stores: tuple[dict[str, Any] | None, dict[str, Any] | None]
+        | None = None,
     ) -> list[str] | None:
         written_store_paths: list[str] = []
         try:
@@ -1529,17 +1601,19 @@ class MemoryAgentMiddleware(AgentMiddleware):
                     project_store,
                 )
                 if cleanup_operations:
-                    user_store, project_store, cleanup_written = (
-                        await self._apply_and_write_memory_operations(
-                            user_store,
-                            project_store,
-                            user_before,
-                            project_before,
-                            cleanup_operations,
-                            thread_id=thread_id,
-                            source_anchor=source_anchor,
-                            now_iso=_iso_now(),
-                        )
+                    (
+                        user_store,
+                        project_store,
+                        cleanup_written,
+                    ) = await self._apply_and_write_memory_operations(
+                        user_store,
+                        project_store,
+                        user_before,
+                        project_before,
+                        cleanup_operations,
+                        thread_id=thread_id,
+                        source_anchor=source_anchor,
+                        now_iso=_iso_now(),
                     )
                     written_store_paths.extend(cleanup_written)
                     if cleanup_written:
@@ -1559,7 +1633,9 @@ class MemoryAgentMiddleware(AgentMiddleware):
             )
             call_messages: list[Any] = [SystemMessage(content=system_content)]
             call_messages.append(
-                HumanMessage(content=_format_messages_for_memory_transcript(list(messages)))
+                HumanMessage(
+                    content=_format_messages_for_memory_transcript(list(messages))
+                )
             )
             call_messages.append(
                 HumanMessage(
@@ -1621,7 +1697,11 @@ class MemoryAgentMiddleware(AgentMiddleware):
                 return list(dict.fromkeys(written_store_paths))
 
             now_iso = _iso_now()
-            new_user, new_project, model_written = await self._apply_and_write_memory_operations(
+            (
+                new_user,
+                new_project,
+                model_written,
+            ) = await self._apply_and_write_memory_operations(
                 user_store,
                 project_store,
                 user_before,
@@ -1653,7 +1733,9 @@ class MemoryAgentMiddleware(AgentMiddleware):
             if callable(writer):
                 writer({"event": "memory_agent", "status": status})
         except Exception:
-            logger.debug("Memory agent: failed to emit status=%s", status, exc_info=True)
+            logger.debug(
+                "Memory agent: failed to emit status=%s", status, exc_info=True
+            )
 
     def _resolve_memory_model(self, runtime: Any, fallback_model: Any) -> Any:
         """Resolve dedicated memory model override from runtime context."""
@@ -1674,7 +1756,10 @@ class MemoryAgentMiddleware(AgentMiddleware):
             params_key = "{}"
         cache_key = (memory_spec, params_key)
 
-        if cache_key == self._memory_model_cache_key and self._memory_model_cache_obj is not None:
+        if (
+            cache_key == self._memory_model_cache_key
+            and self._memory_model_cache_obj is not None
+        ):
             return self._memory_model_cache_obj
 
         try:
@@ -1696,9 +1781,7 @@ class MemoryAgentMiddleware(AgentMiddleware):
             )
             return fallback_model
 
-    def wrap_model_call(
-        self, request: ModelRequest, handler: Any
-    ) -> ModelResponse:
+    def wrap_model_call(self, request: ModelRequest, handler: Any) -> ModelResponse:
         self._captured_model = request.model
         return handler(request)
 
@@ -1708,9 +1791,7 @@ class MemoryAgentMiddleware(AgentMiddleware):
         self._captured_model = request.model
         return await handler(request)
 
-    async def aafter_agent(
-        self, state: Any, runtime: Any
-    ) -> dict[str, Any] | None:
+    async def aafter_agent(self, state: Any, runtime: Any) -> dict[str, Any] | None:
         try:
             logger.debug("Memory agent: aafter_agent called")
             primary_model = self._captured_model
@@ -1730,11 +1811,13 @@ class MemoryAgentMiddleware(AgentMiddleware):
 
             thread_id = self._resolve_thread_id()
             cleanup_source_anchor = self._message_anchor(messages[-1])
-            cleaned_user, cleaned_project, cleanup_written = (
-                await self._cleanup_invalid_fact_stores(
-                    thread_id=thread_id,
-                    source_anchor=cleanup_source_anchor,
-                )
+            (
+                cleaned_user,
+                cleaned_project,
+                cleanup_written,
+            ) = await self._cleanup_invalid_fact_stores(
+                thread_id=thread_id,
+                source_anchor=cleanup_source_anchor,
             )
             cleanup_written = list(dict.fromkeys(cleanup_written))
 
@@ -1769,7 +1852,9 @@ class MemoryAgentMiddleware(AgentMiddleware):
             else:
                 recent = incremental[-self._context_messages :]
                 human_indices = [
-                    i for i, m in enumerate(messages) if getattr(m, "type", "") == "human"
+                    i
+                    for i, m in enumerate(messages)
+                    if getattr(m, "type", "") == "human"
                 ]
                 if human_indices:
                     last_human_idx = human_indices[-1]
@@ -1818,7 +1903,8 @@ class MemoryAgentMiddleware(AgentMiddleware):
         *,
         thread_id: str,
         source_anchor: str,
-        preloaded_stores: tuple[dict[str, Any] | None, dict[str, Any] | None] | None = None,
+        preloaded_stores: tuple[dict[str, Any] | None, dict[str, Any] | None]
+        | None = None,
     ) -> list[str] | None:
         try:
             return await self._extract_and_write(

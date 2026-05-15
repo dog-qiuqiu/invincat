@@ -243,9 +243,7 @@ async def switch_model(
         )
 
         has_creds = (
-            has_provider_credentials(resolved.provider)
-            if resolved.provider
-            else None
+            has_provider_credentials(resolved.provider) if resolved.provider else None
         )
         if has_creds is False and resolved.provider is not None:
             detail = missing_credentials_detail(

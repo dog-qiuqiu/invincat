@@ -76,7 +76,13 @@ class ApproveWidget(Container):
             for i, todo in enumerate(self._todos):
                 content = todo.get("content", "")
                 status = todo.get("status", "pending")
-                status_icon = "○" if status == "pending" else "◐" if status == "in_progress" else "●"
+                status_icon = (
+                    "○"
+                    if status == "pending"
+                    else "◐"
+                    if status == "in_progress"
+                    else "●"
+                )
                 yield Static(
                     f"{status_icon} {i + 1}. {content}",
                     classes=f"approve-todo approve-todo-{status}",

@@ -224,7 +224,9 @@ async def offload_messages_to_backend(
     new_section = f"## Offloaded at {timestamp}\n\n{buf}\n\n"
 
     try:
-        existing_content = history_file.read_text(encoding="utf-8") if history_file.exists() else ""
+        existing_content = (
+            history_file.read_text(encoding="utf-8") if history_file.exists() else ""
+        )
     except OSError as exc:
         logger.warning(
             "Failed to read existing history at %s; aborting offload to "

@@ -64,12 +64,15 @@ def test_resolve_startup_model_overrides_preserves_existing_values() -> None:
 
 
 def test_resolve_memory_status_model() -> None:
-    assert resolve_memory_status_model(
-        memory_model_override="openai:gpt-memory",
-        model_provider="anthropic",
-        model_name="claude",
-        split_model_spec=lambda spec: tuple(spec.split(":", 1)),  # type: ignore[return-value]
-    ).follow_primary is False
+    assert (
+        resolve_memory_status_model(
+            memory_model_override="openai:gpt-memory",
+            model_provider="anthropic",
+            model_name="claude",
+            split_model_spec=lambda spec: tuple(spec.split(":", 1)),  # type: ignore[return-value]
+        ).follow_primary
+        is False
+    )
 
     primary = resolve_memory_status_model(
         memory_model_override=None,
@@ -103,12 +106,15 @@ def test_create_startup_session_state() -> None:
 
 
 def test_resolve_startup_followup() -> None:
-    assert resolve_startup_followup(
-        connecting=True,
-        initial_prompt="hello",
-        thread_id="thread",
-        agent=object(),
-    ) is None
+    assert (
+        resolve_startup_followup(
+            connecting=True,
+            initial_prompt="hello",
+            thread_id="thread",
+            agent=object(),
+        )
+        is None
+    )
 
     submit = resolve_startup_followup(
         connecting=False,

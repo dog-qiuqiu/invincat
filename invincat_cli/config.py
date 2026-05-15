@@ -74,7 +74,7 @@ def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
 # Global user-level .env (~/.invincat/.env); sentinel when Path.home() fails.
 try:
     _GLOBAL_DOTENV_PATH = Path.home() / ".invincat" / ".env"
-except RuntimeError:
+except RuntimeError:  # pragma: no cover - import-time fallback for broken home dirs
     _GLOBAL_DOTENV_PATH = Path("/nonexistent/.invincat/.env")
 
 
@@ -255,7 +255,7 @@ MODE_DISPLAY_GLYPHS: dict[str, str] = {
 }
 """Maps each non-normal mode to its display glyph shown in the prompt/UI."""
 
-if MODE_PREFIXES.keys() != MODE_DISPLAY_GLYPHS.keys():
+if MODE_PREFIXES.keys() != MODE_DISPLAY_GLYPHS.keys():  # pragma: no cover - invariant
     _only_prefixes = MODE_PREFIXES.keys() - MODE_DISPLAY_GLYPHS.keys()
     _only_glyphs = MODE_DISPLAY_GLYPHS.keys() - MODE_PREFIXES.keys()
     msg = (
@@ -524,6 +524,7 @@ _UNICODE_BANNER = f"""
 version: {__version__}
 """
 _ASCII_BANNER = _UNICODE_BANNER
+
 
 def get_banner() -> str:
     """Get the appropriate banner for the current charset mode.
@@ -1446,16 +1447,18 @@ intentionally excluded. File-write and injection vectors are blocked separately
 by `DANGEROUS_SHELL_PATTERNS`.
 """
 
-PATH_SCOPED_READ_COMMANDS = frozenset({
-    "cat",
-    "head",
-    "tail",
-    "grep",
-    "wc",
-    "strings",
-    "md5sum",
-    "sha256sum",
-})
+PATH_SCOPED_READ_COMMANDS = frozenset(
+    {
+        "cat",
+        "head",
+        "tail",
+        "grep",
+        "wc",
+        "strings",
+        "md5sum",
+        "sha256sum",
+    }
+)
 """Allow-listed commands whose file path arguments must stay under cwd."""
 
 
@@ -1574,8 +1577,7 @@ def is_shell_command_allowed(
                 if Path(cmd_name).name in PATH_SCOPED_READ_COMMANDS:
                     root = Path(cwd).expanduser().resolve() if cwd else Path.cwd()
                     if not all(
-                        _path_arg_stays_within_cwd(arg, root)
-                        for arg in tokens[1:]
+                        _path_arg_stays_within_cwd(arg, root) for arg in tokens[1:]
                     ):
                         return False
         except ValueError:
@@ -1591,7 +1593,7 @@ def get_langsmith_project_name() -> str | None:
 
     Checks for the required API key and tracing environment variables.
     When both are present, resolves the project name with priority:
-    `settings.invincat_langchain_project` (from
+    `settings.deepagents_langchain_project` (from
     `DEEPAGENTS_CLI_LANGSMITH_PROJECT`), then `LANGSMITH_PROJECT` from the
     environment (note: this may already have been overridden at bootstrap time
     to match `DEEPAGENTS_CLI_LANGSMITH_PROJECT`), then `'deepagents-cli'`.
@@ -1611,7 +1613,7 @@ def get_langsmith_project_name() -> str | None:
         return None
 
     return (
-        _get_settings().invincat_langchain_project
+        _get_settings().deepagents_langchain_project
         or os.environ.get("LANGSMITH_PROJECT")
         or "deepagents-cli"
     )
@@ -1828,9 +1830,7 @@ def _get_default_model_spec() -> str:
     if registered_specs:
         return registered_specs[0]
 
-    msg = (
-        "No model configured. Run /model, press Ctrl+N, and register a model first."
-    )
+    msg = "No model configured. Run /model, press Ctrl+N, and register a model first."
     raise ModelConfigError(msg)
 
 
@@ -1947,9 +1947,16 @@ def _get_provider_kwargs(
                 result["api_key"] = api_key
 
     if provider == "openrouter":
-        from deepagents._models import check_openrouter_version  # noqa: PLC2701
-
-        check_openrouter_version()
+        try:
+            from deepagents._models import check_openrouter_version  # noqa: PLC2701
+        except ImportError:
+            logger.debug(
+                "deepagents._models.check_openrouter_version is unavailable; "
+                "skipping optional OpenRouter version check",
+                exc_info=True,
+            )
+        else:
+            check_openrouter_version()
         _apply_openrouter_defaults(result)
 
     return result
@@ -2307,7 +2314,9 @@ def create_model(
         from invincat_cli.models.deepseek_chat_openai import DeepSeekChatOpenAICompat
 
         model_kwargs = (
-            _apply_deepseek_thinking_defaults(kwargs) if enable_thinking_default else kwargs
+            _apply_deepseek_thinking_defaults(kwargs)
+            if enable_thinking_default
+            else kwargs
         )
         model_kwargs = _sanitize_deepseek_thinking_params(model_kwargs)
         model = DeepSeekChatOpenAICompat(model=model_name, **model_kwargs)

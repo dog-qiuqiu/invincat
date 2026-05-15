@@ -69,6 +69,7 @@ COMPRESSIBLE_TOOLS: frozenset[str] = frozenset(
 )
 """Tools whose old results are safe to replace with a placeholder."""
 
+
 def _env_int(name: str, default: int, minimum: int = 0) -> int:
     raw = os.environ.get(name)
     if raw is None:

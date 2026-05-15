@@ -1478,7 +1478,8 @@ class DeepAgentsApp(App):
         thread_id_override: str | None = None,
         post_turn_hook: Callable[[], Awaitable[None]] | None = None,
         on_text_delta: Callable[[str, str], Awaitable[None]] | None = None,
-        on_wecom_file_request: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        on_wecom_file_request: Callable[[dict[str, Any]], Awaitable[None]]
+        | None = None,
     ) -> bool:
         """Send a message to the agent and start execution.
 
@@ -1722,7 +1723,9 @@ class DeepAgentsApp(App):
         self._quit_pending = True
         quit_timeout = 3
         self.notify(
-            t("app.press_to_quit", shortcut=shortcut), timeout=quit_timeout, markup=False
+            t("app.press_to_quit", shortcut=shortcut),
+            timeout=quit_timeout,
+            markup=False,
         )
         self.set_timer(quit_timeout, lambda: setattr(self, "_quit_pending", False))
 
@@ -2157,6 +2160,7 @@ class DeepAgentsApp(App):
         from invincat_cli.app_runtime.model_handlers import clear_default_model
 
         await clear_default_model(self, target=target)
+
 
 async def run_textual_app(
     *,

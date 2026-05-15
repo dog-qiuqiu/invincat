@@ -128,9 +128,7 @@ def test_resolve_memory_store_paths_uses_project_root(tmp_path: Path) -> None:
 
     assert paths == {
         "user": str((user_root / "assistant" / "memory_user.json").resolve()),
-        "project": str(
-            (project_root / ".invincat" / "memory_project.json").resolve()
-        ),
+        "project": str((project_root / ".invincat" / "memory_project.json").resolve()),
     }
 
 

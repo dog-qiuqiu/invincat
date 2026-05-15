@@ -225,12 +225,15 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
     def compose(self) -> ComposeResult:
         glyphs = get_glyphs()
         key_bindings = [
-            (f"{glyphs.arrow_up} / {glyphs.arrow_down}", t("schedule.manager.key.navigate")),
-            ("Enter",                                     t("schedule.manager.key.run_now")),
-            ("p",                                         t("schedule.manager.key.pause_resume")),
-            ("d  d",                                      t("schedule.manager.key.delete")),
-            ("r",                                         t("schedule.manager.key.refresh")),
-            ("Esc",                                       t("schedule.manager.key.close")),
+            (
+                f"{glyphs.arrow_up} / {glyphs.arrow_down}",
+                t("schedule.manager.key.navigate"),
+            ),
+            ("Enter", t("schedule.manager.key.run_now")),
+            ("p", t("schedule.manager.key.pause_resume")),
+            ("d  d", t("schedule.manager.key.delete")),
+            ("r", t("schedule.manager.key.refresh")),
+            ("Esc", t("schedule.manager.key.close")),
         ]
         with Vertical():
             yield Static(t("schedule.manager.title"), classes="schedule-title")
@@ -291,11 +294,11 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
             return
 
         status_map = {
-            "never":   t("schedule.task.status.never"),
+            "never": t("schedule.task.status.never"),
             "success": t("schedule.task.status.success"),
-            "failed":  t("schedule.task.status.failed"),
+            "failed": t("schedule.task.status.failed"),
             "running": t("schedule.task.status.running"),
-            "missed":  t("schedule.task.status.missed"),
+            "missed": t("schedule.task.status.missed"),
             "timeout": t("schedule.task.status.timeout"),
         }
         next_label = t("schedule.manager.next_run_label")
@@ -355,8 +358,16 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
                 else f"[dim]{t('schedule.manager.status.paused')}[/dim]"
             )
             runs_label = t("schedule.manager.status.runs").format(n=task.run_count)
-            fail_label = t("schedule.manager.status.failures").format(n=task.failure_count) if task.failure_count else ""
-            last_date = task.last_run_at[:10] if task.last_run_at else t("schedule.manager.status.never")
+            fail_label = (
+                t("schedule.manager.status.failures").format(n=task.failure_count)
+                if task.failure_count
+                else ""
+            )
+            last_date = (
+                task.last_run_at[:10]
+                if task.last_run_at
+                else t("schedule.manager.status.never")
+            )
             last_label = t("schedule.manager.status.last_run").format(date=last_date)
             parts = [f" {task.title}", state_label, runs_label]
             if fail_label:
@@ -421,7 +432,11 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
         task = self._tasks[self._selected_index]
         new_state = not task.enabled
         self._store.set_task_enabled(task.id, new_state)
-        verb = t("schedule.manager.action.resumed") if new_state else t("schedule.manager.action.paused")
+        verb = (
+            t("schedule.manager.action.resumed")
+            if new_state
+            else t("schedule.manager.action.paused")
+        )
         self._update_status(f"{task.title} — {verb}")
         self._load_tasks()
 
@@ -437,7 +452,9 @@ class ScheduleManagerScreen(ModalScreen["ScheduleAction | None"]):
             self._update_status(t("schedule.manager.action.deleted"))
         else:
             self._confirm_delete = task.id
-            self._update_status(t("schedule.manager.confirm_delete").format(title=task.title))
+            self._update_status(
+                t("schedule.manager.confirm_delete").format(title=task.title)
+            )
 
     def action_refresh(self) -> None:
         self._load_tasks()

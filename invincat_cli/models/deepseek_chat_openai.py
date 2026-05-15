@@ -28,10 +28,7 @@ _REASONING_REQUIRED_SNIPPET_2 = "must be passed back"
 
 def _is_reasoning_required_error(exc: BaseException) -> bool:
     text = str(exc).lower()
-    return (
-        _REASONING_REQUIRED_SNIPPET in text
-        and _REASONING_REQUIRED_SNIPPET_2 in text
-    )
+    return _REASONING_REQUIRED_SNIPPET in text and _REASONING_REQUIRED_SNIPPET_2 in text
 
 
 def _extract_response_dict(response: Any) -> dict[str, Any] | None:
@@ -48,9 +45,7 @@ def _extract_response_dict(response: Any) -> dict[str, Any] | None:
 
 
 def _iter_messages(input_: LanguageModelInput) -> list[BaseMessage] | None:
-    if isinstance(input_, Sequence) and all(
-        isinstance(m, BaseMessage) for m in input_
-    ):
+    if isinstance(input_, Sequence) and all(isinstance(m, BaseMessage) for m in input_):
         return cast("list[BaseMessage]", list(input_))
     return None
 
@@ -91,9 +86,7 @@ class DeepSeekChatOpenAICompat(ChatOpenAI):
             # "reasoning_content must be passed back" (happens when the model
             # chose not to reason on a particular turn).
             dst["reasoning_content"] = (
-                reasoning_content
-                if isinstance(reasoning_content, str)
-                else ""
+                reasoning_content if isinstance(reasoning_content, str) else ""
             )
 
         return payload

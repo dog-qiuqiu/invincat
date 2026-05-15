@@ -5,20 +5,49 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-INTERACTIVE_COMMANDS: frozenset[str] = frozenset({
-    "vi", "vim", "nvim", "neovim",
-    "nano", "pico", "emacs", "micro",
-    "less", "more", "most",
-    "top", "htop", "btop", "btm", "glances",
-    "python", "python3", "ipython", "bpython",
-    "node", "irb", "pry",
-    "sqlite3", "psql", "mysql", "redis-cli",
-    "mc", "midnight-commander",
-    "tig", "lazygit", "gitui",
-    "ranger", "nnn", "lf",
-    "screen", "tmux",
-    "man", "info",
-})
+INTERACTIVE_COMMANDS: frozenset[str] = frozenset(
+    {
+        "vi",
+        "vim",
+        "nvim",
+        "neovim",
+        "nano",
+        "pico",
+        "emacs",
+        "micro",
+        "less",
+        "more",
+        "most",
+        "top",
+        "htop",
+        "btop",
+        "btm",
+        "glances",
+        "python",
+        "python3",
+        "ipython",
+        "bpython",
+        "node",
+        "irb",
+        "pry",
+        "sqlite3",
+        "psql",
+        "mysql",
+        "redis-cli",
+        "mc",
+        "midnight-commander",
+        "tig",
+        "lazygit",
+        "gitui",
+        "ranger",
+        "nnn",
+        "lf",
+        "screen",
+        "tmux",
+        "man",
+        "info",
+    }
+)
 """Commands that require an interactive terminal (TTY)."""
 
 

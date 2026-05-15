@@ -308,6 +308,7 @@ def parse_skill_command(command: str) -> tuple[str, str]:
     args = parts[1] if len(parts) > 1 else ""
     return skill_name, args
 
+
 def build_skill_commands(
     skills: list[ExtendedSkillMetadata],
 ) -> list[tuple[str, str, str]]:

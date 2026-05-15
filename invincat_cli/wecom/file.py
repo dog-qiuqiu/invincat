@@ -122,7 +122,9 @@ class WeComFileMiddleware(AgentMiddleware):
             )
             raise ValueError(msg) from exc
         if not resolved.is_file():
-            raise ValueError(f"File does not exist or is not a regular file: {resolved}")
+            raise ValueError(
+                f"File does not exist or is not a regular file: {resolved}"
+            )
         size = resolved.stat().st_size
         if size <= 0:
             raise ValueError("Cannot send an empty file")

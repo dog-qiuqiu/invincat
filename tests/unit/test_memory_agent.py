@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -14,18 +16,34 @@ from invincat_cli.memory_agent import (
     HOT_THRESHOLD,
     MAX_ITEM_CONTENT_CHARS,
     MemoryAgentMiddleware,
+    _align_score_to_tier,
     _apply_operations,
     _atomic_write_text,
     _backup_corrupt_store,
+    _build_archived_overflow_operations,
     _build_invalid_fact_cleanup_operations,
     _build_memory_snapshot,
     _derive_tier_from_score,
     _detect_target_language,
+    _env_float,
+    _env_int,
+    _find_item,
+    _format_call_messages_for_log,
+    _format_messages_for_memory_transcript,
     _is_explicit_memory_request,
+    _is_task_complete,
     _is_trivial_turn,
+    _last_human_text,
+    _message_content_to_text,
     _new_store,
+    _next_memory_id,
     _normalize_and_validate_operations,
+    _normalize_confidence,
+    _normalize_scope,
     _normalize_score,
+    _normalize_status,
+    _normalize_text,
+    _normalize_tier,
     _read_memory_store,
     _write_memory_store,
 )
@@ -111,19 +129,61 @@ def test_update_existing_item() -> None:
     )
     assert new_project is not None
     assert changed == ["project"]
-    assert new_project["items"][0]["content"] == "Backend API fields should be snake_case."
+    assert (
+        new_project["items"][0]["content"] == "Backend API fields should be snake_case."
+    )
     assert new_project["items"][0]["tier"] == "hot"
     assert new_project["items"][0]["score"] == 88
+
+
+def test_update_existing_item_with_score_and_tier_aligns_score() -> None:
+    project_store = _new_store("project")
+    project_store["items"].append(_item("mem_p_000001"))
+
+    _, new_project, changed = _apply_operations(
+        None,
+        project_store,
+        [
+            {
+                "op": "update",
+                "scope": "project",
+                "id": "mem_p_000001",
+                "score": 95,
+                "tier": "warm",
+                "reason": "Tier remains authoritative.",
+            }
+        ],
+        thread_id="t1",
+        source_anchor="a1",
+        now_iso="2026-04-22T10:10:00Z",
+    )
+
+    assert new_project is not None
+    assert changed == ["project"]
+    item = new_project["items"][0]
+    assert item["tier"] == "warm"
+    assert COLD_THRESHOLD <= int(item["score"]) < HOT_THRESHOLD
+    assert item["reason"] == "Tier remains authoritative."
+    assert item["last_scored_at"] == "2026-04-22T10:10:00Z"
 
 
 def test_archive_existing_item() -> None:
     project_store = _new_store("project")
     for idx in range(5):
-        project_store["items"].append(_item(f"mem_p_{idx+1:06d}", content=f"Rule {idx}"))
+        project_store["items"].append(
+            _item(f"mem_p_{idx + 1:06d}", content=f"Rule {idx}")
+        )
     _, new_project, changed = _apply_operations(
         None,
         project_store,
-        [{"op": "archive", "scope": "project", "id": "mem_p_000001", "reason": "superseded"}],
+        [
+            {
+                "op": "archive",
+                "scope": "project",
+                "id": "mem_p_000001",
+                "reason": "superseded",
+            }
+        ],
         thread_id="t1",
         source_anchor="a1",
         now_iso="2026-04-22T10:10:00Z",
@@ -232,7 +292,9 @@ def test_conflicting_operations_on_same_id_rejected() -> None:
 def test_multiple_delete_ops_are_applied_without_ratio_guard() -> None:
     project_store = _new_store("project")
     for idx in range(5):
-        project_store["items"].append(_item(f"mem_p_{idx+1:06d}", content=f"Rule {idx}"))
+        project_store["items"].append(
+            _item(f"mem_p_{idx + 1:06d}", content=f"Rule {idx}")
+        )
     _, new_project, changed = _apply_operations(
         None,
         project_store,
@@ -254,7 +316,9 @@ def test_multiple_delete_ops_are_applied_without_ratio_guard() -> None:
 def test_multiple_archive_ops_are_applied() -> None:
     project_store = _new_store("project")
     for idx in range(5):
-        project_store["items"].append(_item(f"mem_p_{idx+1:06d}", content=f"Rule {idx}"))
+        project_store["items"].append(
+            _item(f"mem_p_{idx + 1:06d}", content=f"Rule {idx}")
+        )
     _, new_project, changed = _apply_operations(
         None,
         project_store,
@@ -277,7 +341,9 @@ def test_multiple_archive_ops_are_applied() -> None:
 def test_multiple_contradiction_deletes_are_applied() -> None:
     project_store = _new_store("project")
     for idx in range(5):
-        project_store["items"].append(_item(f"mem_p_{idx+1:06d}", content=f"Rule {idx}"))
+        project_store["items"].append(
+            _item(f"mem_p_{idx + 1:06d}", content=f"Rule {idx}")
+        )
     _, new_project, changed = _apply_operations(
         None,
         project_store,
@@ -351,7 +417,7 @@ def test_fixed_issue_delete_ops_are_applied() -> None:
     for idx in range(5):
         project_store["items"].append(
             _item(
-                f"mem_p_{idx+1:06d}",
+                f"mem_p_{idx + 1:06d}",
                 section="Known Issues",
                 content=f"Known bug {idx}",
             )
@@ -442,7 +508,12 @@ def test_operation_validation_contract() -> None:
             {"op": "create", "scope": "project", "section": "S", "content": "C"},
             {"op": "update", "scope": "project", "id": "mem_p_000001", "content": ""},
             {"op": "archive", "scope": "project", "id": "mem_p_000001"},
-            {"op": "delete", "scope": "project", "id": "mem_p_000002", "reason": "wrong"},
+            {
+                "op": "delete",
+                "scope": "project",
+                "id": "mem_p_000002",
+                "reason": "wrong",
+            },
             {"op": "noop"},
         ]
     }
@@ -651,7 +722,9 @@ def test_invalid_fact_cleanup_deletes_warm_item_when_reason_is_clear() -> None:
     ]
 
 
-def test_old_schema_items_are_backfilled_with_default_tier_score(tmp_path: Path) -> None:
+def test_old_schema_items_are_backfilled_with_default_tier_score(
+    tmp_path: Path,
+) -> None:
     store_path = tmp_path / "memory_project.json"
     _atomic_write_text(
         store_path,
@@ -722,6 +795,153 @@ def test_score_clamp_and_tier_derivation() -> None:
     assert _derive_tier_from_score(_normalize_score(88)) == "hot"
 
 
+def test_env_parsing_language_and_turn_helpers(monkeypatch: Any) -> None:
+    monkeypatch.setenv("MEM_INT", "bad")
+    monkeypatch.setenv("MEM_FLOAT", "-5")
+    assert _env_int("MISSING_INT", 7, minimum=3) == 7
+    assert _env_int("MEM_INT", 7, minimum=3) == 7
+    assert _env_float("MISSING_FLOAT", 1.5, minimum=0.5) == 1.5
+    assert _env_float("MEM_FLOAT", 1.5, minimum=0.5) == 0.5
+
+    assert _detect_target_language("") == "the language of the last human message"
+    assert _detect_target_language("12345") == "the language of the last human message"
+    assert _is_trivial_turn([]) is True
+    assert _last_human_text([_Msg("ai", "no human")]) == ""
+    assert (
+        _last_human_text(
+            [
+                _Msg(
+                    "human",
+                    [
+                        {"text": "remember"},
+                        {"kind": "image"},
+                        "plain",
+                    ],
+                )
+            ]
+        )
+        == "remember plain"
+    )
+
+    assert _is_task_complete([]) is False
+    assert _is_task_complete([_Msg("tool", "done")]) is False
+    assert _is_task_complete([_Msg("human", "hi")]) is False
+    assert _is_task_complete([_Msg("ai", "calling", tool_calls=[{"id": "1"}])]) is False
+    assert _is_task_complete([_Msg("ai", "final", tool_calls=[])]) is True
+
+
+def test_message_formatting_helpers_include_metadata() -> None:
+    tool_msg = _Msg("tool", [{"text": "line one"}, {"json": True}, "tail"])
+    tool_msg.name = "read_file"
+    tool_msg.tool_call_id = "call-1"
+    ai_msg = _Msg("ai", "", tool_calls=[{"name": "write_file", "args": {"path": "a"}}])
+
+    assert _message_content_to_text(tool_msg.content).splitlines() == [
+        "line one",
+        '{"json": true}',
+        "tail",
+    ]
+    log = _format_call_messages_for_log([tool_msg, ai_msg])
+    assert "name=read_file" in log
+    assert "tool_call_id=call-1" in log
+    assert "tool_calls" in log
+
+    transcript = _format_messages_for_memory_transcript([tool_msg, ai_msg])
+    assert "conversation_transcript" in transcript
+    assert "[1] role=tool name=read_file tool_call_id=call-1" in transcript
+    assert "assistant_tool_calls_json" in transcript
+
+
+def test_normalization_helpers_cover_invalid_inputs(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setenv("MEM_FLOAT_BAD", "not-a-float")
+
+    assert _env_float("MEM_FLOAT_BAD", 1.5, minimum=0.5) == 1.5
+    assert _normalize_scope(123) is None
+    assert _normalize_status(" ARCHIVED ") == "archived"
+    assert _normalize_status("bad") == "active"
+    assert _normalize_confidence("HIGH") == "high"
+    assert _normalize_confidence("bad", default="low") == "low"
+    assert _normalize_tier("COLD") == "cold"
+    assert _normalize_tier("bad", default="hot") == "hot"
+    assert _normalize_text(123, max_chars=5) == ""
+    assert _align_score_to_tier(95, "warm") == HOT_THRESHOLD - 1
+    assert _align_score_to_tier(5, "warm") == COLD_THRESHOLD
+
+
+def test_read_memory_store_handles_invalid_schema_and_filters_dirty_items(
+    tmp_path: Path,
+) -> None:
+    missing = _read_memory_store(tmp_path / "missing.json", "project")
+    assert missing == _new_store("project")
+
+    store_path = tmp_path / "memory_project.json"
+    store_path.write_text(json.dumps(["not", "a", "dict"]), encoding="utf-8")
+    invalid_schema = _read_memory_store(store_path, "project")
+    assert invalid_schema["__read_error__"] is True
+
+    store_path.write_text(json.dumps({"scope": "bad", "items": []}), encoding="utf-8")
+    invalid_scope = _read_memory_store(store_path, "project")
+    assert invalid_scope["__read_error__"] is True
+
+    store_path.write_text(
+        json.dumps({"scope": "project", "items": "bad"}),
+        encoding="utf-8",
+    )
+    invalid_items = _read_memory_store(store_path, "project")
+    assert invalid_items["__read_error__"] is True
+
+    dirty_items = [
+        "bad",
+        {"scope": "user", "id": "mem_u_000001", "section": "S", "content": "C"},
+        {"scope": "project", "id": 123, "section": "S", "content": "C"},
+        {"scope": "project", "id": "wrong", "section": "S", "content": "C"},
+        {"scope": "project", "id": "mem_p_000001", "section": "", "content": "C"},
+        {
+            "scope": "project",
+            "id": "mem_p_000002",
+            "section": " Rules ",
+            "content": "  Use pytest.  ",
+            "status": "archived",
+        },
+    ]
+    store_path.write_text(
+        json.dumps({"scope": "project", "items": dirty_items}),
+        encoding="utf-8",
+    )
+
+    filtered = _read_memory_store(store_path, "project")
+
+    assert [item["id"] for item in filtered["items"]] == ["mem_p_000002"]
+    assert filtered["items"][0]["section"] == "Rules"
+    assert filtered["items"][0]["content"] == "Use pytest."
+    assert filtered["items"][0]["status"] == "archived"
+
+
+def test_next_memory_id_and_snapshot_ignore_dirty_items() -> None:
+    store = _new_store("project")
+    item = _item("mem_p_000004")
+    item["score"] = "bad"  # type: ignore[assignment]
+    store["items"] = [
+        "bad",
+        {"id": 123},
+        {"id": "other"},
+        item,
+    ]
+
+    assert _next_memory_id(store, "project") == "mem_p_000005"
+
+    snapshot = _build_memory_snapshot(None, store)
+    assert snapshot["user"] == {"items": []}
+    assert [item["id"] for item in snapshot["project"]["items"]] == [
+        "mem_p_000004",
+        123,
+        "other",
+    ]
+    assert snapshot["project"]["items"][0]["score"] == DEFAULT_SCORE
+
+
 def test_create_aligns_score_with_explicit_tier() -> None:
     new_user, _, changed = _apply_operations(
         _new_store("user"),
@@ -745,6 +965,258 @@ def test_create_aligns_score_with_explicit_tier() -> None:
     item = new_user["items"][0]
     assert item["tier"] == "hot"
     assert item["score"] >= HOT_THRESHOLD
+
+
+def test_validation_rejects_bad_shapes_and_normalizes_update_fields() -> None:
+    assert _normalize_and_validate_operations(None) == []
+    assert _normalize_and_validate_operations({"operations": "bad"}) == []
+
+    payload = {
+        "operations": [
+            "bad",
+            {},
+            {"op": "unknown"},
+            {"op": "create", "scope": "bad", "section": "S", "content": "C"},
+            {
+                "op": "create",
+                "scope": "project",
+                "id": "mem_p_000001",
+                "section": "S",
+                "content": "C",
+            },
+            {"op": "update", "scope": "project", "id": ""},
+            {"op": "update", "scope": "project", "id": "mem_p_000001"},
+            {
+                "op": "update",
+                "scope": "project",
+                "id": "mem_p_000001",
+                "tier": "bad",
+            },
+            {"op": "rescore", "scope": "project", "id": "mem_p_000001"},
+            {"op": "retier", "scope": "project", "id": "mem_p_000001"},
+            {
+                "op": "retier",
+                "scope": "project",
+                "id": "mem_p_000001",
+                "tier": "bad",
+            },
+            {"op": "archive", "scope": "project", "id": ""},
+            {
+                "op": "update",
+                "scope": "project",
+                "id": "mem_p_000001",
+                "content": " Updated fact ",
+                "confidence": "LOW",
+                "tier": "hot",
+                "score": 20,
+                "score_reason": " confirmed ",
+            },
+        ]
+    }
+
+    ops = _normalize_and_validate_operations(payload)
+
+    assert ops == [
+        {
+            "op": "update",
+            "scope": "project",
+            "id": "mem_p_000001",
+            "content": "Updated fact",
+            "confidence": "low",
+            "tier": "hot",
+            "score": 20,
+            "reason": "confirmed",
+        }
+    ]
+
+
+def test_validation_edge_branches_for_create_rescore_retier_and_delete() -> None:
+    payload = {
+        "operations": [
+            {"op": "create", "scope": "project", "section": "", "content": "C"},
+            {"op": "create", "scope": "project", "section": "S", "content": ""},
+            {"op": "rescore", "scope": "project", "id": 123, "score": 10},
+            {"op": "retier", "scope": "project", "id": 123, "tier": "warm"},
+            {
+                "op": "rescore",
+                "scope": "project",
+                "id": "mem_p_000001",
+                "score": 60,
+                "reason": "still useful",
+            },
+            {
+                "op": "retier",
+                "scope": "project",
+                "id": "mem_p_000002",
+                "tier": "warm",
+                "score_reason": "promoted",
+            },
+            {
+                "op": "archive",
+                "scope": "project",
+                "id": "mem_p_000003",
+                "reason": "",
+            },
+        ]
+    }
+
+    ops = _normalize_and_validate_operations(payload)
+
+    assert ops == [
+        {
+            "op": "rescore",
+            "scope": "project",
+            "id": "mem_p_000001",
+            "score": 60,
+            "reason": "still useful",
+        },
+        {
+            "op": "retier",
+            "scope": "project",
+            "id": "mem_p_000002",
+            "tier": "warm",
+            "reason": "promoted",
+        },
+        {
+            "op": "archive",
+            "scope": "project",
+            "id": "mem_p_000003",
+            "reason": None,
+        },
+    ]
+    assert _find_item(None, "mem_p_000001") is None
+
+
+def test_create_can_initialize_missing_user_store_and_next_id_skips_bad_items() -> None:
+    user_store = _new_store("user")
+    user_store["items"].extend(
+        [
+            "bad",
+            {"id": 1},
+            _item("mem_u_000003", scope="user", content="Existing preference."),
+        ]
+    )
+
+    new_user, _, changed = _apply_operations(
+        user_store,
+        None,
+        [
+            {
+                "op": "create",
+                "scope": "user",
+                "section": "Prefs",
+                "content": "Prefer short summaries.",
+            },
+            {
+                "op": "create",
+                "scope": "project",
+                "section": "Rules",
+                "content": "Use pytest.",
+            },
+        ],
+        thread_id="t1",
+        source_anchor="a1",
+        now_iso="2026-04-22T10:00:00Z",
+    )
+
+    assert new_user is not None
+    assert changed == ["project", "user"]
+    assert new_user["items"][-1]["id"] == "mem_u_000004"
+
+
+def test_apply_operations_edge_branches_for_updates_and_archives() -> None:
+    project_store = _new_store("project")
+    base = _item("mem_p_000001")
+    base["score"] = 50  # type: ignore[index]
+    base["tier"] = "warm"  # type: ignore[index]
+    blank_target = _item("mem_p_000002", content="Blank target")
+    archived = _item("mem_p_000003", content="Archived stale", status="archived")
+    archived["archived_at"] = "2026-04-20T10:00:00Z"
+    already_archived = _item(
+        "mem_p_000004",
+        content="Already archived",
+        status="archived",
+    )
+    already_archived["archived_at"] = "2026-04-20T11:00:00Z"
+    project_store["items"].extend([base, blank_target, archived, already_archived])
+
+    new_user, new_project, changed = _apply_operations(
+        None,
+        project_store,
+        [
+            {
+                "op": "create",
+                "scope": "user",
+                "section": "Prefs",
+                "content": "Use concise answers.",
+            },
+            {"op": "update", "scope": "bad", "id": "mem_p_000001", "content": "x"},
+            {"op": "update", "scope": "project", "id": 123, "content": "x"},
+            {"op": "update", "scope": "project", "id": "mem_p_000002", "content": " "},
+            {
+                "op": "update",
+                "scope": "project",
+                "id": "mem_p_000001",
+                "score": 95,
+                "tier": "warm",
+                "reason": "tier remains authoritative",
+            },
+            {
+                "op": "update",
+                "scope": "project",
+                "id": "mem_p_000003",
+                "content": "Reactivated memory",
+                "tier": "hot",
+            },
+            {"op": "archive", "scope": "project", "id": "mem_p_000004"},
+        ],
+        thread_id="thread-edge",
+        source_anchor="anchor-edge",
+        now_iso="2026-04-22T10:00:00Z",
+    )
+
+    assert new_user is not None
+    assert new_user["items"][0]["id"] == "mem_u_000001"
+    assert changed == ["project", "user"]
+    assert new_project is not None
+    updated = _find_item(new_project, "mem_p_000001")
+    assert updated is not None
+    assert updated["tier"] == "warm"
+    assert COLD_THRESHOLD <= int(updated["score"]) < HOT_THRESHOLD
+    reactivated = _find_item(new_project, "mem_p_000003")
+    assert reactivated is not None
+    assert reactivated["status"] == "active"
+    assert reactivated["archived_at"] is None
+    unchanged = _find_item(new_project, "mem_p_000002")
+    assert unchanged is not None
+    assert unchanged["content"] == "Blank target"
+
+    malformed_store = {"version": 1, "scope": "project", "items": "bad"}
+    _, malformed_after, malformed_changed = _apply_operations(
+        None,
+        malformed_store,
+        [{"op": "delete", "scope": "project", "id": "mem_p_000001"}],
+        thread_id="thread-edge",
+        source_anchor="anchor-edge",
+        now_iso="2026-04-22T10:00:00Z",
+    )
+    assert malformed_after == malformed_store
+    assert malformed_changed == []
+
+
+def test_archived_overflow_cleanup_deletes_oldest_archived_items() -> None:
+    project_store = _new_store("project")
+    for idx in range(4):
+        item = _item(f"mem_p_{idx + 1:06d}", content=f"Archived {idx}")
+        item["status"] = "archived"
+        item["archived_at"] = f"2026-04-22T10:0{idx}:00Z"
+        project_store["items"].append(item)
+    project_store["items"].append(_item("mem_p_000005", content="Active stays"))
+
+    ops = _build_archived_overflow_operations(None, project_store, max_archived=2)
+
+    assert [op["id"] for op in ops] == ["mem_p_000001", "mem_p_000002"]
+    assert all(op["_cleanup"] is True for op in ops)
 
 
 def test_memory_snapshot_includes_all_items_per_scope() -> None:
@@ -781,7 +1253,9 @@ def test_store_read_write_roundtrip(tmp_path: Path) -> None:
 
 
 class _Msg:
-    def __init__(self, msg_type: str, content: str, *, tool_calls: list[Any] | None = None) -> None:
+    def __init__(
+        self, msg_type: str, content: str, *, tool_calls: list[Any] | None = None
+    ) -> None:
         self.type = msg_type
         self.content = content
         self.tool_calls = tool_calls if tool_calls is not None else []
@@ -867,7 +1341,9 @@ def test_aafter_agent_emits_status_and_advances_cursor(monkeypatch: Any) -> None
     async def _fake_safe_extract_and_write(*args: Any, **kwargs: Any) -> list[str]:
         return []
 
-    monkeypatch.setattr(middleware, "_safe_extract_and_write", _fake_safe_extract_and_write)
+    monkeypatch.setattr(
+        middleware, "_safe_extract_and_write", _fake_safe_extract_and_write
+    )
     monkeypatch.setattr(middleware, "_resolve_thread_id", lambda: "thread-1")
 
     messages = [
@@ -885,7 +1361,9 @@ def test_aafter_agent_emits_status_and_advances_cursor(monkeypatch: Any) -> None
     assert middleware._cursor_by_thread.get("thread-1") == len(messages)
 
 
-def test_aafter_agent_does_not_advance_cursor_on_extract_failure(monkeypatch: Any) -> None:
+def test_aafter_agent_does_not_advance_cursor_on_extract_failure(
+    monkeypatch: Any,
+) -> None:
     middleware = MemoryAgentMiddleware()
     middleware._captured_model = object()
     runtime = _Runtime()
@@ -893,7 +1371,9 @@ def test_aafter_agent_does_not_advance_cursor_on_extract_failure(monkeypatch: An
     async def _fake_safe_extract_and_write(*args: Any, **kwargs: Any) -> None:
         return None
 
-    monkeypatch.setattr(middleware, "_safe_extract_and_write", _fake_safe_extract_and_write)
+    monkeypatch.setattr(
+        middleware, "_safe_extract_and_write", _fake_safe_extract_and_write
+    )
     monkeypatch.setattr(middleware, "_resolve_thread_id", lambda: "thread-2")
 
     state = {
@@ -906,6 +1386,149 @@ def test_aafter_agent_does_not_advance_cursor_on_extract_failure(monkeypatch: An
 
     assert result is None
     assert "thread-2" not in middleware._cursor_by_thread
+
+
+def test_middleware_cursor_cooldown_and_thread_helpers(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    store = tmp_path / "memory_project.json"
+    store.write_text("{}", encoding="utf-8")
+    middleware = MemoryAgentMiddleware(
+        memory_store_paths={"project": str(store)},
+        min_turn_interval=3,
+        min_seconds_between_runs=100.0,
+        file_cooldown_seconds=100.0,
+    )
+
+    assert middleware._memory_files_recently_updated() is True
+    assert "hello world" in middleware._message_anchor(
+        _Msg("human", [{"text": "hello"}, "world"])  # type: ignore[arg-type]
+    )
+
+    import invincat_cli.memory_agent as memory_mod
+
+    monkeypatch.setattr(
+        memory_mod,
+        "get_config",
+        lambda: (_ for _ in ()).throw(RuntimeError("no config")),
+    )
+    assert middleware._resolve_thread_id() == "__default_thread__"
+
+    messages = [_Msg("human", "one"), _Msg("ai", "two")]
+    assert middleware._slice_incremental_messages("t", []) == []
+    middleware._cursor_by_thread["t"] = 99
+    assert middleware._slice_incremental_messages("t", messages) == messages
+    middleware._cursor_by_thread["t"] = 1
+    middleware._anchor_by_thread["t"] = "changed"
+    assert middleware._slice_incremental_messages("t", messages) == messages
+    middleware._anchor_by_thread["t"] = middleware._message_anchor(messages[0])
+    assert middleware._slice_incremental_messages("t", messages) == [messages[1]]
+    middleware._advance_cursor("empty", [])
+    assert "empty" not in middleware._anchor_by_thread
+
+    middleware._last_run_at = time.monotonic()
+    assert (
+        middleware._should_run_for_turn([_Msg("human", "ordinary"), _Msg("ai", "ok")])
+        is False
+    )
+    middleware._min_seconds_between_runs = 0.0
+    assert (
+        middleware._should_run_for_turn([_Msg("human", "ordinary"), _Msg("ai", "ok")])
+        is False
+    )
+    assert (
+        middleware._should_run_for_turn(
+            [_Msg("human", "Please remember this"), _Msg("ai", "ok")]
+        )
+        is True
+    )
+
+
+def test_aafter_agent_skip_and_cleanup_only_paths(monkeypatch: Any) -> None:
+    middleware = MemoryAgentMiddleware()
+    runtime = _Runtime()
+
+    assert asyncio.run(middleware.aafter_agent({"messages": []}, runtime)) is None
+
+    middleware._captured_model = object()
+    assert (
+        asyncio.run(
+            middleware.aafter_agent(
+                {"__interrupt__": [object()], "messages": [_Msg("human", "x")]},
+                runtime,
+            )
+        )
+        is None
+    )
+    assert (
+        asyncio.run(
+            middleware.aafter_agent({"messages": [_Msg("human", "x")]}, runtime)
+        )
+        is None
+    )
+
+    async def cleanup(
+        *, thread_id: str, source_anchor: str
+    ) -> tuple[None, None, list[str]]:
+        return None, None, ["memory.json"]
+
+    monkeypatch.setattr(middleware, "_cleanup_invalid_fact_stores", cleanup)
+    monkeypatch.setattr(middleware, "_resolve_thread_id", lambda: "thread-cleanup-only")
+    monkeypatch.setattr(middleware, "_should_run_for_turn", lambda _messages: False)
+    messages = [
+        _Msg("human", "Please remember later"),
+        _Msg("ai", "Done.", tool_calls=[]),
+    ]
+    result = asyncio.run(middleware.aafter_agent({"messages": messages}, runtime))
+    assert result == {
+        "memory_contents": None,
+        "_auto_memory_updated_paths": ["memory.json"],
+    }
+
+    middleware._cursor_by_thread["thread-cleanup-only"] = len(messages)
+    middleware._anchor_by_thread["thread-cleanup-only"] = middleware._message_anchor(
+        messages[-1]
+    )
+    monkeypatch.setattr(middleware, "_should_run_for_turn", lambda _messages: True)
+    result = asyncio.run(middleware.aafter_agent({"messages": messages}, runtime))
+    assert result == {
+        "memory_contents": None,
+        "_auto_memory_updated_paths": ["memory.json"],
+    }
+
+
+def test_aafter_agent_context_window_keeps_last_human(monkeypatch: Any) -> None:
+    middleware = MemoryAgentMiddleware(context_messages=1)
+    middleware._captured_model = object()
+    captured: list[list[Any]] = []
+
+    async def cleanup(
+        *, thread_id: str, source_anchor: str
+    ) -> tuple[None, None, list[str]]:
+        return None, None, []
+
+    async def safe_extract(
+        _model: Any,
+        messages: list[Any],
+        **_kwargs: Any,
+    ) -> list[str]:
+        captured.append(messages)
+        return []
+
+    monkeypatch.setattr(middleware, "_cleanup_invalid_fact_stores", cleanup)
+    monkeypatch.setattr(middleware, "_safe_extract_and_write", safe_extract)
+    monkeypatch.setattr(middleware, "_resolve_thread_id", lambda: "thread-window")
+
+    messages = [
+        _Msg("human", "Please remember this preference"),
+        _Msg("ai", "I will keep it.", tool_calls=[]),
+        _Msg("ai", "Done.", tool_calls=[]),
+    ]
+    result = asyncio.run(middleware.aafter_agent({"messages": messages}, _Runtime()))
+
+    assert result is None
+    assert captured == [[messages[0], messages[-1]]]
 
 
 def test_aafter_agent_runs_cleanup_even_for_trivial_turn(
@@ -963,7 +1586,9 @@ def test_unreadable_store_is_auto_recovered_before_extract(tmp_path: Path) -> No
     assert backups
 
 
-def test_extract_deletes_existing_invalid_fact_even_when_model_noops(tmp_path: Path) -> None:
+def test_extract_deletes_existing_invalid_fact_even_when_model_noops(
+    tmp_path: Path,
+) -> None:
     store = tmp_path / "memory_project.json"
     project_store = _new_store("project")
     invalid = _item("mem_p_000001", content="Old incorrect fact")
@@ -1100,7 +1725,9 @@ def test_schema_invalid_store_is_auto_recovered_before_extract(tmp_path: Path) -
     assert backups
 
 
-def test_load_or_recover_store_recovers_unreadable_store_with_backup(tmp_path: Path) -> None:
+def test_load_or_recover_store_recovers_unreadable_store_with_backup(
+    tmp_path: Path,
+) -> None:
     store = tmp_path / "memory_project.json"
     store.write_text("{bad-json", encoding="utf-8")
 
@@ -1136,7 +1763,9 @@ def test_target_language_detection() -> None:
     assert _detect_target_language("Please remember this preference") == "English"
 
 
-def test_extract_includes_target_language_instruction_for_chinese_turn(tmp_path: Path) -> None:
+def test_extract_includes_target_language_instruction_for_chinese_turn(
+    tmp_path: Path,
+) -> None:
     store = tmp_path / "memory_project.json"
     model = _CapturingMemoryModel()
     middleware = MemoryAgentMiddleware(
@@ -1162,7 +1791,9 @@ def test_extract_includes_target_language_instruction_for_chinese_turn(tmp_path:
     assert "must use target_language" in final_instruction
 
 
-def test_extract_passes_plain_transcript_instead_of_native_tool_call_messages(tmp_path: Path) -> None:
+def test_extract_passes_plain_transcript_instead_of_native_tool_call_messages(
+    tmp_path: Path,
+) -> None:
     store = tmp_path / "memory_project.json"
     model = _CapturingMemoryModel()
     middleware = MemoryAgentMiddleware(

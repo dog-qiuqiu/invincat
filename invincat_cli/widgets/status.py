@@ -505,6 +505,7 @@ class StatusBar(Horizontal):
 
         # Build context usage ratio for color coding
         from invincat_cli.config import settings
+
         context_limit = settings.model_context_limit
         display.remove_class("warn", "danger")
         if context_limit and context_limit > 0:

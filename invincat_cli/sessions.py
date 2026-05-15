@@ -1053,6 +1053,7 @@ async def delete_thread(thread_id: str) -> bool:
         await conn.commit()
         if deleted:
             _message_count_cache.pop(thread_id, None)
+            _initial_prompt_cache.pop(thread_id, None)
             for key, rows in list(_recent_threads_cache.items()):
                 filtered = [row for row in rows if row["thread_id"] != thread_id]
                 _recent_threads_cache[key] = filtered

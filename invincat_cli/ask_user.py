@@ -271,8 +271,10 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         """Return a modified request, stripping ask_user in WeCom turns."""
         if _is_wecom_context(request.runtime):
             tools = [
-                t for t in list(getattr(request, "tools", []))
-                if (t.name if hasattr(t, "name") else t.get("name", "")) != ASK_USER_TOOL_NAME
+                t
+                for t in list(getattr(request, "tools", []))
+                if (t.name if hasattr(t, "name") else t.get("name", ""))
+                != ASK_USER_TOOL_NAME
             ]
             return request.override(tools=tools)
         if request.system_message is not None:

@@ -66,9 +66,7 @@ async def resolve_resume_thread(app: Any) -> None:  # noqa: ANN401
                 app.notify(msg, severity="warning", markup=False)
         elif await thread_exists(resume):
             app._lc_thread_id = resume
-            if should_update_default_agent_from_thread(
-                assistant_id=app._assistant_id
-            ):
+            if should_update_default_agent_from_thread(assistant_id=app._assistant_id):
                 agent_name = await get_thread_agent(resume)
                 if agent_name:
                     app._assistant_id = agent_name
@@ -210,7 +208,9 @@ def handle_server_ready(app: Any, event: Any) -> None:  # noqa: ANN401
         pending_message_count=len(app._pending_messages),
         initial_prompt=app._initial_prompt,
     ):
-        app.call_after_refresh(lambda: asyncio.create_task(app._process_next_from_queue()))
+        app.call_after_refresh(
+            lambda: asyncio.create_task(app._process_next_from_queue())
+        )
 
 
 def handle_server_start_failed(app: Any, event: Any) -> None:  # noqa: ANN401

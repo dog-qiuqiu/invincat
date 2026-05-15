@@ -29,12 +29,37 @@ def test_extract_model_params_flag_with_quoted_json_and_trailing_args() -> None:
     assert params == {"temperature": 0}
 
 
+def test_extract_model_params_flag_without_flag() -> None:
+    assert extract_model_params_flag("openai:gpt-4") == ("openai:gpt-4", None)
+
+
+def test_extract_model_params_flag_with_escaped_quote() -> None:
+    remaining, params = extract_model_params_flag(
+        r"""openai:gpt-4 --model-params '{"stop": "say \"done\""}' --default"""
+    )
+
+    assert remaining == "openai:gpt-4 --default"
+    assert params == {"stop": 'say "done"'}
+
+
 def test_extract_model_params_flag_rejects_non_object() -> None:
     with pytest.raises(TypeError):
         extract_model_params_flag("--model-params []")
 
 
+def test_extract_model_params_flag_rejects_missing_or_malformed_json() -> None:
+    with pytest.raises(ValueError, match="requires"):
+        extract_model_params_flag("--model-params")
+    with pytest.raises(ValueError, match="Unclosed"):
+        extract_model_params_flag('--model-params \'{"temperature": 0')
+    with pytest.raises(ValueError, match="Unbalanced"):
+        extract_model_params_flag('--model-params {"temperature": 0')
+    with pytest.raises(ValueError, match="Invalid JSON"):
+        extract_model_params_flag("--model-params nope")
+
+
 def test_parse_model_target() -> None:
+    assert parse_model_target("") == ("primary", "")
     assert parse_model_target("2 openai:gpt-4") == ("memory", "openai:gpt-4")
     assert parse_model_target("primary anthropic:claude") == (
         "primary",

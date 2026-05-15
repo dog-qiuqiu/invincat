@@ -188,7 +188,9 @@ class ShellAllowListMiddleware(AgentMiddleware):
         return await handler(request)
 
 
-_MEMORY_FILE_NAMES: frozenset[str] = frozenset({"memory_user.json", "memory_project.json"})
+_MEMORY_FILE_NAMES: frozenset[str] = frozenset(
+    {"memory_user.json", "memory_project.json"}
+)
 # Tools that accept a file path as their first argument.
 _FILE_PATH_TOOLS: frozenset[str] = frozenset({"read_file", "write_file", "edit_file"})
 # Shell tools whose command string might reference memory files.
@@ -1060,9 +1062,7 @@ def create_cli_agent(
 
         from invincat_cli.auto_memory import RefreshableMemoryMiddleware
 
-        user_store_path = str(
-            settings.get_agent_dir(assistant_id) / "memory_user.json"
-        )
+        user_store_path = str(settings.get_agent_dir(assistant_id) / "memory_user.json")
         project_store_path = str(_project_store_dir / "memory_project.json")
         memory_store_paths = {"user": user_store_path, "project": project_store_path}
 

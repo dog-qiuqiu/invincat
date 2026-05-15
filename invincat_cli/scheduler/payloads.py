@@ -48,7 +48,9 @@ def build_schedule_create_payload_result(
     cwd: str | Path,
     active_wecom_frame: dict[str, Any] | None = None,
     now: datetime | None = None,
-    resolve_active_chat_id: Callable[[dict[str, Any]], str] = resolve_wecom_active_chat_id,
+    resolve_active_chat_id: Callable[
+        [dict[str, Any]], str
+    ] = resolve_wecom_active_chat_id,
 ) -> ScheduleCreatePayloadResult:
     """Validate a schedule_create payload and build the task to persist."""
     task_id = payload.get("task_id") or str(uuid.uuid4())

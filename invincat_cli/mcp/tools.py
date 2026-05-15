@@ -666,7 +666,9 @@ async def resolve_and_load_mcp_tools(
             filtered = _empty_project_config(cfg)
             if filtered.get("mcpServers"):
                 configs.append(filtered)
-            skipped = [f"{name} ({typ}): {detail}" for name, typ, detail in server_summaries]
+            skipped = [
+                f"{name} ({typ}): {detail}" for name, typ, detail in server_summaries
+            ]
             logger.warning(
                 "Skipped untrusted project MCP servers: %s",
                 "; ".join(skipped),
