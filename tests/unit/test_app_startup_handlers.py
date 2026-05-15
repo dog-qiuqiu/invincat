@@ -205,11 +205,11 @@ def test_handle_mount_initializes_status_input_and_startup_workers(
         lambda target, model_spec: {"target": target, "model": model_spec},
     )
     monkeypatch.setattr(
-        "invincat_cli.command_registry.COMMANDS",
+        "invincat_cli.commands.registry.COMMANDS",
         [SimpleNamespace(name="/help", description="Help", hidden_keywords="")],
     )
     monkeypatch.setattr(
-        "invincat_cli.command_registry.build_skill_commands",
+        "invincat_cli.commands.registry.build_skill_commands",
         lambda _skills: [("/skill:test", "Skill", "Run skill")],
     )
 
@@ -424,10 +424,10 @@ def test_check_optional_tools_background_handles_import_and_unexpected_errors(
 def test_discover_skills_updates_cache_and_chat_commands(monkeypatch) -> None:
     app = StartupApp()
     monkeypatch.setattr(
-        "invincat_cli.command_registry.SLASH_COMMANDS", [("/help", "", "")]
+        "invincat_cli.commands.registry.SLASH_COMMANDS", [("/help", "", "")]
     )
     monkeypatch.setattr(
-        "invincat_cli.command_registry.build_skill_commands",
+        "invincat_cli.commands.registry.build_skill_commands",
         lambda skills: [("/skill:skill-a", str(len(skills)), "")],
     )
 
@@ -449,9 +449,9 @@ def test_discover_skills_notifies_on_filesystem_error(monkeypatch) -> None:
         raise OSError("bad disk")
 
     app._discover_skills_and_roots = fail_discovery
-    monkeypatch.setattr("invincat_cli.command_registry.SLASH_COMMANDS", [])
+    monkeypatch.setattr("invincat_cli.commands.registry.SLASH_COMMANDS", [])
     monkeypatch.setattr(
-        "invincat_cli.command_registry.build_skill_commands", lambda _skills: []
+        "invincat_cli.commands.registry.build_skill_commands", lambda _skills: []
     )
 
     asyncio.run(startup_handlers.discover_skills(app))
@@ -471,9 +471,9 @@ def test_discover_skills_notifies_on_unexpected_error_without_chat_input(
         raise RuntimeError("bad metadata")
 
     app._discover_skills_and_roots = fail_discovery
-    monkeypatch.setattr("invincat_cli.command_registry.SLASH_COMMANDS", [])
+    monkeypatch.setattr("invincat_cli.commands.registry.SLASH_COMMANDS", [])
     monkeypatch.setattr(
-        "invincat_cli.command_registry.build_skill_commands", lambda _skills: []
+        "invincat_cli.commands.registry.build_skill_commands", lambda _skills: []
     )
 
     asyncio.run(startup_handlers.discover_skills(app))

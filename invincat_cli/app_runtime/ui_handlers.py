@@ -100,7 +100,7 @@ async def show_language_selector(app: Any) -> None:  # noqa: ANN401
 
 def refresh_all_ui_text(app: Any) -> None:  # noqa: ANN401
     """Refresh all UI text to reflect language change."""
-    from invincat_cli.command_registry import COMMANDS, build_skill_commands
+    from invincat_cli.commands.registry import COMMANDS, build_skill_commands
 
     try:
         banner = app.query_one("#welcome-banner", WelcomeBanner)

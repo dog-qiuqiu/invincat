@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from invincat_cli.app_runtime.approval import PLAN_MODE_ALLOWED_INTERRUPT_TOOLS
-from invincat_cli.command_registry import (
+from invincat_cli.commands.registry import (
     COMMANDS,
     SIDE_EFFECT_FREE,
     SLASH_COMMANDS,
 )
-from invincat_cli.plan_agent import PLANNER_ALLOWED_TOOLS
+from invincat_cli.middleware.plan_agent import PLANNER_ALLOWED_TOOLS
 
 
 class TestSlashCommandRegistration:

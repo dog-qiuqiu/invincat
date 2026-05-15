@@ -65,7 +65,7 @@ def _app() -> DeepAgentsApp:
 
 
 def test_server_messages_and_remote_agent_helper() -> None:
-    from invincat_cli.remote_client import RemoteAgent
+    from invincat_cli.remote.client import RemoteAgent
 
     ready = DeepAgentsApp.ServerReady(
         agent="agent",

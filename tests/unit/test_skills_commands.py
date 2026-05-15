@@ -1015,7 +1015,7 @@ def test_setup_skills_parser_adds_subcommands_and_output_args() -> None:
 def test_setup_skills_parser_lazy_help_action_invokes_ui(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import invincat_cli.ui as ui
+    import invincat_cli.presentation.help as ui
 
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command")
@@ -1045,7 +1045,7 @@ def test_setup_skills_parser_lazy_help_action_invokes_ui(
 def test_execute_skills_command_without_subcommand_shows_help(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import invincat_cli.ui as ui
+    import invincat_cli.presentation.help as ui
 
     shown: list[str] = []
     monkeypatch.setattr(ui, "show_skills_help", lambda: shown.append("help"))

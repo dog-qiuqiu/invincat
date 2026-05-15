@@ -79,7 +79,7 @@ async def handle_mount(app: Any) -> None:  # noqa: ANN401
             follow_primary=memory_status_model.follow_primary,
         )
 
-    from invincat_cli.command_registry import COMMANDS, build_skill_commands
+    from invincat_cli.commands.registry import COMMANDS, build_skill_commands
 
     app._chat_input.update_slash_commands(
         build_startup_slash_commands(
@@ -239,7 +239,7 @@ async def check_optional_tools_background(app: Any) -> None:  # noqa: ANN401
 
 async def discover_skills(app: Any) -> None:  # noqa: ANN401
     """Discover skills, cache metadata, and update autocomplete."""
-    from invincat_cli.command_registry import SLASH_COMMANDS, build_skill_commands
+    from invincat_cli.commands.registry import SLASH_COMMANDS, build_skill_commands
 
     try:
         skills, roots = await asyncio.to_thread(app._discover_skills_and_roots)
@@ -292,7 +292,7 @@ def discover_skills_and_roots(
 
 def prewarm_deferred_imports() -> None:
     """Background-load modules deferred from the startup path."""
-    from invincat_cli.command_registry import ALWAYS_IMMEDIATE  # noqa: F401
+    from invincat_cli.commands.registry import ALWAYS_IMMEDIATE  # noqa: F401
     from invincat_cli.config import settings  # noqa: F401
     from invincat_cli.hooks import dispatch_hook  # noqa: F401
     from invincat_cli.io.clipboard import copy_selection_to_clipboard  # noqa: F401

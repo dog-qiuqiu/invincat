@@ -5,7 +5,7 @@ from __future__ import annotations
 from textual.content import Content
 from textual.style import Style as TStyle
 
-from invincat_cli.command_registry import COMMANDS
+from invincat_cli.commands.registry import COMMANDS
 from invincat_cli.config import newline_shortcut
 from invincat_cli.core.version import DOCS_URL
 from invincat_cli.i18n import t

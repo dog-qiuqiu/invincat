@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-import invincat_cli.ui as ui
+import invincat_cli.presentation.help as ui
 
 
 class _FakeConsole:

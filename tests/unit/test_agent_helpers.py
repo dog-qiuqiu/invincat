@@ -554,15 +554,15 @@ def _install_create_cli_agent_fakes(
     monkeypatch.setattr(agent_mod, "get_system_prompt", lambda **_kwargs: "prompt")
 
     module_fakes = {
-        "invincat_cli.token_state": {"TokenStateMiddleware": marker("token")},
-        "invincat_cli.micro_compact": {"MicroCompactMiddleware": marker("micro")},
-        "invincat_cli.ask_user": {"AskUserMiddleware": marker("ask-user")},
-        "invincat_cli.approve_plan": {"ApprovePlanMiddleware": marker("approve-plan")},
+        "invincat_cli.middleware.token_state": {"TokenStateMiddleware": marker("token")},
+        "invincat_cli.middleware.micro_compact": {"MicroCompactMiddleware": marker("micro")},
+        "invincat_cli.middleware.ask_user": {"AskUserMiddleware": marker("ask-user")},
+        "invincat_cli.middleware.approve_plan": {"ApprovePlanMiddleware": marker("approve-plan")},
         "invincat_cli.wecom.file": {"WeComFileMiddleware": marker("wecom-file")},
-        "invincat_cli.auto_memory": {
+        "invincat_cli.middleware.auto_memory": {
             "RefreshableMemoryMiddleware": marker("refreshable-memory")
         },
-        "invincat_cli.memory_agent": {"MemoryAgentMiddleware": marker("memory-agent")},
+        "invincat_cli.memory.agent": {"MemoryAgentMiddleware": marker("memory-agent")},
         "invincat_cli.scheduler.store": {
             "SchedulerStore": marker("scheduler-store"),
             "CwdScopedSchedulerStore": marker("cwd-scheduler-store"),

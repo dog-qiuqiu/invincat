@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from invincat_cli.memory_agent import (
+from invincat_cli.memory.agent import (
     _SYSTEM_PROMPT,
     COLD_THRESHOLD,
     DEFAULT_SCORE,
@@ -1406,7 +1406,7 @@ def test_middleware_cursor_cooldown_and_thread_helpers(
         _Msg("human", [{"text": "hello"}, "world"])  # type: ignore[arg-type]
     )
 
-    import invincat_cli.memory_agent as memory_mod
+    import invincat_cli.memory.agent as memory_mod
 
     monkeypatch.setattr(
         memory_mod,

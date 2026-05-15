@@ -118,9 +118,18 @@ async def start_server_background(app: Any) -> None:  # noqa: ANN401
     coros: list[Any] = [start_server_and_get_agent(**app._server_kwargs)]
 
     if app._mcp_preload_kwargs is not None:
-        from invincat_cli.main import _preload_session_mcp_server_info
+        import importlib
 
-        coros.append(_preload_session_mcp_server_info(**app._mcp_preload_kwargs))
+        import invincat_cli
+
+        main_module = getattr(invincat_cli, "main", None)
+        if main_module is None:
+            main_module = importlib.import_module("invincat_cli.main")
+        preload_session_mcp_server_info = getattr(
+            main_module,
+            "_preload_session_mcp_server_info",
+        )
+        coros.append(preload_session_mcp_server_info(**app._mcp_preload_kwargs))
 
     try:
         results = await asyncio.gather(*coros, return_exceptions=True)

@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 async def handle_skill_command(app: Any, command: str) -> None:  # noqa: ANN401
     """Handle a `/skill:<name>` command by loading and invoking a skill."""
-    from invincat_cli.command_registry import parse_skill_command
+    from invincat_cli.commands.registry import parse_skill_command
     from invincat_cli.skills.load import load_skill_content
 
     skill_name, args = parse_skill_command(command)

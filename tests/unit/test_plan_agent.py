@@ -6,7 +6,7 @@ import asyncio
 
 from langchain_core.messages import ToolMessage
 
-from invincat_cli.plan_agent import (
+from invincat_cli.middleware.plan_agent import (
     PLANNER_ALLOWED_TOOLS,
     PLANNER_APPROVE_PLAN_SYSTEM_PROMPT,
     PLANNER_SUBAGENT_NAME,

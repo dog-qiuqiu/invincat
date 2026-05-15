@@ -71,7 +71,7 @@ async def handle_chat_input_submitted(app: Any, event: Any) -> None:  # noqa: AN
 
     await dispatch_hook("user.prompt", {})
 
-    from invincat_cli.command_registry import ALWAYS_IMMEDIATE
+    from invincat_cli.commands.registry import ALWAYS_IMMEDIATE
 
     if mode == "command" and value.lower().strip() in ALWAYS_IMMEDIATE:
         app.exit()

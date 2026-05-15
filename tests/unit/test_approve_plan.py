@@ -5,8 +5,8 @@ import asyncio
 import pytest
 from langchain_core.messages import SystemMessage
 
-from invincat_cli import approve_plan
-from invincat_cli.approve_plan import (
+from invincat_cli.middleware import approve_plan
+from invincat_cli.middleware.approve_plan import (
     ApprovePlanMiddleware,
     _parse_approval_response,
     _validate_todos,

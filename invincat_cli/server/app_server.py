@@ -7,17 +7,14 @@ required `langgraph.json` configuration file.
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import json
 import logging
 import os
 import signal
 import subprocess  # noqa: S404
-import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Self
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -33,40 +30,17 @@ _SHUTDOWN_TIMEOUT = 5
 
 
 def _port_in_use(host: str, port: int) -> bool:
-    """Check if a port is already in use.
+    """Check if a port is already in use."""
+    from invincat_cli.server.app_network import port_in_use
 
-    Args:
-        host: Host to check.
-        port: Port to check.
-
-    Returns:
-        `True` if the port is in use.
-    """
-    import socket
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        try:
-            s.bind((host, port))
-        except OSError:
-            return True
-        else:
-            return False
+    return port_in_use(host, port)
 
 
 def _find_free_port(host: str) -> int:
-    """Find a free port on the given host.
+    """Find a free port on the given host."""
+    from invincat_cli.server.app_network import find_free_port
 
-    Args:
-        host: Host to bind to.
-
-    Returns:
-        An available port number.
-    """
-    import socket
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind((host, 0))
-        return s.getsockname()[1]
+    return find_free_port(host)
 
 
 def get_server_url(host: str = _DEFAULT_HOST, port: int = _DEFAULT_PORT) -> str:
@@ -89,33 +63,15 @@ def generate_langgraph_json(
     env_file: str | None = None,
     checkpointer_path: str | None = None,
 ) -> Path:
-    """Generate a `langgraph.json` config file for `langgraph dev`.
+    """Generate a `langgraph.json` config file for `langgraph dev`."""
+    from invincat_cli.server.app_config import generate_langgraph_json as generate
 
-    Args:
-        output_dir: Directory to write the config file.
-        graph_ref: Python module:variable reference to the graph.
-        env_file: Optional path to an env file.
-        checkpointer_path: Import path to an async context manager that yields a
-            `BaseCheckpointSaver`. When set, the server persists checkpoint data
-            to disk instead of in-memory.
-
-    Returns:
-        Path to the generated config file.
-    """
-    config: dict[str, Any] = {
-        "dependencies": ["."],
-        "graphs": {
-            "agent": graph_ref,
-        },
-    }
-    if env_file:
-        config["env"] = env_file
-    if checkpointer_path:
-        config["checkpointer"] = {"path": checkpointer_path}
-
-    output_path = Path(output_dir) / "langgraph.json"
-    output_path.write_text(json.dumps(config, indent=2))
-    return output_path
+    return generate(
+        output_dir,
+        graph_ref=graph_ref,
+        env_file=env_file,
+        checkpointer_path=checkpointer_path,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -123,38 +79,13 @@ def generate_langgraph_json(
 # ---------------------------------------------------------------------------
 
 
-@contextlib.contextmanager
 def _scoped_env_overrides(
     overrides: dict[str, str],
 ) -> Iterator[None]:
-    """Apply env-var overrides, rolling back only on exception.
+    """Apply env-var overrides, rolling back only on exception."""
+    from invincat_cli.server.app_env import scoped_env_overrides
 
-    Separates the concern of temporary `os.environ` mutations from subprocess
-    management, making both independently testable.
-
-    On normal exit the overrides are left in place (the caller "keeps"
-    them). On exception the previous values are restored so the next attempt
-    starts from a known-good state.
-
-    Args:
-        overrides: Key/value pairs to set in `os.environ`.
-
-    Yields:
-        Control to the caller.
-    """
-    prev: dict[str, str | None] = {}
-    for key, val in overrides.items():
-        prev[key] = os.environ.get(key)
-        os.environ[key] = val
-    try:
-        yield
-    except Exception:
-        for key, old_val in prev.items():
-            if old_val is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = old_val
-        raise
+    return scoped_env_overrides(overrides, os_module=os)
 
 
 # ---------------------------------------------------------------------------
@@ -170,58 +101,23 @@ async def wait_for_server_healthy(
     read_log: Callable[[], str] | None = None,
     local: bool = False,
 ) -> None:
-    """Poll a LangGraph server health endpoint until it responds.
-
-    Args:
-        url: Server base URL (health endpoint is `{url}/ok`).
-        timeout: Max seconds to wait.
-        process: Optional subprocess handle; if the process exits early
-            we fail fast instead of waiting for the timeout.
-        read_log: Optional callable returning log file contents (for
-            error messages on early exit).
-        local: Use a shorter poll interval for local servers.
-
-    Raises:
-        RuntimeError: If the server doesn't become healthy in time.
-    """
-    import httpx
-
-    poll_interval = (
-        _HEALTH_POLL_INTERVAL_LOCAL if local else _HEALTH_POLL_INTERVAL_REMOTE
+    """Poll a LangGraph server health endpoint until it responds."""
+    from invincat_cli.server.app_health import (
+        wait_for_server_healthy as wait_for_health,
     )
-    health_url = f"{url}/ok"
-    deadline = time.monotonic() + timeout
-    last_status: int | None = None
-    last_exc: Exception | None = None
 
-    async with httpx.AsyncClient() as client:
-        while time.monotonic() < deadline:
-            if process and process.poll() is not None:
-                output = read_log() if read_log else ""
-                msg = f"Server process exited with code {process.returncode}"
-                if output:
-                    msg += f"\n{output[-3000:]}"
-                raise RuntimeError(msg)
-
-            try:
-                resp = await client.get(health_url, timeout=2)
-                if resp.status_code == 200:  # noqa: PLR2004
-                    logger.info("Server is healthy at %s", url)
-                    return
-                last_status = resp.status_code
-                logger.debug("Health check returned status %d", resp.status_code)
-            except (httpx.TransportError, OSError) as exc:
-                logger.debug("Health check attempt failed: %s", exc)
-                last_exc = exc
-
-            await asyncio.sleep(poll_interval)
-
-    msg = f"Server did not become healthy within {timeout}s"
-    if last_status is not None:
-        msg += f" (last status: {last_status})"
-    elif last_exc is not None:
-        msg += f" (last error: {last_exc})"
-    raise RuntimeError(msg)
+    await wait_for_health(
+        url,
+        timeout=timeout,
+        process=process,
+        read_log=read_log,
+        local=local,
+        local_poll_interval=_HEALTH_POLL_INTERVAL_LOCAL,
+        remote_poll_interval=_HEALTH_POLL_INTERVAL_REMOTE,
+        asyncio_module=asyncio,
+        time_module=time,
+        logger=logger,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -230,69 +126,19 @@ async def wait_for_server_healthy(
 
 
 def _build_server_cmd(config_path: Path, *, host: str, port: int) -> list[str]:
-    """Build the `langgraph dev` command line.
+    """Build the `langgraph dev` command line."""
+    from invincat_cli.server.app_config import build_server_cmd
 
-    Args:
-        config_path: Path to the `langgraph.json` config file.
-        host: Host to bind.
-        port: Port to bind.
-
-    Returns:
-        Command argv list.
-    """
-    return [
-        sys.executable,
-        "-m",
-        "langgraph_cli",
-        "dev",
-        "--host",
-        host,
-        "--port",
-        str(port),
-        "--no-browser",
-        "--no-reload",
-        "--config",
-        str(config_path),
-    ]
+    return build_server_cmd(config_path, host=host, port=port)
 
 
 def _build_server_env(
     config_path: Path | None = None,
 ) -> dict[str, str]:
-    """Build the environment dict for the server subprocess.
+    """Build the environment dict for the server subprocess."""
+    from invincat_cli.server.app_config import build_server_env
 
-    Copies `os.environ`, sets required flags, and strips auth-related variables
-    that are not needed (and could interfere) for the local dev server.
-
-    Args:
-        config_path: Optional path to langgraph.json for extracting checkpointer config.
-
-    Returns:
-        Environment dict for `subprocess.Popen`.
-    """
-    env = os.environ.copy()
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env["LANGGRAPH_AUTH_TYPE"] = "noop"
-
-    if config_path is not None and config_path.exists():
-        try:
-            import json as _json
-
-            config_data = _json.loads(config_path.read_text())
-            checkpointer = config_data.get("checkpointer")
-            if checkpointer:
-                env["LANGGRAPH_CHECKPOINTER"] = _json.dumps(checkpointer)
-        except Exception:
-            pass
-
-    for key in (
-        "LANGGRAPH_AUTH",
-        "LANGGRAPH_CLOUD_LICENSE_KEY",
-        "LANGSMITH_CONTROL_PLANE_API_KEY",
-        "LANGSMITH_TENANT_ID",
-    ):
-        env.pop(key, None)
-    return env
+    return build_server_env(config_path=config_path)
 
 
 # ---------------------------------------------------------------------------

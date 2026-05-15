@@ -67,11 +67,11 @@ This is the concrete closure of the Memory Store design rationale above.
 
 | Component | Responsibility | Location |
 |---|---|---|
-| `RefreshableMemoryMiddleware` | Loads and renders JSON memory stores into `memory_contents`; injects `<agent_memory>` into system prompt | `invincat_cli/auto_memory.py` |
-| `MemoryAgentMiddleware` | Runs a post-turn extraction call and applies structured operations to memory stores | `invincat_cli/memory_agent.py` |
+| `RefreshableMemoryMiddleware` | Loads and renders JSON memory stores into `memory_contents`; injects `<agent_memory>` into system prompt | `invincat_cli/middleware/auto_memory.py` |
+| `MemoryAgentMiddleware` | Runs a post-turn extraction call and applies structured operations to memory stores | `invincat_cli/memory/agent.py` |
 | `MemoryViewerScreen` | Full-screen memory manager for live user/project store inspection | `invincat_cli/widgets/memory_viewer.py` |
-| Agent assembly | Wires middleware and memory store paths | `invincat_cli/agent.py` |
-| UI feedback | Shows `Updating memory...` and post-update status | `invincat_cli/textual_adapter.py`, `invincat_cli/app.py` |
+| Agent assembly | Wires middleware and memory store paths | `invincat_cli/agent/__init__.py` |
+| UI feedback | Shows `Updating memory...` and post-update status | `invincat_cli/textual_adapter/`, `invincat_cli/app/` |
 
 ## 3. Data Model
 

@@ -9,7 +9,7 @@ import pytest
 from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
 from langgraph.types import Interrupt
 
-from invincat_cli.remote_client import (
+from invincat_cli.remote.client import (
     RemoteAgent,
     _convert_interrupts,
     _convert_message_data,

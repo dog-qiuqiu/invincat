@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from invincat_cli import tool_display
+from invincat_cli.presentation import tool_display
 
 
 def install_test_glyphs(monkeypatch) -> None:

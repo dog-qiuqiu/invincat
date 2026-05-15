@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from invincat_cli.app import DeepAgentsApp
-from invincat_cli.command_registry import IMMEDIATE_UI, SLASH_COMMANDS
+from invincat_cli.commands.registry import IMMEDIATE_UI, SLASH_COMMANDS
 from invincat_cli.config import settings
 from invincat_cli.widgets import memory_viewer as memory_viewer_mod
 from invincat_cli.widgets.memory_viewer import (

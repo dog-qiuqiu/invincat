@@ -187,7 +187,7 @@ def test_parse_args_builds_cli_subcommands(
 def test_parse_args_lazy_help_action_invokes_ui_help(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import invincat_cli.ui as ui_module
+    import invincat_cli.presentation.help as ui_module
 
     events: list[str] = []
     monkeypatch.setattr(ui_module, "show_help", lambda: events.append("help"))
@@ -1440,9 +1440,9 @@ def test_cli_main_applies_shell_allow_list(
         "parse_shell_allow_list",
         lambda value: events.append(value) or frozenset({"git"}),
     )
-    ui_module = ModuleType("invincat_cli.ui")
+    ui_module = ModuleType("invincat_cli.presentation.help")
     ui_module.show_help = lambda: events.append("help")
-    monkeypatch.setitem(sys.modules, "invincat_cli.ui", ui_module)
+    monkeypatch.setitem(sys.modules, "invincat_cli.presentation.help", ui_module)
 
     main.cli_main()
 
@@ -1589,10 +1589,10 @@ def test_cli_main_dispatches_agents_list(
     )
     agent_module = ModuleType("invincat_cli.agent")
     agent_module.list_agents = lambda **kwargs: events.append(("agents", kwargs))
-    ui_module = ModuleType("invincat_cli.ui")
+    ui_module = ModuleType("invincat_cli.presentation.help")
     ui_module.show_agents_help = lambda: events.append(("agents-help", None))
     monkeypatch.setitem(sys.modules, "invincat_cli.agent", agent_module)
-    monkeypatch.setitem(sys.modules, "invincat_cli.ui", ui_module)
+    monkeypatch.setitem(sys.modules, "invincat_cli.presentation.help", ui_module)
 
     main.cli_main()
 
@@ -1604,11 +1604,11 @@ def test_cli_main_dispatches_help_agents_help_skills_wecombot_and_threads_help(
 ) -> None:
     events: list[str] = []
 
-    ui_module = ModuleType("invincat_cli.ui")
+    ui_module = ModuleType("invincat_cli.presentation.help")
     ui_module.show_help = lambda: events.append("help")
     ui_module.show_agents_help = lambda: events.append("agents-help")
     ui_module.show_threads_help = lambda: events.append("threads-help")
-    monkeypatch.setitem(sys.modules, "invincat_cli.ui", ui_module)
+    monkeypatch.setitem(sys.modules, "invincat_cli.presentation.help", ui_module)
 
     skills_module = ModuleType("invincat_cli.skills")
     skills_module.execute_skills_command = lambda _args: events.append("skills")

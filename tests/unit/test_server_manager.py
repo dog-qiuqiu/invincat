@@ -181,7 +181,7 @@ def test_start_server_and_get_agent_builds_config_and_remote_agent(
     monkeypatch.setattr(
         "invincat_cli.server.app_server.ServerProcess", FakeServerProcess
     )
-    monkeypatch.setattr("invincat_cli.remote_client.RemoteAgent", FakeRemoteAgent)
+    monkeypatch.setattr("invincat_cli.remote.client.RemoteAgent", FakeRemoteAgent)
 
     async def run_and_assert() -> None:
         agent, server, mcp = await manager.start_server_and_get_agent(

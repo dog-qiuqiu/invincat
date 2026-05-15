@@ -11,7 +11,7 @@ def can_bypass_busy_queue(
     shell_running: bool,
 ) -> bool:
     """Return whether a command can run while the app is busy/connecting."""
-    from invincat_cli.command_registry import (
+    from invincat_cli.commands.registry import (
         BYPASS_WHEN_CONNECTING,
         IMMEDIATE_UI,
         SIDE_EFFECT_FREE,

@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from invincat_cli.mcp.tools import MCPSessionManager
-    from invincat_cli.remote_client import RemoteAgent
+    from invincat_cli.remote.client import RemoteAgent
     from invincat_cli.server.app_server import ServerProcess
 
 from invincat_cli.core.env_vars import SERVER_ENV_PREFIX
@@ -237,7 +237,7 @@ async def start_server_and_get_agent(
             The `mcp_session_manager` is currently always `None` (MCP lifecycle
             is handled server-side).
     """
-    from invincat_cli.remote_client import RemoteAgent
+    from invincat_cli.remote.client import RemoteAgent
     from invincat_cli.server.app_server import ServerProcess
 
     project_context = _capture_project_context()

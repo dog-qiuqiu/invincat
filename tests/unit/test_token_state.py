@@ -1,6 +1,6 @@
 """Tests for token state middleware schema registration."""
 
-from invincat_cli.token_state import TokenStateMiddleware, TokenTrackingState
+from invincat_cli.middleware.token_state import TokenStateMiddleware, TokenTrackingState
 
 
 def test_token_state_middleware_registers_private_state_schema() -> None:

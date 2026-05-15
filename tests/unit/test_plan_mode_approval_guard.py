@@ -368,7 +368,7 @@ def test_switch_model_invalidates_planner_cache(monkeypatch) -> None:
 def test_ensure_planner_agent_uses_planner_approve_prompt_and_disables_shell(
     monkeypatch,
 ) -> None:
-    from invincat_cli.plan_agent import PLANNER_APPROVE_PLAN_SYSTEM_PROMPT
+    from invincat_cli.middleware.plan_agent import PLANNER_APPROVE_PLAN_SYSTEM_PROMPT
 
     app = DeepAgentsApp(
         agent=SimpleNamespace(checkpointer=None), assistant_id="agent", backend=None

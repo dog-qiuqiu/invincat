@@ -2,13 +2,7 @@
 
 from __future__ import annotations
 
-import json
-import os
-import tempfile
-from dataclasses import dataclass
-from datetime import UTC, datetime
-from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from rich.markup import escape
 from textual.binding import Binding, BindingType
@@ -18,93 +12,34 @@ from textual.screen import ModalScreen
 from textual.widgets import Static
 
 from invincat_cli.i18n import t
+from invincat_cli.widgets.memory_viewer_models import MemoryItemView, MemoryScopeView
+from invincat_cli.widgets.memory_viewer_sort import SORT_MODES, apply_sort
+from invincat_cli.widgets.memory_viewer_store import (
+    MAX_CONTENT_PREVIEW_CHARS,
+    delete_memory_item,
+    iso_to_local,
+    load_memory_snapshot,
+    normalize_score,
+    normalize_tier,
+    trim,
+)
+from invincat_cli.widgets.memory_viewer_styles import MEMORY_VIEWER_CSS
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.timer import Timer
 
-_MAX_CONTENT_PREVIEW_CHARS = 140
+_MAX_CONTENT_PREVIEW_CHARS = MAX_CONTENT_PREVIEW_CHARS
 _REFRESH_INTERVAL_SECONDS = 1.5
-_ALLOWED_STATUS = frozenset({"active", "archived"})
-_ALLOWED_TIER = frozenset({"hot", "warm", "cold"})
+_SORT_MODES = SORT_MODES
+_iso_to_local = iso_to_local
+_trim = trim
+_normalize_tier = normalize_tier
+_normalize_score = normalize_score
+_delete_memory_item = delete_memory_item
+_apply_sort = apply_sort
+
 _STATUS_COLORS: dict[str, str] = {"active": "#58D68D", "archived": "#EC7063"}
-_SORT_MODES: tuple[str, ...] = (
-    "score_desc",
-    "score_asc",
-    "last_scored_desc",
-    "last_scored_asc",
-)
-_TIER_RANK: dict[str, int] = {"hot": 0, "warm": 1, "cold": 2}
-
-
-@dataclass(frozen=True, slots=True)
-class MemoryItemView:
-    """Single memory item rendered in the viewer."""
-
-    scope: str
-    item_id: str
-    section: str
-    status: str
-    content: str
-    tier: str
-    score: int
-    reason: str
-    last_scored_at: str
-    updated_at: str
-
-
-@dataclass(frozen=True, slots=True)
-class MemoryScopeView:
-    """Snapshot for one memory scope."""
-
-    scope: str
-    path: str
-    exists: bool
-    valid: bool
-    error: str | None
-    total: int
-    active: int
-    archived: int
-    latest_updated_at: str | None
-    items: list[MemoryItemView]
-
-
-def _iso_to_local(iso_value: str | None) -> str | None:
-    if not iso_value:
-        return None
-    try:
-        normalized = iso_value.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(normalized)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=UTC)
-        return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
-    except ValueError:
-        return None
-
-
-def _trim(text: Any, max_chars: int) -> str:
-    if not isinstance(text, str):
-        return ""
-    normalized = " ".join(text.strip().split())
-    if len(normalized) <= max_chars:
-        return normalized
-    return normalized[: max_chars - 3].rstrip() + "..."
-
-
-def _normalize_tier(value: Any) -> str:
-    if isinstance(value, str):
-        tier = value.strip().lower()
-        if tier in _ALLOWED_TIER:
-            return tier
-    return "warm"
-
-
-def _normalize_score(value: Any) -> int:
-    try:
-        score = int(value)
-    except (TypeError, ValueError):
-        score = 50
-    return max(0, min(100, score))
 
 
 def _markup_text(lines: list[str]) -> Content:
@@ -114,186 +49,6 @@ def _markup_text(lines: list[str]) -> Content:
 def _format_item_status(status: str) -> str:
     color = _STATUS_COLORS.get(status, "#F5B041")
     return f"[bold {color}]{escape(status)}[/bold {color}]"
-
-
-def _load_scope_snapshot(scope: str, path: str) -> MemoryScopeView:
-    store_path = Path(path)
-    if not store_path.exists():
-        return MemoryScopeView(
-            scope=scope,
-            path=str(store_path),
-            exists=False,
-            valid=False,
-            error="store not found",
-            total=0,
-            active=0,
-            archived=0,
-            latest_updated_at=None,
-            items=[],
-        )
-
-    try:
-        raw = store_path.read_text(encoding="utf-8")
-        payload = json.loads(raw)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return MemoryScopeView(
-            scope=scope,
-            path=str(store_path),
-            exists=True,
-            valid=False,
-            error="store unreadable",
-            total=0,
-            active=0,
-            archived=0,
-            latest_updated_at=None,
-            items=[],
-        )
-
-    items_raw = payload.get("items") if isinstance(payload, dict) else None
-    if not isinstance(items_raw, list):
-        return MemoryScopeView(
-            scope=scope,
-            path=str(store_path),
-            exists=True,
-            valid=False,
-            error="invalid schema: items is not a list",
-            total=0,
-            active=0,
-            archived=0,
-            latest_updated_at=None,
-            items=[],
-        )
-
-    items: list[MemoryItemView] = []
-    for raw_item in items_raw:
-        if not isinstance(raw_item, dict):
-            continue
-        item_id = _trim(raw_item.get("id"), max_chars=64)
-        section = _trim(raw_item.get("section"), max_chars=80)
-        content = _trim(raw_item.get("content"), max_chars=_MAX_CONTENT_PREVIEW_CHARS)
-        status = _trim(raw_item.get("status"), max_chars=16).lower()
-        if not item_id or not section or not content or status not in _ALLOWED_STATUS:
-            continue
-        updated_at = _trim(raw_item.get("updated_at"), max_chars=64)
-        tier = _normalize_tier(raw_item.get("tier"))
-        score = _normalize_score(raw_item.get("score"))
-        reason_source = (
-            raw_item.get("reason")
-            if raw_item.get("reason") is not None
-            else raw_item.get("score_reason")
-        )
-        reason = _trim(reason_source, max_chars=160)
-        last_scored_at = _trim(raw_item.get("last_scored_at"), max_chars=64)
-        if not last_scored_at:
-            last_scored_at = updated_at
-        items.append(
-            MemoryItemView(
-                scope=scope,
-                item_id=item_id,
-                section=section,
-                status=status,
-                content=content,
-                tier=tier,
-                score=score,
-                reason=reason,
-                last_scored_at=last_scored_at,
-                updated_at=updated_at,
-            )
-        )
-
-    active = sum(1 for item in items if item.status == "active")
-    archived = sum(1 for item in items if item.status == "archived")
-    latest_updated_at = None
-    for value in sorted(
-        (item.updated_at for item in items if item.updated_at),
-        reverse=True,
-    ):
-        latest_updated_at = value
-        break
-
-    return MemoryScopeView(
-        scope=scope,
-        path=str(store_path),
-        exists=True,
-        valid=True,
-        error=None,
-        total=len(items),
-        active=active,
-        archived=archived,
-        latest_updated_at=latest_updated_at,
-        items=items,
-    )
-
-
-def load_memory_snapshot(
-    memory_store_paths: dict[str, str],
-) -> dict[str, MemoryScopeView]:
-    """Load user/project memory snapshots for viewer rendering."""
-    snapshots: dict[str, MemoryScopeView] = {}
-    for scope in ("user", "project"):
-        raw_path = memory_store_paths.get(scope)
-        if isinstance(raw_path, str) and raw_path.strip():
-            snapshots[scope] = _load_scope_snapshot(scope, raw_path)
-    return snapshots
-
-
-def _delete_memory_item(store_path: str, item_id: str) -> None:
-    """Remove item with ``item_id`` from the store at ``store_path`` atomically."""
-    path = Path(store_path)
-    raw = path.read_text(encoding="utf-8")
-    payload = json.loads(raw)
-    items = payload.get("items")
-    if not isinstance(items, list):
-        msg = "invalid store schema: items is not a list"
-        raise ValueError(msg)
-    payload["items"] = [
-        item
-        for item in items
-        if not (isinstance(item, dict) and item.get("id") == item_id)
-    ]
-    content = json.dumps(payload, ensure_ascii=False, indent=2)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        dir=str(path.parent),
-        delete=False,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-    ) as tmp:
-        tmp.write(content)
-        tmp.flush()
-        os.fsync(tmp.fileno())
-        tmp_name = tmp.name
-    os.replace(tmp_name, path)
-
-
-def _apply_sort(items: list[MemoryItemView], sort_mode: str) -> list[MemoryItemView]:
-    """Sort items keeping active before archived, then apply the chosen sort mode."""
-    active = [i for i in items if i.status == "active"]
-    archived = [i for i in items if i.status == "archived"]
-
-    def _key_score_asc(i: MemoryItemView) -> tuple:
-        return (i.score, _TIER_RANK.get(i.tier, 1), i.section.casefold(), i.item_id)
-
-    def _key_last_scored(i: MemoryItemView) -> tuple:
-        return (i.last_scored_at or "", i.section.casefold(), i.item_id)
-
-    def _key_score_desc(i: MemoryItemView) -> tuple:
-        return (-i.score, _TIER_RANK.get(i.tier, 1), i.section.casefold(), i.item_id)
-
-    if sort_mode == "score_asc":
-        key, reverse = _key_score_asc, False
-    elif sort_mode == "last_scored_desc":
-        key, reverse = _key_last_scored, True
-    elif sort_mode == "last_scored_asc":
-        key, reverse = _key_last_scored, False
-    else:  # score_desc (default)
-        key, reverse = _key_score_desc, False
-
-    return sorted(active, key=key, reverse=reverse) + sorted(
-        archived, key=key, reverse=reverse
-    )
 
 
 class MemoryViewerScreen(ModalScreen[None]):
@@ -312,47 +67,7 @@ class MemoryViewerScreen(ModalScreen[None]):
         Binding("escape", "cancel", "Close", show=False, priority=True),
     ]
 
-    CSS = """
-    MemoryViewerScreen {
-        align: left top;
-    }
-
-    MemoryViewerScreen > Vertical {
-        width: 100%;
-        height: 100%;
-        background: $surface;
-        border: none;
-        padding: 1 2;
-    }
-
-    MemoryViewerScreen .memory-title {
-        text-style: bold;
-        color: $primary;
-        text-align: center;
-        margin-bottom: 1;
-    }
-
-    MemoryViewerScreen .memory-summary {
-        color: $text-muted;
-        margin-bottom: 1;
-    }
-
-    MemoryViewerScreen .memory-list {
-        height: 1fr;
-        min-height: 8;
-        background: $background;
-        scrollbar-gutter: stable;
-        padding: 0 1;
-    }
-
-    MemoryViewerScreen .memory-help {
-        height: 1;
-        color: $text-muted;
-        text-style: italic;
-        margin-top: 1;
-        text-align: center;
-    }
-    """
+    CSS = MEMORY_VIEWER_CSS
 
     def __init__(self, *, memory_store_paths: dict[str, str]) -> None:
         super().__init__()
@@ -421,88 +136,7 @@ class MemoryViewerScreen(ModalScreen[None]):
             lines.append(t("memory.viewer.no_scope_configured"))
             self._visible_items = []
         else:
-            latest = _iso_to_local(view.latest_updated_at) or "-"
-            summary.update(
-                t("memory.viewer.summary").format(
-                    valid=valid_scopes,
-                    total=total_scopes,
-                    path=view.path,
-                    items_total=view.total,
-                    active=view.active,
-                    archived=view.archived,
-                    latest=latest,
-                )
-            )
-            lines.append(
-                f"[bold #5DADE2]{escape(t('memory.viewer.label.scope'))}[/bold #5DADE2]: "
-                f"{escape(view.scope)}"
-            )
-            lines.append(
-                f"[bold #5DADE2]{escape(t('memory.viewer.label.path'))}[/bold #5DADE2]: "
-                f"{escape(view.path)}"
-            )
-            if not view.exists:
-                lines.append(
-                    f"[bold #F5B041]{escape(t('memory.viewer.label.status'))}[/bold #F5B041]: "
-                    f"{escape(t('memory.viewer.status.missing'))}"
-                )
-                self._visible_items = []
-            elif not view.valid:
-                err = escape(view.error or "unknown error")
-                lines.append(
-                    f"[bold #EC7063]{escape(t('memory.viewer.label.status'))}[/bold #EC7063]: "
-                    f"{escape(t('memory.viewer.status.invalid').format(error=err))}"
-                )
-                self._visible_items = []
-            else:
-                lines.append(
-                    f"[bold #58D68D]{escape(t('memory.viewer.label.status'))}[/bold #58D68D]: "
-                    f"{escape(t('memory.viewer.status.ok'))}"
-                )
-                sorted_items = _apply_sort(view.items, self._sort_mode)
-                visible: list[MemoryItemView] = [
-                    item
-                    for item in sorted_items
-                    if item.status == "active" or self._show_archived
-                ]
-                self._visible_items = visible
-                if self._selected_index >= len(visible):
-                    self._selected_index = max(0, len(visible) - 1)
-
-                if not visible:
-                    lines.append(f"  - {t('memory.viewer.no_visible_items')}")
-                else:
-                    for idx, item in enumerate(visible):
-                        is_selected = idx == self._selected_index
-                        cursor = "▶ " if is_selected else "  "
-                        sel_open = "[reverse]" if is_selected else ""
-                        sel_close = "[/reverse]" if is_selected else ""
-                        lines.append(
-                            f"{cursor}{sel_open}"
-                            f"[bold #AF7AC5]{escape(t('memory.viewer.label.status'))}[/bold #AF7AC5]="
-                            f"{_format_item_status(item.status)}  "
-                            f"[bold #AF7AC5]{escape(t('memory.viewer.label.id'))}[/bold #AF7AC5]="
-                            f"{escape(item.item_id)}  "
-                            f"[bold #AF7AC5]{escape(t('memory.viewer.label.section'))}[/bold #AF7AC5]="
-                            f"{escape(item.section)}  "
-                            f"[bold #AF7AC5]{escape(t('memory.viewer.label.tier'))}[/bold #AF7AC5]="
-                            f"{escape(item.tier)}  "
-                            f"[bold #AF7AC5]{escape(t('memory.viewer.label.score'))}[/bold #AF7AC5]="
-                            f"{item.score}{sel_close}"
-                        )
-                        lines.append(
-                            f"    [bold #AF7AC5]{escape(t('memory.viewer.label.content'))}[/bold #AF7AC5]="
-                            f"{escape(item.content)}"
-                        )
-                        if item.reason:
-                            lines.append(
-                                f"    [bold #AF7AC5]{escape(t('memory.viewer.label.reason'))}[/bold #AF7AC5]="
-                                f"{escape(item.reason)}"
-                            )
-                        lines.append(
-                            f"    [bold #AF7AC5]{escape(t('memory.viewer.label.last_scored_at'))}[/bold #AF7AC5]="
-                            f"{escape(item.last_scored_at or '-')}"
-                        )
+            self._append_scope_lines(summary, lines, view, valid_scopes, total_scopes)
 
         content = (
             "\n".join(lines).strip()
@@ -512,7 +146,91 @@ class MemoryViewerScreen(ModalScreen[None]):
         children = list(container.children)
         if children and isinstance(children[0], Static):
             children[0].update(_markup_text([content]))
+        self._update_help()
 
+    def _append_scope_lines(
+        self,
+        summary: Static,
+        lines: list[str],
+        view: MemoryScopeView,
+        valid_scopes: int,
+        total_scopes: int,
+    ) -> None:
+        latest = _iso_to_local(view.latest_updated_at) or "-"
+        summary.update(
+            t("memory.viewer.summary").format(
+                valid=valid_scopes,
+                total=total_scopes,
+                path=view.path,
+                items_total=view.total,
+                active=view.active,
+                archived=view.archived,
+                latest=latest,
+            )
+        )
+        lines.extend(
+            [
+                _label_line("scope", view.scope, "#5DADE2"),
+                _label_line("path", view.path, "#5DADE2"),
+            ]
+        )
+        if not view.exists:
+            lines.append(
+                _label_line("status", t("memory.viewer.status.missing"), "#F5B041")
+            )
+            self._visible_items = []
+        elif not view.valid:
+            err = escape(view.error or "unknown error")
+            lines.append(
+                _label_line(
+                    "status",
+                    t("memory.viewer.status.invalid").format(error=err),
+                    "#EC7063",
+                )
+            )
+            self._visible_items = []
+        else:
+            lines.append(_label_line("status", t("memory.viewer.status.ok"), "#58D68D"))
+            self._append_item_lines(lines, view)
+
+    def _append_item_lines(self, lines: list[str], view: MemoryScopeView) -> None:
+        sorted_items = _apply_sort(view.items, self._sort_mode)
+        visible = [
+            item
+            for item in sorted_items
+            if item.status == "active" or self._show_archived
+        ]
+        self._visible_items = visible
+        if self._selected_index >= len(visible):
+            self._selected_index = max(0, len(visible) - 1)
+        if not visible:
+            lines.append(f"  - {t('memory.viewer.no_visible_items')}")
+            return
+        for idx, item in enumerate(visible):
+            self._append_one_item(lines, item, selected=idx == self._selected_index)
+
+    def _append_one_item(
+        self, lines: list[str], item: MemoryItemView, *, selected: bool
+    ) -> None:
+        cursor = "▶ " if selected else "  "
+        sel_open = "[reverse]" if selected else ""
+        sel_close = "[/reverse]" if selected else ""
+        lines.append(
+            f"{cursor}{sel_open}"
+            f"{_inline_label('status')}={_format_item_status(item.status)}  "
+            f"{_inline_label('id')}={escape(item.item_id)}  "
+            f"{_inline_label('section')}={escape(item.section)}  "
+            f"{_inline_label('tier')}={escape(item.tier)}  "
+            f"{_inline_label('score')}={item.score}{sel_close}"
+        )
+        lines.append(f"    {_inline_label('content')}={escape(item.content)}")
+        if item.reason:
+            lines.append(f"    {_inline_label('reason')}={escape(item.reason)}")
+        lines.append(
+            f"    {_inline_label('last_scored_at')}={escape(item.last_scored_at or '-')}"
+        )
+
+    def _update_help(self) -> None:
         help_widget = self.query_one(".memory-help", Static)
         if self._status_message:
             help_widget.update(self._status_message)
@@ -562,7 +280,6 @@ class MemoryViewerScreen(ModalScreen[None]):
             return
 
         item = self._visible_items[self._selected_index]
-
         if self._pending_delete_id == item.item_id:
             store_path = self._memory_store_paths.get(item.scope, "")
             try:
@@ -570,7 +287,6 @@ class MemoryViewerScreen(ModalScreen[None]):
                 self._status_message = t("memory.viewer.delete.success").format(
                     item_id=item.item_id
                 )
-                # Adjust selection so it doesn't go out of bounds after delete.
                 self._selected_index = max(0, self._selected_index - 1)
             except Exception as exc:  # noqa: BLE001
                 self._status_message = t("memory.viewer.delete.error").format(error=exc)
@@ -579,7 +295,6 @@ class MemoryViewerScreen(ModalScreen[None]):
         else:
             self._pending_delete_id = item.item_id
             self._status_message = ""
-
         self._render_snapshot()
 
     def action_show_user_scope(self) -> None:
@@ -613,8 +328,25 @@ class MemoryViewerScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
+def _inline_label(label_key: str) -> str:
+    return f"[bold #AF7AC5]{escape(t(f'memory.viewer.label.{label_key}'))}[/bold #AF7AC5]"
+
+
+def _label_line(label_key: str, value: str, color: str) -> str:
+    label = escape(t(f"memory.viewer.label.{label_key}"))
+    return f"[bold {color}]{label}[/bold {color}]: {escape(value)}"
+
+
 __all__ = [
-    "MemoryViewerScreen",
+    "MemoryItemView",
     "MemoryScopeView",
+    "MemoryViewerScreen",
+    "_apply_sort",
+    "_delete_memory_item",
+    "_format_item_status",
+    "_iso_to_local",
+    "_normalize_score",
+    "_normalize_tier",
+    "_trim",
     "load_memory_snapshot",
 ]

@@ -68,7 +68,7 @@ async def ensure_planner_agent(app: Any) -> Any | None:  # noqa: ANN401
 
         from invincat_cli.agent import create_cli_agent
         from invincat_cli.config import settings
-        from invincat_cli.plan_agent import (
+        from invincat_cli.middleware.plan_agent import (
             PLANNER_ALLOWED_TOOLS,
             PLANNER_APPROVE_PLAN_SYSTEM_PROMPT,
             PLANNER_SYSTEM_PROMPT,
@@ -191,7 +191,7 @@ async def get_thread_state_values_for_agent(
 
 async def after_planner_turn(app: Any) -> None:  # noqa: ANN401
     """Check planner turn result and drive plan approval flow."""
-    from invincat_cli.plan_agent import extract_todos_from_message
+    from invincat_cli.middleware.plan_agent import extract_todos_from_message
 
     if not app._planner_agent or not app._planner_thread_id:
         return
@@ -263,7 +263,7 @@ async def process_planner_todos_approval(
 
 async def maybe_approve_current_planner_todos(app: Any) -> bool:  # noqa: ANN401
     """Best-effort immediate approval when planner already has todo state."""
-    from invincat_cli.plan_agent import extract_todos_from_message
+    from invincat_cli.middleware.plan_agent import extract_todos_from_message
 
     if not app._planner_agent or not app._planner_thread_id:
         return False

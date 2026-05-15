@@ -1,6 +1,6 @@
 """Tests for lightweight formatting helpers."""
 
-from invincat_cli.formatting import format_duration
+from invincat_cli.presentation.formatting import format_duration
 
 
 def test_format_duration_seconds_without_decimal_for_whole_values() -> None:

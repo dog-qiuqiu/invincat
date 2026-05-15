@@ -44,7 +44,13 @@ jobs:
           pip install -e ".[test]"
 
       - name: Run tests
-        run: pytest -v
+        run: pytest -v --cov=invincat_cli --cov-report=term --cov-report=xml:coverage.xml
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
 
   build:
     runs-on: ubuntu-latest

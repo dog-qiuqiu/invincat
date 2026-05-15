@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
-from invincat_cli.plan_agent import PLANNER_ALLOWED_TOOLS
+from invincat_cli.middleware.plan_agent import PLANNER_ALLOWED_TOOLS
 
 PLAN_MODE_ALLOWED_INTERRUPT_TOOLS: frozenset[str] = frozenset(PLANNER_ALLOWED_TOOLS)
 """Interrupt-gated tools allowed to proceed in `/plan` mode."""

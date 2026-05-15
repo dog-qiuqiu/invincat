@@ -9,8 +9,8 @@ from typing import Any
 
 from langchain_core.messages import SystemMessage
 
-import invincat_cli.auto_memory as auto_memory_module
-from invincat_cli.auto_memory import RefreshableMemoryMiddleware
+import invincat_cli.middleware.auto_memory as auto_memory_module
+from invincat_cli.middleware.auto_memory import RefreshableMemoryMiddleware
 
 
 @dataclass
