@@ -2,6 +2,7 @@
 
 [English README](../README.md) | [文档索引](./README.md)
 
+[![CI](https://github.com/dog-qiuqiu/invincat/actions/workflows/ci.yml/badge.svg)](https://github.com/dog-qiuqiu/invincat/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/dog-qiuqiu/invincat/branch/main/graph/badge.svg)](https://codecov.io/gh/dog-qiuqiu/invincat)
 
 ![](../data/banner_cn.png)
