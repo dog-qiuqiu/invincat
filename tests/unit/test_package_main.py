@@ -16,3 +16,14 @@ def test_module_entrypoint_calls_cli_main(monkeypatch) -> None:
     runpy.run_module("invincat_cli.__main__", run_name="__main__")
 
     assert calls == ["called"]
+
+
+def test_main_package_entrypoint_calls_cli_main(monkeypatch) -> None:
+    import invincat_cli.main as main_module
+
+    calls: list[str] = []
+    monkeypatch.setattr(main_module, "cli_main", lambda: calls.append("called"))
+
+    runpy.run_module("invincat_cli.main", run_name="__main__")
+
+    assert calls == ["called"]
