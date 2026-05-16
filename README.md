@@ -8,6 +8,28 @@
 
 ![](data/banner_en.png)
 
+Invincat is a terminal-native AI coding assistant for local repositories. It can inspect and edit files, run shell commands with approval, use web/MCP tools, keep long-term memory, plan before execution, run scheduled tasks, and bridge remote WeCom messages into a project session.
+
+## Features
+
+- Work directly from your project directory in a terminal UI.
+- Read, edit, and create files with approval-gated tool execution.
+- Run shell commands under configurable safety controls.
+- Use `/plan` to review and approve an execution plan before implementation.
+- Keep user and project memory across sessions.
+- Create recurring or one-shot scheduled tasks in natural language.
+- Extend capabilities through MCP tools, skills, and WeCom bot daemon integration.
+
+## Quick Start
+
+```bash
+pip install invincat-cli
+cd /path/to/your/project
+invincat-cli
+```
+
+On first launch, run `/model` to configure a provider and model.
+
 ## Installation
 
 Requires Python 3.11+.
@@ -68,6 +90,23 @@ Then register a model in `/model` with:
 
 Invincat supports a primary model for normal work and an optional memory model for post-turn memory extraction. If no memory model is configured, memory extraction uses the current primary model.
 
+## Basic Commands
+
+| Command | Description |
+| --- | --- |
+| `/model` | Configure and switch models. |
+| `/plan` | Enter plan-first mode and approve a checklist before execution. |
+| `/memory` | Open the memory manager. |
+| `/schedule` | Open the scheduled task manager. |
+| `/mcp` | View connected MCP servers and tools. |
+| `/threads` | Browse and resume conversation threads. |
+| `/help` | Show command help. |
+
+## Documentation
+
+- [Architecture guide](doc/ARCHITECTURE_EN.md)
+- [中文架构说明](doc/ARCHITECTURE.md)
+
 ## WeCom Bot Daemon
 
 Configure a robot on the enterprise WeChat side to obtain the "Bot ID" and "Secret":
@@ -102,3 +141,27 @@ nohup invincat-cli wecombot > wecombot.nohup.log 2>&1 &
 ```
 
 Stop it by stopping the foreground process or killing the background process.
+
+## Development
+
+Install development dependencies:
+
+```bash
+pip install -e ".[dev]"
+```
+
+Run tests:
+
+```bash
+pytest
+```
+
+Run lint checks:
+
+```bash
+ruff check invincat_cli tests
+```
+
+## License
+
+MIT License.
