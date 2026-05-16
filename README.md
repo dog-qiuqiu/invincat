@@ -1,6 +1,4 @@
-# Invincat CLI
-
-[Architecture](doc/ARCHITECTURE_EN.md) | [中文架构](doc/ARCHITECTURE.md)
+# Invincat
 
 [![CI](https://github.com/dog-qiuqiu/invincat/actions/workflows/ci.yml/badge.svg)](https://github.com/dog-qiuqiu/invincat/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/dog-qiuqiu/invincat/branch/main/graph/badge.svg)](https://codecov.io/gh/dog-qiuqiu/invincat)
@@ -9,8 +7,6 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ![](data/banner_en.png)
-
-A Python-based terminal AI programming assistant — collaborate with AI directly in your project directory: read/write files, execute commands, browse the web, and maintain memory across sessions.
 
 ## Installation
 
@@ -71,3 +67,34 @@ Then register a model in `/model` with:
 | BASE URL | `https://api.deepseek.com` |
 
 Invincat supports a primary model for normal work and an optional memory model for post-turn memory extraction. If no memory model is configured, memory extraction uses the current primary model.
+
+## WeCom Bot Daemon
+
+Invincat can run a foreground WeCom bot daemon for project-scoped remote turns and scheduled-task delivery.
+
+Configure the bot credentials first:
+
+```bash
+export WECOM_BOT_ID="your_bot_id"
+export WECOM_BOT_SECRET="your_bot_secret"
+```
+
+`WECOM_WS_URL` is optional and defaults to `wss://openws.work.weixin.qq.com`.
+Set it only when you need to override the WeCom websocket endpoint.
+
+Start the daemon from the project directory:
+
+```bash
+cd /path/to/your/project
+invincat-cli wecombot
+```
+
+For a lightweight background process, run it with `nohup`:
+
+```bash
+cd /path/to/your/project
+mkdir -p .invincat
+nohup invincat-cli wecombot > wecombot.nohup.log 2>&1 &
+```
+
+Stop it by stopping the foreground process or killing the background process.
