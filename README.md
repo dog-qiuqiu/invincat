@@ -102,11 +102,6 @@ Invincat supports a primary model for normal work and an optional memory model f
 | `/threads` | Browse and resume conversation threads. |
 | `/help` | Show command help. |
 
-## Documentation
-
-- [Architecture guide](doc/ARCHITECTURE_EN.md)
-- [中文架构说明](doc/ARCHITECTURE.md)
-
 ## WeCom Bot Daemon
 
 Configure a robot on the enterprise WeChat side to obtain the "Bot ID" and "Secret":
@@ -141,27 +136,3 @@ nohup invincat-cli wecombot > wecombot.nohup.log 2>&1 &
 ```
 
 Stop it by stopping the foreground process or killing the background process.
-
-## Development
-
-Install development dependencies:
-
-```bash
-pip install -e ".[dev]"
-```
-
-Run tests:
-
-```bash
-pytest
-```
-
-Run lint checks:
-
-```bash
-ruff check invincat_cli tests
-```
-
-## License
-
-MIT License.
