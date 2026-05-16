@@ -74,6 +74,13 @@ from invincat_cli.agent.prompt import (  # noqa: E402, F401
     build_model_identity_section,
     get_system_prompt,
 )
+from invincat_cli.agent.subagents import (  # noqa: E402, F401
+    RESEARCHER_DESCRIPTION,
+    RESEARCHER_SUBAGENT_NAME,
+    RESEARCHER_SYSTEM_PROMPT,
+    build_builtin_subagents,
+    build_researcher_subagent,
+)
 from invincat_cli.agent.tool_descriptions import (  # noqa: E402, F401
     _add_interrupt_on,
     _format_edit_file_description,
@@ -233,6 +240,11 @@ def create_cli_agent(
                 "available; falling back to standard HITL interrupts"
             )
 
+    configured_subagent_names = {
+        str(spec.get("name", "")).strip()
+        for spec in (async_subagents or [])
+        if isinstance(spec, dict)
+    }
     runtime_subagents: list[SubAgent] = []
     if restrictive_shell_allow_list is not None:
         from deepagents.middleware.subagents import (
@@ -242,18 +254,34 @@ def create_cli_agent(
             SubAgent as RuntimeSubAgent,
         )
 
-        general_purpose_subagent: RuntimeSubAgent = {
-            "name": GENERAL_PURPOSE_SUBAGENT["name"],
-            "description": GENERAL_PURPOSE_SUBAGENT["description"],
-            "system_prompt": GENERAL_PURPOSE_SUBAGENT["system_prompt"],
-            "middleware": [
-                ShellAllowListMiddleware(
-                    restrictive_shell_allow_list,
-                    cwd=effective_cwd,
-                )
-            ],
-        }
-        runtime_subagents.append(general_purpose_subagent)
+        if GENERAL_PURPOSE_SUBAGENT["name"] not in configured_subagent_names:
+            general_purpose_subagent: RuntimeSubAgent = {
+                "name": GENERAL_PURPOSE_SUBAGENT["name"],
+                "description": GENERAL_PURPOSE_SUBAGENT["description"],
+                "system_prompt": GENERAL_PURPOSE_SUBAGENT["system_prompt"],
+                "middleware": [
+                    ShellAllowListMiddleware(
+                        restrictive_shell_allow_list,
+                        cwd=effective_cwd,
+                    )
+                ],
+            }
+            runtime_subagents.append(general_purpose_subagent)
+
+    researcher_middleware: list[AgentMiddleware] = []
+    if restrictive_shell_allow_list is not None:
+        researcher_middleware.append(
+            ShellAllowListMiddleware(restrictive_shell_allow_list, cwd=effective_cwd)
+        )
+    runtime_subagents.extend(
+        build_builtin_subagents(
+            existing_names={
+                *configured_subagent_names,
+                *(str(spec.get("name", "")).strip() for spec in runtime_subagents),
+            },
+            researcher_middleware=researcher_middleware,
+        )
+    )
 
     # Build middleware stack based on enabled features
     agent_middleware = []
