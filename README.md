@@ -70,6 +70,10 @@ Invincat supports a primary model for normal work and an optional memory model f
 
 ## WeCom Bot Daemon
 
+Configure a robot on the enterprise WeChat side to obtain the "Bot ID" and "Secret":
+
+https://developer.work.weixin.qq.com/document/path/101463
+
 Invincat can run a foreground WeCom bot daemon for project-scoped remote turns and scheduled-task delivery.
 
 Configure the bot credentials first:
