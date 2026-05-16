@@ -11,7 +11,6 @@ import sys
 from pathlib import Path
 
 from office.soffice import get_soffice_env
-
 from openpyxl import load_workbook
 
 MACRO_DIR_MACOS = "~/Library/Application Support/LibreOffice/4/user/basic/Standard"

@@ -14,6 +14,7 @@ Usage: python extract_form_structure.py <input.pdf> <output.json>
 
 import json
 import sys
+
 import pdfplumber
 
 
@@ -102,7 +103,7 @@ def main():
     with open(output_path, "w") as f:
         json.dump(structure, f, indent=2)
 
-    print(f"Found:")
+    print("Found:")
     print(f"  - {len(structure['pages'])} pages")
     print(f"  - {len(structure['labels'])} text labels")
     print(f"  - {len(structure['lines'])} horizontal lines")

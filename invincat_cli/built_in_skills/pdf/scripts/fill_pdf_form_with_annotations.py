@@ -5,8 +5,6 @@ from pypdf import PdfReader, PdfWriter
 from pypdf.annotations import FreeText
 
 
-
-
 def transform_from_image_coords(bbox, image_width, image_height, pdf_width, pdf_height):
     x_scale = pdf_width / image_width
     y_scale = pdf_height / image_height
