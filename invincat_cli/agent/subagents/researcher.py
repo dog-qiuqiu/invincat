@@ -1,8 +1,8 @@
-"""Built-in subagent specifications for the CLI agent."""
+"""Built-in researcher subagent specification."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -52,17 +52,6 @@ Final response format:
 """System prompt for the built-in researcher subagent."""
 
 
-def _subagent_name(spec: object) -> str:
-    if isinstance(spec, dict):
-        return str(spec.get("name", "")).strip()
-    return ""
-
-
-def subagent_names(specs: Iterable[object]) -> set[str]:
-    """Return normalized names from subagent-like specs."""
-    return {name for spec in specs if (name := _subagent_name(spec))}
-
-
 def build_researcher_subagent(
     *,
     middleware: Sequence[AgentMiddleware] | None = None,
@@ -76,18 +65,3 @@ def build_researcher_subagent(
     if middleware:
         spec["middleware"] = list(middleware)
     return spec  # type: ignore[return-value]
-
-
-def build_builtin_subagents(
-    *,
-    existing_names: Iterable[str] = (),
-    researcher_middleware: Sequence[AgentMiddleware] | None = None,
-) -> list[SubAgent]:
-    """Build built-in subagents that are not already provided by the user."""
-    names = {name for name in existing_names if name}
-    subagents: list[SubAgent] = []
-    if RESEARCHER_SUBAGENT_NAME not in names:
-        subagents.append(
-            build_researcher_subagent(middleware=researcher_middleware)
-        )
-    return subagents
