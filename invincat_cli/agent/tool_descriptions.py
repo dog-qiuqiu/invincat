@@ -44,6 +44,56 @@ def _format_edit_file_description(
     return f"Action: Replace text ({scope})"
 
 
+def _format_mkdir_description(
+    tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
+) -> str:
+    """Format mkdir tool call for approval prompt."""
+    args = tool_call["args"]
+    path = args.get("path", "unknown")
+    return f"Action: Create directory\nPath: {path}"
+
+
+def _format_move_file_description(
+    tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
+) -> str:
+    """Format move_file tool call for approval prompt."""
+    args = tool_call["args"]
+    source = args.get("source", "unknown")
+    destination = args.get("destination", "unknown")
+    overwrite = bool(args.get("overwrite", False))
+    return (
+        "Action: Move file\n"
+        f"Source: {source}\n"
+        f"Destination: {destination}\n"
+        f"Overwrite: {overwrite}"
+    )
+
+
+def _format_copy_file_description(
+    tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
+) -> str:
+    """Format copy_file tool call for approval prompt."""
+    args = tool_call["args"]
+    source = args.get("source", "unknown")
+    destination = args.get("destination", "unknown")
+    overwrite = bool(args.get("overwrite", False))
+    return (
+        "Action: Copy file\n"
+        f"Source: {source}\n"
+        f"Destination: {destination}\n"
+        f"Overwrite: {overwrite}"
+    )
+
+
+def _format_delete_file_description(
+    tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
+) -> str:
+    """Format delete_file tool call for approval prompt."""
+    args = tool_call["args"]
+    path = args.get("path", "unknown")
+    return f"Action: Move file to project trash\nPath: {path}"
+
+
 def _format_web_search_description(
     tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
 ) -> str:
@@ -164,6 +214,22 @@ def _add_interrupt_on(
         "allowed_decisions": ["approve", "reject"],
         "description": _format_edit_file_description,  # type: ignore[typeddict-item]
     }
+    mkdir_interrupt_config: InterruptOnConfig = {
+        "allowed_decisions": ["approve", "reject"],
+        "description": _format_mkdir_description,  # type: ignore[typeddict-item]
+    }
+    move_file_interrupt_config: InterruptOnConfig = {
+        "allowed_decisions": ["approve", "reject"],
+        "description": _format_move_file_description,  # type: ignore[typeddict-item]
+    }
+    copy_file_interrupt_config: InterruptOnConfig = {
+        "allowed_decisions": ["approve", "reject"],
+        "description": _format_copy_file_description,  # type: ignore[typeddict-item]
+    }
+    delete_file_interrupt_config: InterruptOnConfig = {
+        "allowed_decisions": ["approve", "reject"],
+        "description": _format_delete_file_description,  # type: ignore[typeddict-item]
+    }
     web_search_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_web_search_description,  # type: ignore[typeddict-item]
@@ -185,6 +251,10 @@ def _add_interrupt_on(
         "execute": execute_interrupt_config,
         "write_file": write_file_interrupt_config,
         "edit_file": edit_file_interrupt_config,
+        "mkdir": mkdir_interrupt_config,
+        "move_file": move_file_interrupt_config,
+        "copy_file": copy_file_interrupt_config,
+        "delete_file": delete_file_interrupt_config,
         "web_search": web_search_interrupt_config,
         "fetch_url": fetch_url_interrupt_config,
         "task": task_interrupt_config,

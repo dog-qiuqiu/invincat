@@ -154,6 +154,7 @@ command_handlers -> plan_handlers -> plan_mode.runtime/policy/handoff
 | `middleware/approve_plan.py` | `approve_plan` 工具和 interrupt 协议。 |
 | `middleware/ask_user.py` | `ask_user` 工具和问题交互协议。 |
 | `middleware/auto_memory.py` | 自动记忆刷新 middleware。 |
+| `middleware/file_management.py` | 项目内安全文件管理工具，如 `file_info`、`mkdir`、`move_file`、`copy_file`、`delete_file`。 |
 | `middleware/micro_compact.py` | 规则化压缩旧消息/工具结果，降低上下文占用。 |
 | `middleware/plan_agent.py` | planner agent 可见工具过滤、运行时 allow-list、旧 API 兼容导出。 |
 | `middleware/token_state.py` | 将 token 状态放入 graph state。 |

@@ -154,6 +154,7 @@ command_handlers -> plan_handlers -> plan_mode.runtime/policy/handoff
 | `middleware/approve_plan.py` | `approve_plan` tool and interrupt protocol. |
 | `middleware/ask_user.py` | `ask_user` tool and question interaction protocol. |
 | `middleware/auto_memory.py` | Automatic memory refresh middleware. |
+| `middleware/file_management.py` | Safe project-scoped file management tools such as `file_info`, `mkdir`, `move_file`, `copy_file`, and `delete_file`. |
 | `middleware/micro_compact.py` | Rule-based compaction of old messages/tool results to reduce context usage. |
 | `middleware/plan_agent.py` | Planner-agent visible tool filtering, runtime allow-listing, and legacy API compatibility exports. |
 | `middleware/token_state.py` | Stores token state in graph state. |

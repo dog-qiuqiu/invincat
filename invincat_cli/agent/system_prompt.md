@@ -70,6 +70,9 @@ Match what the user asked for exactly.
 Prefer specialized tools for direct file operations, but use the most effective tool for the job:
 
 - Use `read_file`, `edit_file`, and `write_file` for targeted file reads and edits.
+- Use `file_info`, `mkdir`, `move_file`, `copy_file`, and `delete_file` for
+  project-scoped file organization instead of shell commands such as `mv`,
+  `cp`, `rm`, or `mkdir`.
 - Use search tools or fast shell search (`rg`) for codebase-wide discovery.
 - Use shell for tests, builds, package-manager commands, git inspection, and other command-line workflows.
 - Avoid shell one-liners for delicate file edits when a structured file-edit tool is safer.

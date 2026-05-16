@@ -13,9 +13,13 @@ from invincat_cli.agent import (
     MemoryFileGuardMiddleware,
     ShellAllowListMiddleware,
     _add_interrupt_on,
+    _format_copy_file_description,
+    _format_delete_file_description,
     _format_edit_file_description,
     _format_execute_description,
     _format_fetch_url_description,
+    _format_mkdir_description,
+    _format_move_file_description,
     _format_task_description,
     _format_web_search_description,
     _format_write_file_description,
@@ -323,6 +327,10 @@ def test_add_interrupt_on_includes_mcp_and_compact(
         "execute",
         "write_file",
         "edit_file",
+        "mkdir",
+        "move_file",
+        "copy_file",
+        "delete_file",
         "web_search",
         "fetch_url",
         "task",
@@ -334,6 +342,35 @@ def test_add_interrupt_on_includes_mcp_and_compact(
 
     monkeypatch.setattr(agent_mod, "REQUIRE_COMPACT_TOOL_APPROVAL", False)
     assert "compact_conversation" not in _add_interrupt_on()
+
+
+def test_file_management_approval_descriptions() -> None:
+    assert "Create directory" in _format_mkdir_description(
+        _tool_call("mkdir", {"path": "docs/archive"}),
+        {},
+        None,
+    )
+    assert "Source: a.md" in _format_move_file_description(
+        _tool_call(
+            "move_file",
+            {"source": "a.md", "destination": "docs/a.md", "overwrite": True},
+        ),
+        {},
+        None,
+    )
+    assert "Overwrite: True" in _format_copy_file_description(
+        _tool_call(
+            "copy_file",
+            {"source": "a.md", "destination": "docs/a.md", "overwrite": True},
+        ),
+        {},
+        None,
+    )
+    assert "Move file to project trash" in _format_delete_file_description(
+        _tool_call("delete_file", {"path": "old.md"}),
+        {},
+        None,
+    )
 
 
 class _FakeConsole:
@@ -808,8 +845,16 @@ def test_create_cli_agent_filesystem_and_sandbox_modes(
     assert local_backend.default.kwargs["root_dir"] == tmp_path
     assert events["created_agents"][0]["system_prompt"] == "custom prompt"
     assert events["created_agents"][0]["interrupt_on"] == {}
+    local_middleware = [
+        type(item).__name__ for item in events["created_agents"][0]["middleware"]
+    ]
+    assert "FileManagementMiddleware" in local_middleware
     assert sandbox_backend.default is sandbox
     assert sandbox_backend.routes == {}
+    sandbox_middleware = [
+        type(item).__name__ for item in events["created_agents"][1]["middleware"]
+    ]
+    assert "FileManagementMiddleware" not in sandbox_middleware
     assert events["created_agents"][1]["interrupt_on"]["execute"][
         "allowed_decisions"
     ] == [

@@ -87,9 +87,13 @@ from invincat_cli.agent.subagents import (  # noqa: E402, F401
 )
 from invincat_cli.agent.tool_descriptions import (  # noqa: E402, F401
     _add_interrupt_on,
+    _format_copy_file_description,
+    _format_delete_file_description,
     _format_edit_file_description,
     _format_execute_description,
     _format_fetch_url_description,
+    _format_mkdir_description,
+    _format_move_file_description,
     _format_task_description,
     _format_web_search_description,
     _format_write_file_description,
@@ -314,6 +318,7 @@ def create_cli_agent(
 
     # Add approve_plan middleware for plan confirmation
     from invincat_cli.middleware.approve_plan import ApprovePlanMiddleware
+    from invincat_cli.middleware.file_management import FileManagementMiddleware
     from invincat_cli.wecom.file import WeComFileMiddleware
 
     if approve_plan_system_prompt is not None:
@@ -326,6 +331,10 @@ def create_cli_agent(
     agent_middleware.append(
         WeComFileMiddleware(allowed_root=effective_cwd or Path.cwd())
     )
+    if sandbox is None:
+        agent_middleware.append(
+            FileManagementMiddleware(allowed_root=effective_cwd or Path.cwd())
+        )
 
     from invincat_cli.scheduler.store import CwdScopedSchedulerStore, SchedulerStore
     from invincat_cli.scheduler.tool import ScheduleMiddleware
