@@ -75,10 +75,14 @@ from invincat_cli.agent.prompt import (  # noqa: E402, F401
     get_system_prompt,
 )
 from invincat_cli.agent.subagents import (  # noqa: E402, F401
+    DOCUMENT_WORKER_DESCRIPTION,
+    DOCUMENT_WORKER_SUBAGENT_NAME,
+    DOCUMENT_WORKER_SYSTEM_PROMPT,
     RESEARCHER_DESCRIPTION,
     RESEARCHER_SUBAGENT_NAME,
     RESEARCHER_SYSTEM_PROMPT,
     build_builtin_subagents,
+    build_document_worker_subagent,
     build_researcher_subagent,
 )
 from invincat_cli.agent.tool_descriptions import (  # noqa: E402, F401
@@ -268,9 +272,9 @@ def create_cli_agent(
             }
             runtime_subagents.append(general_purpose_subagent)
 
-    researcher_middleware: list[AgentMiddleware] = []
+    builtin_subagent_middleware: list[AgentMiddleware] = []
     if restrictive_shell_allow_list is not None:
-        researcher_middleware.append(
+        builtin_subagent_middleware.append(
             ShellAllowListMiddleware(restrictive_shell_allow_list, cwd=effective_cwd)
         )
     runtime_subagents.extend(
@@ -279,7 +283,8 @@ def create_cli_agent(
                 *configured_subagent_names,
                 *(str(spec.get("name", "")).strip() for spec in runtime_subagents),
             },
-            researcher_middleware=researcher_middleware,
+            researcher_middleware=builtin_subagent_middleware,
+            document_worker_middleware=builtin_subagent_middleware,
         )
     )
 

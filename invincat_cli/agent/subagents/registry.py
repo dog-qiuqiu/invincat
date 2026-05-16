@@ -5,6 +5,10 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING
 
+from invincat_cli.agent.subagents.document_worker import (
+    DOCUMENT_WORKER_SUBAGENT_NAME,
+    build_document_worker_subagent,
+)
 from invincat_cli.agent.subagents.researcher import (
     RESEARCHER_SUBAGENT_NAME,
     build_researcher_subagent,
@@ -30,6 +34,7 @@ def build_builtin_subagents(
     *,
     existing_names: Iterable[str] = (),
     researcher_middleware: Sequence[AgentMiddleware] | None = None,
+    document_worker_middleware: Sequence[AgentMiddleware] | None = None,
 ) -> list[SubAgent]:
     """Build built-in subagents that are not already provided by the user."""
     names = {name for name in existing_names if name}
@@ -37,5 +42,9 @@ def build_builtin_subagents(
     if RESEARCHER_SUBAGENT_NAME not in names:
         subagents.append(
             build_researcher_subagent(middleware=researcher_middleware)
+        )
+    if DOCUMENT_WORKER_SUBAGENT_NAME not in names:
+        subagents.append(
+            build_document_worker_subagent(middleware=document_worker_middleware)
         )
     return subagents

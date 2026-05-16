@@ -143,7 +143,7 @@ command_handlers -> plan_handlers -> plan_mode.runtime/policy/handoff
 | `agent/catalog.py` | Discovers, lists, and loads async subagents. |
 | `agent/middleware.py` | Agent middleware such as shell allow-listing and memory file guards. |
 | `agent/prompt.py` | Builds the main agent system prompt, injecting mode, time, working directory, and other context. |
-| `agent/subagents/` | Defines and registers built-in subagents, such as the read-only `researcher`. |
+| `agent/subagents/` | Defines and registers built-in subagents, such as the read-only `researcher` and document-focused `document-worker`. |
 | `agent/system_prompt.md` | Base system prompt for the main agent. |
 | `agent/tool_descriptions.py` | Tool descriptions and interrupt configuration shown during HITL approval. |
 
