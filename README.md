@@ -102,6 +102,26 @@ Invincat supports a primary model for normal work and an optional memory model f
 | `/threads` | Browse and resume conversation threads. |
 | `/help` | Show command help. |
 
+## Memory Management
+
+Invincat keeps durable memory in two scopes:
+
+| Scope | Purpose | Store |
+| --- | --- | --- |
+| User | Stable personal preferences, recurring instructions, and reusable context for the current agent. | `~/.invincat/<agent>/memory_user.json` |
+| Project | Repository-specific decisions, conventions, and facts that should follow the current project. | `.invincat/memory_project.json` |
+
+After completed non-trivial turns, a background memory agent extracts useful
+updates and refreshes the memory context for later sessions. Explicit requests
+such as "remember this" or "save this" are treated as stronger memory signals.
+If no dedicated memory model is configured, extraction uses the current primary
+model; for a session-level memory model, use `/model 2 <provider:model>`.
+
+Use `/memory` to inspect and manage memory entries. The viewer supports
+switching user/project scope, refreshing, sorting, showing archived items, and
+deleting selected entries with confirmation. Prefer this UI over manual JSON
+edits because the memory files are managed by the memory subsystem.
+
 ## Plan Mode
 
 Use `/plan` when a task needs review before changes are made. In this mode,
