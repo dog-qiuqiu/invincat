@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from invincat_cli.app_runtime.agent import should_route_message_to_planner
+from invincat_cli.app_runtime.goal_handlers import handle_goal_objective_message
 from invincat_cli.app_runtime.queueing import can_bypass_busy_queue
 from invincat_cli.app_runtime.state import InputMode, QueuedMessage
 from invincat_cli.i18n import t
@@ -35,6 +36,9 @@ async def handle_user_message(
     on_wecom_file_request: Any | None = None,
 ) -> None:
     """Mount a user message and route it to the planner or main agent."""
+    if await handle_goal_objective_message(app, message):
+        return
+
     if should_route_message_to_planner(app._session_state):
         await app._mount_message(UserMessage(message))
         planner_started = await app._run_planner(message)

@@ -89,6 +89,9 @@ class AppRuntimeDelegateMixin:
                 auto_approve=self._auto_approve,
                 thread_id=self._lc_thread_id,
             )
+            from invincat_cli.app_runtime.goal_handlers import restore_goal_state
+
+            await restore_goal_state(self)
         except Exception:
             logger.exception("Failed to create session state")
             self.notify(t("app.session_init_failed"), severity="error", timeout=10)

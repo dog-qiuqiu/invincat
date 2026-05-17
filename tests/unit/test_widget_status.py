@@ -146,6 +146,7 @@ def test_status_bar_compose_yields_expected_widgets(
         "t",
         lambda key: {
             "status.plan_mode": "Plan",
+            "status.goal_mode": "Goal",
             "approval.approve": "Approve",
         }.get(key, key),
     )
@@ -157,6 +158,7 @@ def test_status_bar_compose_yields_expected_widgets(
     assert ids == [
         "mode-indicator",
         "plan-mode-indicator",
+        "goal-mode-indicator",
         "auto-approve-indicator",
         "status-message",
         "cwd-display",
@@ -167,7 +169,8 @@ def test_status_bar_compose_yields_expected_widgets(
         "memory-model-display",
     ]
     assert _plain(children[1]._Static__content) == "Plan"  # noqa: SLF001
-    assert _plain(children[2]._Static__content) == "Approve | shift+tab"  # noqa: SLF001
+    assert _plain(children[2]._Static__content) == "Goal"  # noqa: SLF001
+    assert _plain(children[3]._Static__content) == "Approve | shift+tab"  # noqa: SLF001
 
 
 def test_status_bar_watchers_update_mode_plan_and_auto_approve(
@@ -176,6 +179,7 @@ def test_status_bar_watchers_update_mode_plan_and_auto_approve(
     widgets = {
         "#mode-indicator": _FakeStatic(),
         "#plan-mode-indicator": _FakeStatic(),
+        "#goal-mode-indicator": _FakeStatic(),
         "#auto-approve-indicator": _FakeStatic(),
     }
     bar = StatusBar(cwd="/tmp/project")
@@ -208,6 +212,11 @@ def test_status_bar_watchers_update_mode_plan_and_auto_approve(
     bar.watch_plan_mode(False)
     assert "on" not in widgets["#plan-mode-indicator"].classes
 
+    bar.watch_goal_mode(True)
+    assert "on" in widgets["#goal-mode-indicator"].classes
+    bar.watch_goal_mode(False)
+    assert "on" not in widgets["#goal-mode-indicator"].classes
+
     bar.watch_auto_approve(True)
     assert _plain(widgets["#auto-approve-indicator"].value) == "Auto | shift+tab"
     assert widgets["#auto-approve-indicator"].classes == {"on"}
@@ -229,6 +238,7 @@ def test_status_bar_watchers_ignore_missing_widgets(
 
     bar.watch_mode("shell")
     bar.watch_plan_mode(True)
+    bar.watch_goal_mode(True)
     bar.watch_auto_approve(True)
     bar.watch_message_count(1)
     bar._render_tokens(1)
@@ -441,6 +451,7 @@ def test_status_bar_state_setters(
         "#mode-indicator": _FakeStatic(),
         "#auto-approve-indicator": _FakeStatic(),
         "#plan-mode-indicator": _FakeStatic(),
+        "#goal-mode-indicator": _FakeStatic(),
         "#status-message": _FakeStatic(),
         "#tokens-display": _FakeStatic(),
         "#message-count-display": _FakeStatic(),
@@ -454,6 +465,7 @@ def test_status_bar_state_setters(
     bar.set_auto_approve(enabled=True)
     bar.set_status_message("executing")
     bar.set_plan_mode(enabled=True)
+    bar.set_goal_mode(enabled=True)
     bar.set_tokens(7)
     bar.set_message_count(2)
 
@@ -461,5 +473,6 @@ def test_status_bar_state_setters(
     assert bar.auto_approve is True
     assert bar.status_message == "executing"
     assert bar.plan_mode is True
+    assert bar.goal_mode is True
     assert bar.tokens == 7
     assert bar.message_count == 2

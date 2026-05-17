@@ -30,6 +30,11 @@ def test_route_prefix_commands() -> None:
     assert route.kind == "plan"
     assert route.normalized == "/plan"
     assert route.plan_task == "Refactor scheduler"
+    goal_route = route_slash_command("/goal Ship the MVP --budget 1000")
+    assert goal_route.kind == "goal"
+    assert goal_route.normalized == "/goal"
+    assert goal_route.goal_args == "Ship the MVP --budget 1000"
+    assert route_slash_command("/exit-goal").kind == "goal"
     assert route_slash_command("/schedule list").kind == "schedule"
     assert route_slash_command("/model memory").kind == "model"
     assert route_slash_command("/skill:demo run").kind == "skill"

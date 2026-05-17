@@ -96,11 +96,35 @@ Invincat supports a primary model for normal work and an optional memory model f
 | --- | --- |
 | `/model` | Configure and switch models. |
 | `/plan` | Enter plan-first mode and approve a checklist before execution. |
+| `/goal` | Start or inspect a long-running objective. |
 | `/memory` | Open the memory manager. |
 | `/schedule` | Open the scheduled task manager. |
 | `/mcp` | View connected MCP servers and tools. |
 | `/threads` | Browse and resume conversation threads. |
 | `/help` | Show command help. |
+
+## Goal Mode
+
+Use `/goal <objective>` when you want Invincat to keep working toward one
+long-running objective across multiple turns. Goal mode keeps the active
+objective in context, asks before drifting away from it, and only exits when
+you complete, cancel, or clear the goal.
+
+Common commands:
+
+| Command | Purpose |
+| --- | --- |
+| `/goal` | Enter goal mode and use the next message as the objective, or show the active goal. |
+| `/goal <objective>` | Create a goal and start the main agent on it. |
+| `/goal <objective> --budget 20000` | Create a goal with an optional token budget. |
+| `/goal status` | Show the active goal state. |
+| `/goal complete [summary]` | Mark the goal complete. |
+| `/goal cancel [summary]` or `/exit-goal` | Cancel goal mode. |
+| `/goal clear` | Remove the current thread's stored goal state. |
+
+Goal state is scoped to the current thread and stored under
+`.invincat/goals/`, so an active goal can be restored when the same thread is
+resumed.
 
 ## Memory Management
 

@@ -81,13 +81,17 @@ async def send_to_agent(
     app._agent_running = True
     app._active_turn_is_planner = start_state.active_turn_is_planner
 
+    from invincat_cli.app_runtime.goal_handlers import apply_goal_context
+
+    effective_message = apply_goal_context(app, message)
+
     if app._chat_input:
         app._chat_input.set_cursor_active(active=False)
 
     app._agent_worker = app.run_worker(
         app._run_agent_task(
             AgentTurnRequest(
-                message=message,
+                message=effective_message,
                 message_kwargs=message_kwargs,
                 generation=start_state.generation,
                 agent_override=target_agent,
@@ -302,6 +306,9 @@ async def run_post_agent_cleanup_side_effects(app: Any) -> None:  # noqa: ANN401
         logger.exception("Auto-offload failed during agent cleanup")
 
     await app._maybe_notify_memory_update()
+    from invincat_cli.app_runtime.goal_handlers import update_goal_token_usage
+
+    update_goal_token_usage(app)
     await complete_active_scheduled_run(app)
     await app._drain_scheduler_if_idle()
     await app._process_next_from_queue()

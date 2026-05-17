@@ -6,12 +6,21 @@ from types import SimpleNamespace
 
 from invincat_cli.app_runtime import input_handlers
 from invincat_cli.app_runtime.state import QueuedMessage
+from invincat_cli.goal_mode.store import GoalStore
 from invincat_cli.widgets.messages import QueuedUserMessage, UserMessage
 
 
 class InputApp:
     def __init__(self) -> None:
-        self._session_state = SimpleNamespace(plan_mode=False)
+        self._session_state = SimpleNamespace(
+            thread_id="thread-1",
+            plan_mode=False,
+            goal_mode=False,
+            goal=None,
+        )
+        self._cwd = "."
+        self._goal_store = None
+        self._status_bar = None
         self._connecting = False
         self._agent_running = False
         self._shell_running = False
@@ -122,6 +131,19 @@ def test_handle_user_message_passes_agent_callbacks() -> None:
     )
 
     assert app.sent == [("hello", on_text_delta, on_wecom_file_request)]
+
+
+def test_handle_user_message_creates_goal_when_waiting(tmp_path) -> None:
+    app = InputApp()
+    app._session_state.goal_mode = True
+    app._goal_store = GoalStore(tmp_path)
+
+    asyncio.run(input_handlers.handle_user_message(app, "Ship the MVP"))
+
+    assert app._session_state.goal.objective == "Ship the MVP"
+    assert app._session_state.goal_mode is True
+    assert [sent[0] for sent in app.sent]
+    assert not app.planner_messages
 
 
 def test_can_bypass_queue_uses_busy_state() -> None:

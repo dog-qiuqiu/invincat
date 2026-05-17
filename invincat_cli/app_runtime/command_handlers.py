@@ -72,6 +72,10 @@ async def handle_app_command(app: Any, command: str) -> None:  # noqa: ANN401
         await app._handle_plan_task(route.plan_task, command=command)
     elif route.kind == "exit_plan":
         await app._exit_plan_mode()
+    elif route.kind == "goal":
+        from invincat_cli.app_runtime.goal_handlers import handle_goal_command
+
+        await handle_goal_command(app, command)
     elif route.kind == "threads":
         await app._show_thread_selector()
     elif route.kind == "trace":

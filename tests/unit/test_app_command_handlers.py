@@ -5,6 +5,7 @@ from collections import deque
 from types import SimpleNamespace
 
 from invincat_cli.app_runtime import command_handlers
+from invincat_cli.goal_mode.store import GoalStore
 from invincat_cli.widgets.messages import AppMessage, ErrorMessage, QueuedUserMessage
 
 
@@ -16,11 +17,15 @@ class CommandApp:
         self._tokens_approximate = True
         self._session_state = SimpleNamespace(
             thread_id="thread-1",
+            goal_mode=False,
+            goal=None,
             reset_thread=lambda: "thread-2",
         )
         self._agent_running = False
         self._shell_running = False
         self._deferred_actions = []
+        self._cwd = "."
+        self._goal_store = None
         self.messages: list[object] = []
         self.cleared = False
         self.tokens: list[int] = []
@@ -96,6 +101,10 @@ class CommandApp:
 
     async def _handle_skill_command(self, command: str) -> None:
         self.actions.append(("skill", command))
+
+    async def _send_to_agent(self, message: str, **kwargs: object) -> bool:
+        self.actions.append(("send", (message, kwargs)))
+        return True
 
     async def _discover_skills(self) -> str:
         return "discover"
@@ -194,6 +203,43 @@ def test_handle_plan_command_forwards_inline_task() -> None:
     )
 
     assert ("plan", ("Refactor scheduler", "/plan Refactor scheduler")) in app.actions
+
+
+def test_handle_goal_command_creates_and_starts_agent(tmp_path) -> None:
+    app = CommandApp()
+    app._goal_store = GoalStore(tmp_path)
+
+    asyncio.run(command_handlers.handle_app_command(app, "/goal Ship MVP --budget 42"))
+
+    goal = app._session_state.goal
+    assert goal.objective == "Ship MVP"
+    assert goal.token_budget == 42
+    assert app._session_state.goal_mode is True
+    assert app.actions[-1][0] == "send"
+    assert "Ship MVP" in app.actions[-1][1][0]
+
+
+def test_handle_goal_command_status_and_exit(tmp_path) -> None:
+    app = CommandApp()
+    app._goal_store = GoalStore(tmp_path)
+
+    asyncio.run(command_handlers.handle_app_command(app, "/goal"))
+    assert app._session_state.goal_mode is True
+    assert app._session_state.goal is None
+
+    asyncio.run(command_handlers.handle_app_command(app, "/exit-goal"))
+    assert app._session_state.goal_mode is False
+    assert any("OFF" in str(content) for content in message_contents(app))
+
+
+def test_handle_goal_command_rejects_invalid_budget(tmp_path) -> None:
+    app = CommandApp()
+    app._goal_store = GoalStore(tmp_path)
+
+    asyncio.run(command_handlers.handle_app_command(app, "/goal Ship --budget nope"))
+
+    assert app._session_state.goal is None
+    assert isinstance(app.messages[-1], ErrorMessage)
 
 
 def test_handle_url_command_mounts_now_or_defers(monkeypatch) -> None:
@@ -435,6 +481,8 @@ def test_handle_app_command_dispatches_routes(monkeypatch) -> None:
         "/offload",
         "/plan",
         "/exit-plan",
+        "/goal",
+        "/exit-goal",
         "/threads",
         "/trace",
         "/update",

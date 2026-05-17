@@ -22,9 +22,13 @@ def test_textual_session_state_uses_existing_or_generated_thread(monkeypatch) ->
     assert existing.auto_approve is True
     assert existing.thread_id == "existing"
     assert existing.plan_mode is False
+    assert existing.goal_mode is False
+    assert existing.goal is None
     assert fresh.thread_id == "thread-1"
     assert fresh.reset_thread() == "thread-2"
     assert fresh.thread_id == "thread-2"
+    assert fresh.goal_mode is False
+    assert fresh.goal is None
 
 
 def test_app_result_defaults_session_stats_and_update_state() -> None:

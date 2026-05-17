@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from invincat_cli.core.session_stats import SessionStats
+from invincat_cli.goal_mode.models import GoalState
 from invincat_cli.widgets.message_store import MessageData
 
 InputMode = Literal["normal", "shell", "command"]
@@ -62,10 +63,14 @@ class TextualSessionState:
         self.auto_approve = auto_approve
         self.thread_id = thread_id or new_thread_id()
         self.plan_mode: bool = False
+        self.goal_mode: bool = False
+        self.goal: GoalState | None = None
 
     def reset_thread(self) -> str:
         """Reset to a new thread and return its id."""
         self.thread_id = new_thread_id()
+        self.goal_mode = False
+        self.goal = None
         return self.thread_id
 
 

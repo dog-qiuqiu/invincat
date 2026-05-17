@@ -56,6 +56,19 @@ StatusBar .status-plan-mode.on {
     display: block;
 }
 
+StatusBar .status-goal-mode {
+    width: auto;
+    padding: 0 1;
+    background: $success;
+    color: $background;
+    text-style: bold;
+    display: none;
+}
+
+StatusBar .status-goal-mode.on {
+    display: block;
+}
+
 StatusBar .status-message {
     width: auto;
     padding: 0 1;

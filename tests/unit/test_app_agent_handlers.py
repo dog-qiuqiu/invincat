@@ -9,6 +9,7 @@ import pytest
 from invincat_cli.app_runtime import agent_handlers
 from invincat_cli.app_runtime.agent import AgentTurnRequest
 from invincat_cli.core.session_stats import SessionStats
+from invincat_cli.goal_mode.models import GoalState
 from invincat_cli.widgets.messages import AppMessage, ErrorMessage
 
 
@@ -73,7 +74,9 @@ class AgentHandlersApp:
         self._planner_thread_id = "planner-thread"
         self._ui_adapter: FakeAdapter | None = FakeAdapter()
         self._session_state: SimpleNamespace | None = SimpleNamespace(
-            thread_id="thread-1"
+            thread_id="thread-1",
+            goal_mode=False,
+            goal=None,
         )
         self._agent_generation = 0
         self._agent_running = False
@@ -245,6 +248,39 @@ def test_send_to_agent_starts_worker_with_planner_request() -> None:
     assert request.post_turn_hook is post_turn_hook
     assert request.on_text_delta is on_text_delta
     assert request.on_wecom_file_request is on_wecom_file_request
+
+
+def test_send_to_agent_preserves_planner_turn_with_goal_context() -> None:
+    app = AgentHandlersApp()
+    assert app._session_state is not None
+    app._session_state.goal = GoalState.create(
+        objective="Ship goal mode",
+        thread_id="thread-1",
+    )
+    app._session_state.goal_mode = True
+
+    accepted = asyncio.run(
+        agent_handlers.send_to_agent(
+            app,
+            "plan next step",
+            agent_override=app._planner_agent,
+            thread_id_override="planner-thread",
+        )
+    )
+
+    assert accepted is True
+    assert app._active_turn_is_planner is True
+    request = app.run_requests[0]
+    assert "<active_goal>" in request.message
+    assert "Ship goal mode" in request.message
+    assert "User message:\nplan next step" in request.message
+    assert request.generation == 1
+    assert request.agent_override is app._planner_agent
+    assert request.thread_id_override == "planner-thread"
+    assert request.message_kwargs is None
+    assert request.post_turn_hook is None
+    assert request.on_text_delta is None
+    assert request.on_wecom_file_request is None
 
 
 def test_handle_agent_task_exception_retries_scheduled_timeout() -> None:

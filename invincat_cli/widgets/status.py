@@ -38,6 +38,7 @@ class StatusBar(Horizontal):
     status_message: reactive[str] = reactive("", init=False)
     auto_approve: reactive[bool] = reactive(default=False, init=False)
     plan_mode: reactive[bool] = reactive(default=False, init=False)
+    goal_mode: reactive[bool] = reactive(default=False, init=False)
     cwd: reactive[str] = reactive("", init=False)
     branch: reactive[str] = reactive("", init=False)
     tokens: reactive[int] = reactive(0, init=False)
@@ -67,6 +68,11 @@ class StatusBar(Horizontal):
             t("status.plan_mode"),
             classes="status-plan-mode",
             id="plan-mode-indicator",
+        )
+        yield Static(
+            t("status.goal_mode"),
+            classes="status-goal-mode",
+            id="goal-mode-indicator",
         )
         yield Static(
             f"{t('approval.approve')} | shift+tab",
@@ -162,6 +168,21 @@ class StatusBar(Horizontal):
             enabled: Whether plan mode is active
         """
         self.plan_mode = enabled
+
+    def watch_goal_mode(self, new_value: bool) -> None:
+        """Update goal-mode pill when state changes."""
+        try:
+            indicator = self.query_one("#goal-mode-indicator", Static)
+        except NoMatches:
+            return
+        if new_value:
+            indicator.add_class("on")
+        else:
+            indicator.remove_class("on")
+
+    def set_goal_mode(self, *, enabled: bool) -> None:
+        """Set the goal-mode state."""
+        self.goal_mode = enabled
 
     def watch_auto_approve(self, new_value: bool) -> None:
         """Update auto-approve indicator when state changes."""

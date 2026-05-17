@@ -127,6 +127,7 @@ class DeepAgentsApp(
     _main_thread_before_plan: str | None
     _planner_last_todos_fingerprint: str | None
     _planner_prompted_todos_fingerprint: str | None
+    _goal_store: Any | None
 
     _context_tokens: int
     _tokens_approximate: bool

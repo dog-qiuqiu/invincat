@@ -132,6 +132,18 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="leave planner mode",
     ),
     SlashCommand(
+        name="/goal",
+        description_key="goal",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="objective target long-running task",
+    ),
+    SlashCommand(
+        name="/exit-goal",
+        description_key="exit_goal",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="cancel leave goal mode",
+    ),
+    SlashCommand(
         name="/skill-creator",
         description_key="skill_creator",
         bypass_tier=BypassTier.QUEUED,

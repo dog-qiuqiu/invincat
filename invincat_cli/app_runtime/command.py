@@ -15,6 +15,7 @@ CommandRouteKind = Literal[
     "offload",
     "plan",
     "exit_plan",
+    "goal",
     "threads",
     "trace",
     "update",
@@ -43,6 +44,7 @@ class CommandRoute:
     wecom_action: str | None = None
     rewritten_command: str | None = None
     plan_task: str | None = None
+    goal_args: str | None = None
 
 
 _EXACT_COMMAND_ROUTES: dict[str, CommandRouteKind] = {
@@ -59,6 +61,8 @@ _EXACT_COMMAND_ROUTES: dict[str, CommandRouteKind] = {
     "/compact": "offload",
     "/plan": "plan",
     "/exit-plan": "exit_plan",
+    "/goal": "goal",
+    "/exit-goal": "goal",
     "/threads": "threads",
     "/trace": "trace",
     "/update": "update",
@@ -97,6 +101,12 @@ def route_slash_command(command: str) -> CommandRoute:
             kind="plan",
             normalized="/plan",
             plan_task=command.strip()[len("/plan") :].strip(),
+        )
+    if cmd.startswith("/goal "):
+        return CommandRoute(
+            kind="goal",
+            normalized="/goal",
+            goal_args=command.strip()[len("/goal") :].strip(),
         )
     if cmd == "/skill-creator" or cmd.startswith("/skill-creator "):
         return CommandRoute(
