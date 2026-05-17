@@ -102,6 +102,64 @@ Invincat supports a primary model for normal work and an optional memory model f
 | `/threads` | Browse and resume conversation threads. |
 | `/help` | Show command help. |
 
+## Plan Mode
+
+Use `/plan` when a task needs review before changes are made. In this mode,
+Invincat first produces an execution checklist instead of immediately editing
+files or running implementation commands. After you approve the checklist, the
+main agent executes the approved steps.
+
+Plan mode is useful for risky, multi-file, ambiguous, or architecture-level
+work where you want to inspect the approach first. The planner is limited to
+read and planning tools such as file reads, search, web lookup, todos, user
+questions, and plan approval; implementation tools are reserved for the
+post-approval execution phase.
+
+## Built-in Subagents
+
+Invincat includes focused subagents that the main agent can call through the
+`task` tool for isolated, context-heavy work.
+
+| Subagent | Responsibility |
+| --- | --- |
+| `researcher` | Read-only investigation, source gathering, codebase exploration, and evidence-backed summaries. It helps the main agent understand unfamiliar areas or compare options before acting. |
+| `document-worker` | Document-centric parsing, extraction, summarization, conversion, comparison, and quality checks for PDF, DOCX, PPTX, XLSX, Markdown, CSV, and JSON files. |
+
+These roles are separate so the main agent can keep orchestration and execution
+focused while delegated agents handle specialized work in isolated contexts and
+return concise findings.
+
+## Built-in Skills
+
+Skills are lightweight capability packs loaded into the agent when a task
+matches their description. They provide focused instructions, workflows, and
+supporting scripts without becoming separate agents.
+
+| Skill | Responsibility |
+| --- | --- |
+| `docx` | Read, create, edit, convert, comment on, and reorganize Microsoft Word `.docx` documents. |
+| `pdf` | Read, extract, merge, split, rotate, watermark, create, fill, encrypt, decrypt, OCR, and inspect PDF files. |
+| `pptx` | Read, create, edit, combine, split, and analyze PowerPoint decks, slides, templates, notes, and comments. |
+| `xlsx` | Read, create, edit, clean, format, chart, validate, and convert spreadsheets such as `.xlsx`, `.xlsm`, `.csv`, and `.tsv`. |
+| `skill-creator` | Guide users and agents through creating, updating, validating, and structuring new skills. |
+
+## Skill Installation and Configuration
+
+Built-in skills are enabled by default. Custom skills can be added at user or
+project scope:
+
+| Scope | Directory |
+| --- | --- |
+| User | `~/.invincat/<agent>/skills/` |
+| User shared | `~/.agents/skills/` |
+| Project | `.invincat/skills/` |
+| Project shared | `.agents/skills/` |
+| Built-in | `<package>/built_in_skills/` |
+
+Project skills override user skills with the same name, and custom skills
+override built-in skills. Each skill lives in its own directory with a
+`SKILL.md` file that defines its `name`, `description`, and instructions.
+
 ## WeCom Bot Daemon
 
 Configure a robot on the enterprise WeChat side to obtain the "Bot ID" and "Secret":
