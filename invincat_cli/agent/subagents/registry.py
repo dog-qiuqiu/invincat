@@ -9,6 +9,10 @@ from invincat_cli.agent.subagents.document_worker import (
     DOCUMENT_WORKER_SUBAGENT_NAME,
     build_document_worker_subagent,
 )
+from invincat_cli.agent.subagents.explorer import (
+    EXPLORER_SUBAGENT_NAME,
+    build_explorer_subagent,
+)
 from invincat_cli.agent.subagents.researcher import (
     RESEARCHER_SUBAGENT_NAME,
     build_researcher_subagent,
@@ -33,12 +37,17 @@ def subagent_names(specs: Iterable[object]) -> set[str]:
 def build_builtin_subagents(
     *,
     existing_names: Iterable[str] = (),
+    explorer_middleware: Sequence[AgentMiddleware] | None = None,
     researcher_middleware: Sequence[AgentMiddleware] | None = None,
     document_worker_middleware: Sequence[AgentMiddleware] | None = None,
 ) -> list[SubAgent]:
     """Build built-in subagents that are not already provided by the user."""
     names = {name for name in existing_names if name}
     subagents: list[SubAgent] = []
+    if EXPLORER_SUBAGENT_NAME not in names:
+        subagents.append(
+            build_explorer_subagent(middleware=explorer_middleware)
+        )
     if RESEARCHER_SUBAGENT_NAME not in names:
         subagents.append(
             build_researcher_subagent(middleware=researcher_middleware)

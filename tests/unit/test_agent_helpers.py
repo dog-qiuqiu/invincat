@@ -663,11 +663,13 @@ def test_create_cli_agent_local_shell_memory_skills_and_restrictive_shell(
     assert created["tools"] == ["tool"]
     assert created["interrupt_on"] == {}
     assert created["subagents"][0]["name"] == "general-purpose"
-    assert created["subagents"][1]["name"] == "researcher"
-    assert created["subagents"][2]["name"] == "document-worker"
-    assert created["subagents"][3]["name"] == "remote"
+    assert created["subagents"][1]["name"] == "explorer"
+    assert created["subagents"][2]["name"] == "researcher"
+    assert created["subagents"][3]["name"] == "document-worker"
+    assert created["subagents"][4]["name"] == "remote"
     assert created["subagents"][1]["middleware"]
     assert created["subagents"][2]["middleware"]
+    assert created["subagents"][3]["middleware"]
     assert "refreshable-memory" in middleware_names
     assert "memory-agent" in middleware_names
     assert "skills" in middleware_names
@@ -699,8 +701,9 @@ def test_create_cli_agent_shell_allow_list_and_memory_fallbacks(
     ]
     assert created["interrupt_on"] == {}
     assert created["subagents"][0]["name"] == "general-purpose"
-    assert created["subagents"][1]["name"] == "researcher"
-    assert created["subagents"][2]["name"] == "document-worker"
+    assert created["subagents"][1]["name"] == "explorer"
+    assert created["subagents"][2]["name"] == "researcher"
+    assert created["subagents"][3]["name"] == "document-worker"
     assert "refreshable-memory" in middleware_names
     memory = next(item for item in created["middleware"] if item.name == "memory-agent")
     assert memory.kwargs["memory_store_paths"]["project"] == str(
@@ -718,8 +721,9 @@ def test_create_cli_agent_shell_allow_list_and_memory_fallbacks(
         enable_ask_user=False,
     )
     fallback = events["created_agents"][1]
-    assert fallback["subagents"][0]["name"] == "researcher"
-    assert fallback["subagents"][1]["name"] == "document-worker"
+    assert fallback["subagents"][0]["name"] == "explorer"
+    assert fallback["subagents"][1]["name"] == "researcher"
+    assert fallback["subagents"][2]["name"] == "document-worker"
     assert fallback["interrupt_on"]["execute"]["allowed_decisions"] == [
         "approve",
         "reject",
@@ -742,20 +746,26 @@ def test_create_cli_agent_adds_builtin_subagents_by_default(
     )
 
     created = events["created_agents"][0]
-    assert created["subagents"][0]["name"] == "researcher"
-    assert "read-only investigation" in created["subagents"][0]["description"]
+    assert created["subagents"][0]["name"] == "explorer"
+    assert "Codebase exploration agent" in created["subagents"][0]["description"]
+    assert "read-only" in created["subagents"][0]["system_prompt"]
+    assert "repository" in created["subagents"][0]["system_prompt"]
+    assert "exploration" in created["subagents"][0]["system_prompt"]
     assert "Do not edit" in created["subagents"][0]["system_prompt"]
-    assert created["subagents"][1]["name"] == "document-worker"
-    assert "complex document work" in created["subagents"][1]["description"]
-    assert "Simple short Markdown/README questions" in created["subagents"][1][
+    assert created["subagents"][1]["name"] == "researcher"
+    assert "read-only investigation" in created["subagents"][1]["description"]
+    assert "Do not edit" in created["subagents"][1]["system_prompt"]
+    assert created["subagents"][2]["name"] == "document-worker"
+    assert "complex document work" in created["subagents"][2]["description"]
+    assert "Simple short Markdown/README questions" in created["subagents"][2][
         "description"
     ]
-    assert "Do not implement code" in created["subagents"][1]["system_prompt"]
-    assert "When to use this subagent" in created["subagents"][1]["system_prompt"]
-    assert "When not to use this subagent" in created["subagents"][1][
+    assert "Do not implement code" in created["subagents"][2]["system_prompt"]
+    assert "When to use this subagent" in created["subagents"][2]["system_prompt"]
+    assert "When not to use this subagent" in created["subagents"][2][
         "system_prompt"
     ]
-    assert "Source references" in created["subagents"][1]["system_prompt"]
+    assert "Source references" in created["subagents"][2]["system_prompt"]
 
 
 def test_create_cli_agent_skips_builtin_researcher_when_configured(
@@ -777,9 +787,10 @@ def test_create_cli_agent_skips_builtin_researcher_when_configured(
     )
 
     created = events["created_agents"][0]
-    assert len(created["subagents"]) == 2
-    assert created["subagents"][0]["name"] == "document-worker"
-    assert created["subagents"][1] == {
+    assert len(created["subagents"]) == 3
+    assert created["subagents"][0]["name"] == "explorer"
+    assert created["subagents"][1]["name"] == "document-worker"
+    assert created["subagents"][2] == {
         "name": "researcher",
         "description": "Remote",
         "graph_id": "g",
@@ -805,10 +816,40 @@ def test_create_cli_agent_skips_builtin_document_worker_when_configured(
     )
 
     created = events["created_agents"][0]
-    assert len(created["subagents"]) == 2
-    assert created["subagents"][0]["name"] == "researcher"
-    assert created["subagents"][1] == {
+    assert len(created["subagents"]) == 3
+    assert created["subagents"][0]["name"] == "explorer"
+    assert created["subagents"][1]["name"] == "researcher"
+    assert created["subagents"][2] == {
         "name": "document-worker",
+        "description": "Remote",
+        "graph_id": "g",
+    }
+
+
+def test_create_cli_agent_skips_builtin_explorer_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    events = _install_create_cli_agent_fakes(monkeypatch, base=tmp_path)
+
+    agent_mod.create_cli_agent(
+        model="model",
+        assistant_id="agent",
+        cwd=tmp_path,
+        enable_memory=False,
+        enable_skills=False,
+        enable_ask_user=False,
+        async_subagents=[
+            {"name": "explorer", "description": "Remote", "graph_id": "g"}
+        ],
+    )
+
+    created = events["created_agents"][0]
+    assert len(created["subagents"]) == 3
+    assert created["subagents"][0]["name"] == "researcher"
+    assert created["subagents"][1]["name"] == "document-worker"
+    assert created["subagents"][2] == {
+        "name": "explorer",
         "description": "Remote",
         "graph_id": "g",
     }
