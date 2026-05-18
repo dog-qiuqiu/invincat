@@ -11,6 +11,8 @@ from textual.content import Content
 from invincat_cli.app_runtime import thread_handlers
 from invincat_cli.app_runtime.state import ThreadHistoryPayload
 from invincat_cli.app_runtime.thread_runtime import ThreadSwitchSnapshot
+from invincat_cli.goal_mode.models import GoalState
+from invincat_cli.goal_mode.store import GoalStore
 from invincat_cli.widgets.message_store import MessageData, MessageStore, MessageType
 from invincat_cli.widgets.messages import AppMessage
 
@@ -39,10 +41,26 @@ class FakeChatInput:
         self.cursor_states.append(active)
 
 
+class FakeStatusBar:
+    def __init__(self) -> None:
+        self.count: int | None = None
+        self.goal_modes: list[bool] = []
+
+    def set_message_count(self, count: int) -> None:
+        self.count = count
+
+    def set_goal_mode(self, *, enabled: bool) -> None:
+        self.goal_modes.append(enabled)
+
+
 class ThreadApp:
     def __init__(self) -> None:
         self._agent = object()
-        self._session_state = SimpleNamespace(thread_id="old-thread")
+        self._session_state = SimpleNamespace(
+            thread_id="old-thread",
+            goal_mode=False,
+            goal=None,
+        )
         self._lc_thread_id = "old-lc-thread"
         self._thread_switching = False
         self._chat_input = FakeChatInput()
@@ -52,10 +70,7 @@ class ThreadApp:
         self._context_tokens = 12
         self._tokens_approximate = True
         self._message_store = MessageStore()
-        self._status_bar = SimpleNamespace(count=None)
-        self._status_bar.set_message_count = lambda count: setattr(
-            self._status_bar, "count", count
-        )
+        self._status_bar = FakeStatusBar()
         self.messages_container = FakeMessagesContainer()
         self.chat = FakeChat()
         self.messages: list[object] = []
@@ -565,6 +580,58 @@ def test_apply_and_rollback_thread_switch_ids_update_state_and_banner(
     assert app._lc_thread_id == "old-lc"
     assert app.banner_updates[-1][0] == "old-session"
     assert app.banner_updates[-1][2] is True
+
+
+def test_apply_and_rollback_thread_switch_ids_sync_goal_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    app = ThreadApp()
+    app._goal_store = GoalStore(tmp_path)
+    patch_banner(monkeypatch)
+    old_goal = GoalState.create(objective="Old goal", thread_id="old-thread")
+    new_goal = GoalState.create(objective="New goal", thread_id="new-thread")
+    app._goal_store.save(old_goal)
+    app._goal_store.save(new_goal)
+    app._session_state.goal = old_goal
+    app._session_state.goal_mode = True
+
+    thread_handlers.apply_thread_switch_ids(app, "new-thread")
+
+    assert app._session_state.thread_id == "new-thread"
+    assert app._session_state.goal == new_goal
+    assert app._session_state.goal_mode is True
+    assert app._status_bar.goal_modes[-1] is True
+
+    snapshot = ThreadSwitchSnapshot(
+        lc_thread_id="old-thread",
+        session_thread_id="old-thread",
+    )
+    thread_handlers.rollback_thread_switch_ids(app, snapshot)
+
+    assert app._session_state.thread_id == "old-thread"
+    assert app._session_state.goal == old_goal
+    assert app._session_state.goal_mode is True
+
+
+def test_apply_thread_switch_ids_clears_goal_for_thread_without_active_goal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    app = ThreadApp()
+    app._goal_store = GoalStore(tmp_path)
+    patch_banner(monkeypatch)
+    app._session_state.goal = GoalState.create(
+        objective="Old goal",
+        thread_id="old-thread",
+    )
+    app._session_state.goal_mode = True
+
+    thread_handlers.apply_thread_switch_ids(app, "new-thread")
+
+    assert app._session_state.goal is None
+    assert app._session_state.goal_mode is False
+    assert app._status_bar.goal_modes[-1] is False
 
 
 def test_restore_previous_thread_after_failed_switch_handles_success_and_failure(

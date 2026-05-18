@@ -6,6 +6,8 @@ from collections import deque
 from types import SimpleNamespace
 
 from invincat_cli.app_runtime import server_handlers
+from invincat_cli.goal_mode.models import GoalState
+from invincat_cli.goal_mode.store import GoalStore
 from invincat_cli.model_config import ModelConfigError
 from invincat_cli.widgets.messages import ErrorMessage
 
@@ -127,6 +129,29 @@ def test_resolve_resume_thread_uses_most_recent_and_agent(monkeypatch) -> None:
     assert app._assistant_id == "custom"
     assert app._server_kwargs["assistant_id"] == "custom"
     assert app._session_state.thread_id == "t-1"
+
+
+def test_resolve_resume_thread_syncs_goal_state(monkeypatch, tmp_path) -> None:
+    app = ServerApp()
+    app._resume_thread_intent = "__MOST_RECENT__"
+    app._goal_store = GoalStore(tmp_path)
+    goal = GoalState.create(objective="Resume goal", thread_id="t-1")
+    app._goal_store.save(goal)
+
+    async def get_most_recent(_agent):
+        return "t-1"
+
+    async def get_thread_agent(_tid):
+        return None
+
+    monkeypatch.setattr("invincat_cli.sessions.get_most_recent", get_most_recent)
+    monkeypatch.setattr("invincat_cli.sessions.get_thread_agent", get_thread_agent)
+
+    asyncio.run(server_handlers.resolve_resume_thread(app))
+
+    assert app._session_state.thread_id == "t-1"
+    assert app._session_state.goal == goal
+    assert app._session_state.goal_mode is True
 
 
 def test_resolve_resume_thread_generates_when_most_recent_missing(monkeypatch) -> None:

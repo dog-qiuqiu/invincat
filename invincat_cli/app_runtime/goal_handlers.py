@@ -58,7 +58,11 @@ def _save_goal(app: Any, goal: GoalState) -> None:  # noqa: ANN401
 def active_goal_for_agent(app: Any) -> GoalState | None:  # noqa: ANN401
     """Return the active goal that should be injected into agent context."""
     goal = _current_goal(app)
-    return goal if goal is not None and goal.is_active else None
+    if goal is None or not goal.is_active or app._session_state is None:
+        return None
+    if goal.thread_id != app._session_state.thread_id:
+        return None
+    return goal
 
 
 def apply_goal_context(app: Any, message: str) -> str:  # noqa: ANN401
@@ -79,16 +83,23 @@ def update_goal_token_usage(app: Any) -> None:  # noqa: ANN401
 
 async def restore_goal_state(app: Any) -> None:  # noqa: ANN401
     """Load the current thread's active goal from durable storage."""
-    if app._session_state is None:
-        return
-    goal = _goal_store(app).load(app._session_state.thread_id)
-    if goal is not None and goal.is_active:
-        _set_session_goal(app, goal)
+    goal = sync_goal_state_for_current_thread(app)
+    if goal is not None:
         await app._mount_message(
             AppMessage(t("goal.restored").format(objective=goal.objective))
         )
-    else:
-        _set_session_goal(app, None)
+
+
+def sync_goal_state_for_current_thread(app: Any) -> GoalState | None:  # noqa: ANN401
+    """Synchronously align in-memory goal state with the current thread id."""
+    if app._session_state is None:
+        return None
+    goal = _goal_store(app).load(app._session_state.thread_id)
+    if goal is not None and goal.is_active:
+        _set_session_goal(app, goal)
+        return goal
+    _set_session_goal(app, None)
+    return None
 
 
 def is_waiting_for_goal_objective(app: Any) -> bool:  # noqa: ANN401

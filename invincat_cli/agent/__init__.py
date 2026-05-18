@@ -81,12 +81,14 @@ from invincat_cli.agent.subagents import (  # noqa: E402, F401
     EXPLORER_DESCRIPTION,
     EXPLORER_SUBAGENT_NAME,
     EXPLORER_SYSTEM_PROMPT,
+    READ_ONLY_SUBAGENT_ALLOWED_TOOLS,
     RESEARCHER_DESCRIPTION,
     RESEARCHER_SUBAGENT_NAME,
     RESEARCHER_SYSTEM_PROMPT,
     WORKER_DESCRIPTION,
     WORKER_SUBAGENT_NAME,
     WORKER_SYSTEM_PROMPT,
+    ReadOnlySubagentToolMiddleware,
     build_builtin_subagents,
     build_document_worker_subagent,
     build_explorer_subagent,
@@ -289,15 +291,19 @@ def create_cli_agent(
         builtin_subagent_middleware.append(
             ShellAllowListMiddleware(restrictive_shell_allow_list, cwd=effective_cwd)
         )
+    read_only_subagent_middleware: list[AgentMiddleware] = [
+        ReadOnlySubagentToolMiddleware(READ_ONLY_SUBAGENT_ALLOWED_TOOLS),
+        *builtin_subagent_middleware,
+    ]
     runtime_subagents.extend(
         build_builtin_subagents(
             existing_names={
                 *configured_subagent_names,
                 *(str(spec.get("name", "")).strip() for spec in runtime_subagents),
             },
-            explorer_middleware=builtin_subagent_middleware,
+            explorer_middleware=read_only_subagent_middleware,
             worker_middleware=builtin_subagent_middleware,
-            researcher_middleware=builtin_subagent_middleware,
+            researcher_middleware=read_only_subagent_middleware,
             document_worker_middleware=builtin_subagent_middleware,
         )
     )

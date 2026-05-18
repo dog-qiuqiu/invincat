@@ -24,6 +24,10 @@ from invincat_cli.agent.subagents.researcher import (
     RESEARCHER_SYSTEM_PROMPT,
     build_researcher_subagent,
 )
+from invincat_cli.agent.subagents.tool_boundary import (
+    READ_ONLY_SUBAGENT_ALLOWED_TOOLS,
+    ReadOnlySubagentToolMiddleware,
+)
 from invincat_cli.agent.subagents.worker import (
     WORKER_DESCRIPTION,
     WORKER_SUBAGENT_NAME,
@@ -41,9 +45,11 @@ __all__ = [
     "RESEARCHER_DESCRIPTION",
     "RESEARCHER_SUBAGENT_NAME",
     "RESEARCHER_SYSTEM_PROMPT",
+    "READ_ONLY_SUBAGENT_ALLOWED_TOOLS",
     "WORKER_DESCRIPTION",
     "WORKER_SUBAGENT_NAME",
     "WORKER_SYSTEM_PROMPT",
+    "ReadOnlySubagentToolMiddleware",
     "build_builtin_subagents",
     "build_document_worker_subagent",
     "build_explorer_subagent",

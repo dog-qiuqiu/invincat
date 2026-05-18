@@ -672,6 +672,20 @@ def test_create_cli_agent_local_shell_memory_skills_and_restrictive_shell(
     assert created["subagents"][2]["middleware"]
     assert created["subagents"][3]["middleware"]
     assert created["subagents"][4]["middleware"]
+    assert type(created["subagents"][1]["middleware"][0]).__name__ == (
+        "ReadOnlySubagentToolMiddleware"
+    )
+    assert type(created["subagents"][3]["middleware"][0]).__name__ == (
+        "ReadOnlySubagentToolMiddleware"
+    )
+    assert all(
+        type(item).__name__ != "ReadOnlySubagentToolMiddleware"
+        for item in created["subagents"][2]["middleware"]
+    )
+    assert all(
+        type(item).__name__ != "ReadOnlySubagentToolMiddleware"
+        for item in created["subagents"][4]["middleware"]
+    )
     assert "refreshable-memory" in middleware_names
     assert "memory-agent" in middleware_names
     assert "skills" in middleware_names
@@ -707,6 +721,20 @@ def test_create_cli_agent_shell_allow_list_and_memory_fallbacks(
     assert created["subagents"][2]["name"] == "worker"
     assert created["subagents"][3]["name"] == "researcher"
     assert created["subagents"][4]["name"] == "document-worker"
+    assert type(created["subagents"][1]["middleware"][0]).__name__ == (
+        "ReadOnlySubagentToolMiddleware"
+    )
+    assert type(created["subagents"][3]["middleware"][0]).__name__ == (
+        "ReadOnlySubagentToolMiddleware"
+    )
+    assert all(
+        type(item).__name__ != "ReadOnlySubagentToolMiddleware"
+        for item in created["subagents"][2]["middleware"]
+    )
+    assert all(
+        type(item).__name__ != "ReadOnlySubagentToolMiddleware"
+        for item in created["subagents"][4]["middleware"]
+    )
     assert "refreshable-memory" in middleware_names
     memory = next(item for item in created["middleware"] if item.name == "memory-agent")
     assert memory.kwargs["memory_store_paths"]["project"] == str(

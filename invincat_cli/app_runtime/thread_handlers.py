@@ -271,6 +271,11 @@ def apply_thread_switch_ids(app: Any, thread_id: str) -> None:  # noqa: ANN401
 
     app._session_state.thread_id = thread_id
     app._lc_thread_id = thread_id
+    from invincat_cli.app_runtime.goal_handlers import (
+        sync_goal_state_for_current_thread,
+    )
+
+    sync_goal_state_for_current_thread(app)
     banner_update = thread_switch_banner_update(thread_id)
     update_welcome_banner(
         app,
@@ -289,6 +294,11 @@ def rollback_thread_switch_ids(
 
     app._session_state.thread_id = snapshot.session_thread_id
     app._lc_thread_id = snapshot.lc_thread_id
+    from invincat_cli.app_runtime.goal_handlers import (
+        sync_goal_state_for_current_thread,
+    )
+
+    sync_goal_state_for_current_thread(app)
     banner_update = thread_switch_rollback_banner_update(
         snapshot.session_thread_id,
     )

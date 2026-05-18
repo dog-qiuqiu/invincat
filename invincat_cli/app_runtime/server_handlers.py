@@ -91,6 +91,11 @@ async def resolve_resume_thread(app: Any) -> None:  # noqa: ANN401
 
     if app._session_state:
         app._session_state.thread_id = app._lc_thread_id
+        from invincat_cli.app_runtime.goal_handlers import (
+            sync_goal_state_for_current_thread,
+        )
+
+        sync_goal_state_for_current_thread(app)
 
 
 async def start_server_background(app: Any) -> None:  # noqa: ANN401
