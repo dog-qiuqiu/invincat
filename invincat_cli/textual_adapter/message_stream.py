@@ -22,6 +22,59 @@ from invincat_cli.textual_adapter.utils import (
 
 logger = logging.getLogger(__name__)
 _PLANNER_ALLOWED_TOOL_SET: frozenset[str] = frozenset(PLANNER_ALLOWED_TOOLS)
+_TOOL_BLOCK_TYPES: frozenset[str] = frozenset({"tool_call_chunk", "tool_call"})
+
+
+def _call_value(call: Any, key: str) -> Any:  # noqa: ANN401
+    if isinstance(call, dict):
+        return call.get(key)
+    return getattr(call, key, None)
+
+
+def _coerce_tool_call_block(call: Any, *, chunk: bool) -> dict[str, Any] | None:
+    name = _call_value(call, "name")
+    if not name:
+        return None
+
+    block: dict[str, Any] = {
+        "type": "tool_call_chunk" if chunk else "tool_call",
+        "name": name,
+    }
+    args = _call_value(call, "args")
+    call_id = _call_value(call, "id")
+    index = _call_value(call, "index")
+    if args is not None:
+        block["args"] = args
+    if call_id is not None:
+        block["id"] = call_id
+    if index is not None:
+        block["index"] = index
+    return block
+
+
+def _fallback_tool_call_blocks(
+    message: Any, content_blocks: list[Any]
+) -> list[dict[str, Any]]:
+    """Return LangChain tool-call attrs when content_blocks omitted them."""
+    if any(
+        isinstance(block, dict) and block.get("type") in _TOOL_BLOCK_TYPES
+        for block in content_blocks
+    ):
+        return []
+
+    blocks: list[dict[str, Any]] = []
+    for call in getattr(message, "tool_call_chunks", None) or []:
+        block = _coerce_tool_call_block(call, chunk=True)
+        if block is not None:
+            blocks.append(block)
+    if blocks:
+        return blocks
+
+    for call in getattr(message, "tool_calls", None) or []:
+        block = _coerce_tool_call_block(call, chunk=False)
+        if block is not None:
+            blocks.append(block)
+    return blocks
 
 
 async def handle_message_stream_chunk(
@@ -184,8 +237,11 @@ async def handle_message_stream_chunk(
             if adapter._on_tokens_update:
                 adapter._on_tokens_update(captured_input_tokens)
 
-    # Check if this is an AIMessageChunk with content
-    if not has_content_blocks:
+    # Check if this is an AIMessageChunk with content or tool calls.
+    if not has_content_blocks and not (
+        getattr(message, "tool_calls", None)
+        or getattr(message, "tool_call_chunks", None)
+    ):
         logger.debug(
             "Message has no content_blocks: type=%s",
             type(message).__name__,
@@ -259,7 +315,7 @@ async def handle_message_stream_chunk(
         elif block_type in {"reasoning", "non_standard"}:
             pass  # reasoning content is intentionally not displayed
 
-        elif block_type in {"tool_call_chunk", "tool_call"}:
+        elif block_type in _TOOL_BLOCK_TYPES:
             from invincat_cli.textual_adapter.tool_calls import (
                 handle_tool_call_block,
             )
@@ -276,6 +332,23 @@ async def handle_message_stream_chunk(
                 ns_key=ns_key,
                 assistant_message_by_namespace=assistant_message_by_namespace,
             )
+    for block in _fallback_tool_call_blocks(message, blocks):
+        from invincat_cli.textual_adapter.tool_calls import (
+            handle_tool_call_block,
+        )
+
+        await handle_tool_call_block(
+            adapter=adapter,
+            block=block,
+            displayed_tool_ids=displayed_tool_ids,
+            tool_call_buffers=tool_call_buffers,
+            planner_mode_enforced=planner_mode_enforced,
+            planner_allowed_tool_set=_PLANNER_ALLOWED_TOOL_SET,
+            file_op_tracker=file_op_tracker,
+            pending_text_by_namespace=pending_text_by_namespace,
+            ns_key=ns_key,
+            assistant_message_by_namespace=assistant_message_by_namespace,
+        )
     if getattr(message, "chunk_position", None) == "last":
         pending_text = pending_text_by_namespace.get(ns_key, "")
         if pending_text:

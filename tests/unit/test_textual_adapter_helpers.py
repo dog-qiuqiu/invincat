@@ -2888,6 +2888,140 @@ def test_execute_task_textual_file_tool_result_annotations_and_diff(
     assert stats.wall_time_seconds >= 0
 
 
+def test_execute_task_textual_tracks_file_ops_from_tool_calls_attr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from langchain_core.messages import ToolMessage
+
+    from invincat_cli import textual_adapter as adapter_mod
+
+    mounted: list[object] = []
+    mounted_tools: list[object] = []
+    trackers: list[object] = []
+    write_args = {"path": "demo.txt", "content": "hello"}
+
+    class FakeFileOpTracker:
+        def __init__(self, **_kwargs: object) -> None:
+            self.active: dict[str, object] = {}
+            self.started: list[tuple[str, dict[str, object], str]] = []
+            trackers.append(self)
+
+        def start_operation(
+            self, tool_name: str, args: dict[str, object], tool_call_id: str
+        ) -> None:
+            self.started.append((tool_name, args, tool_call_id))
+            self.active[tool_call_id] = SimpleNamespace(args=args)
+
+        def complete_with_message(
+            self, message: object, _tool_args: dict[str, object] | None = None
+        ) -> object | None:
+            tool_call_id = getattr(message, "tool_call_id", "")
+            if tool_call_id not in self.active:
+                return None
+            return SimpleNamespace(
+                status="success",
+                error=None,
+                diff="--- before\n+++ after",
+                display_path="demo.txt",
+                args=write_args,
+            )
+
+    class FakeToolCallMessage:
+        def __init__(
+            self,
+            name: str,
+            args: dict[str, object],
+            *,
+            tool_call_id: str,
+            args_finalized: bool = False,
+        ) -> None:
+            self._tool_name = name
+            self._args = args
+            self._tool_call_id = tool_call_id
+            self.args_finalized = args_finalized
+            self.successes: list[str] = []
+            self.id = None
+            mounted_tools.append(self)
+
+        def update_args(self, args: dict[str, object]) -> None:
+            self._args = args
+
+        def set_success(self, output: str) -> None:
+            self.successes.append(output)
+
+    class FakeDiffMessage:
+        def __init__(self, diff: str, display_path: str) -> None:
+            self.diff = diff
+            self.display_path = display_path
+
+    class ToolCallsAttrAgent:
+        async def astream(self, *_args: object, **_kwargs: object):
+            yield (
+                (),
+                "messages",
+                (
+                    SimpleNamespace(
+                        tool_calls=[
+                            {
+                                "type": "tool_call",
+                                "name": "write_file",
+                                "args": write_args,
+                                "id": "tool-write",
+                            }
+                        ]
+                    ),
+                    {},
+                ),
+            )
+            yield (
+                (),
+                "messages",
+                (
+                    ToolMessage(
+                        content="ok",
+                        name="write_file",
+                        tool_call_id="tool-write",
+                        status="success",
+                    ),
+                    {},
+                ),
+            )
+
+    async def mount_message(message: object) -> None:
+        mounted.append(message)
+
+    async def dispatch(_name: str, _payload: dict[str, object]) -> None:
+        return None
+
+    monkeypatch.setattr(adapter_mod, "dispatch_hook", dispatch)
+    monkeypatch.setattr(adapter_mod, "FileOpTracker", FakeFileOpTracker)
+    monkeypatch.setattr(adapter_mod, "ToolCallMessage", FakeToolCallMessage)
+    monkeypatch.setattr(adapter_mod, "DiffMessage", FakeDiffMessage)
+
+    stats = asyncio.run(
+        execute_task_textual(
+            "hi",
+            ToolCallsAttrAgent(),
+            "agent",
+            SimpleNamespace(thread_id="thread-tool-calls-attr", plan_mode=False),
+            TextualUIAdapter(
+                mount_message=mount_message,
+                update_status=lambda _status: None,
+                request_approval=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+            ),
+        )
+    )
+
+    assert trackers[0].started == [("write_file", write_args, "tool-write")]
+    assert mounted_tools[0].successes == ["ok"]
+    diff_messages = [
+        message for message in mounted if isinstance(message, FakeDiffMessage)
+    ]
+    assert diff_messages[0].display_path == "demo.txt"
+    assert diff_messages[0].diff == "--- before\n+++ after"
+    assert stats.wall_time_seconds >= 0
+
+
 def test_execute_task_textual_records_stream_token_usage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
