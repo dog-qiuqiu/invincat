@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 COMMAND_URLS: dict[str, str] = {
     "/changelog": CHANGELOG_URL,
     "/docs": DOCS_URL,
-    "/feedback": "https://github.com/langchain-ai/deepagents/issues/new/choose",
+    "/feedback": "https://github.com/dog-qiuqiu/invincat/issues/new/choose",
 }
 
 

@@ -114,7 +114,7 @@ def _handle_update_command(console: Any) -> None:
         _main.logger.warning("--update failed", exc_info=True)
         console.print(
             "[bold red]Error:[/bold red] Update failed.\n"
-            "Run manually: [cyan]uv tool upgrade deepagents-cli[/cyan]"
+            "Run manually: [cyan]uv tool upgrade invincat-cli[/cyan]"
         )
         _main.sys.exit(1)
 

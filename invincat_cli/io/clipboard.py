@@ -1,4 +1,4 @@
-"""Clipboard utilities for deepagents-cli."""
+"""Clipboard utilities for invincat-cli."""
 
 from __future__ import annotations
 

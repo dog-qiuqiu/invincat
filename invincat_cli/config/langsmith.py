@@ -20,7 +20,7 @@ def get_langsmith_project_name() -> str | None:
     return (
         _config._get_settings().deepagents_langchain_project  # noqa: SLF001
         or _config.os.environ.get("LANGSMITH_PROJECT")
-        or "deepagents-cli"
+        or "invincat-cli"
     )
 
 
@@ -47,7 +47,7 @@ def build_langsmith_thread_url(thread_id: str) -> str | None:
     if not project_url:
         return None
 
-    return f"{project_url.rstrip('/')}/t/{thread_id}?utm_source=deepagents-cli"
+    return f"{project_url.rstrip('/')}/t/{thread_id}?utm_source=invincat-cli"
 
 
 def reset_langsmith_url_cache() -> None:

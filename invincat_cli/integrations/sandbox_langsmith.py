@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from langsmith.sandbox import SandboxTemplate
 
 
-_LANGSMITH_DEFAULT_TEMPLATE = "deepagents-cli"
+_LANGSMITH_DEFAULT_TEMPLATE = "invincat-cli"
 """Default LangSmith sandbox template name used when no template is specified."""
 
 _LANGSMITH_DEFAULT_IMAGE = "python:3"

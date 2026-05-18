@@ -59,13 +59,13 @@ def build_stream_config(
         _config.logger.warning("Could not determine working directory", exc_info=True)
         cwd = ""
 
-    versions: dict[str, str] = {"deepagents-cli": _config.__version__}
+    versions: dict[str, str] = {"invincat-cli": _config.__version__}
     with contextlib.suppress(importlib_metadata.PackageNotFoundError):
         versions["deepagents"] = importlib_metadata.version("deepagents")
 
     metadata: dict[str, Any] = {
         "versions": versions,
-        "ls_integration": "deepagents-cli",
+        "ls_integration": "invincat-cli",
     }
     from invincat_cli.core.env_vars import USER_ID
 

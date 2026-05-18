@@ -437,7 +437,7 @@ async def list_threads_command(
     *,
     output_format: OutputFormat = "text",
 ) -> None:
-    """CLI handler for `deepagents threads list`."""
+    """CLI handler for `invincat-cli threads list`."""
     from invincat_cli.sessions.commands import list_threads_command as _impl
 
     await _impl(
@@ -457,7 +457,7 @@ async def delete_thread_command(
     dry_run: bool = False,
     output_format: OutputFormat = "text",
 ) -> None:
-    """CLI handler for `deepagents threads delete`."""
+    """CLI handler for `invincat-cli threads delete`."""
     from invincat_cli.sessions.commands import delete_thread_command as _impl
 
     await _impl(thread_id, dry_run=dry_run, output_format=output_format)

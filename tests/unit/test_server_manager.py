@@ -51,8 +51,8 @@ def test_write_pyproject_points_to_cli_package(tmp_path) -> None:
     manager._write_pyproject(tmp_path)
 
     content = (tmp_path / "pyproject.toml").read_text()
-    assert 'name = "deepagents-server-runtime"' in content
-    assert "deepagents-cli @ file://" in content
+    assert 'name = "invincat-server-runtime"' in content
+    assert "invincat-cli @ file://" in content
 
 
 def test_scaffold_workspace_writes_required_files(monkeypatch, tmp_path) -> None:

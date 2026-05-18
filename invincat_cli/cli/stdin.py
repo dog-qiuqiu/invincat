@@ -9,6 +9,7 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
     """Read piped stdin and merge it into the parsed CLI arguments."""
     from invincat_cli import main as _main
     from invincat_cli.config import console
+    from invincat_cli.core.version import CLI_COMMAND
 
     explicit_stdin = args.stdin
 
@@ -37,7 +38,7 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
             console.print(
                 "[bold red]Error:[/bold red] --stdin was passed but stdin "
                 "is a terminal. Pipe input or use -n instead.\n"
-                "  cat prompt.txt | deepagents --stdin -q"
+                f"  cat prompt.txt | {CLI_COMMAND} --stdin -q"
             )
             _main.sys.exit(1)
         return

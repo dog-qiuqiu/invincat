@@ -40,7 +40,7 @@ description: "{description}"
 # (Warning: SKILL.md files exceeding 10 MB are silently skipped at load time.)
 # Optional fields per Agent Skills spec:
 # license: Apache-2.0
-# compatibility: Designed for Deep Agents CLI
+# compatibility: Designed for Invincat CLI
 # metadata:
 #   author: your-org
 #   version: "1.0"
@@ -198,7 +198,7 @@ def _create(
         "\n"
         f"  nano {skill_md}\n"
         "\n"
-        "  See examples/skills/ in the deepagents-cli repo for example skills:\n"
+        "  See examples/skills/ in the invincat-cli repo for example skills:\n"
         "   - web-research: Structured research workflow\n"
         "   - langgraph-docs: LangGraph documentation lookup\n"
         "\n"

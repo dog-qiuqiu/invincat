@@ -1,10 +1,10 @@
 """CLI commands for skill management.
 
 These commands are registered with the CLI via main.py:
-- deepagents skills list [options]
-- deepagents skills create <name> [options]
-- deepagents skills info <name> [options]
-- deepagents skills delete <name> [options]
+- invincat-cli skills list [options]
+- invincat-cli skills create <name> [options]
+- invincat-cli skills info <name> [options]
+- invincat-cli skills delete <name> [options]
 """
 
 from __future__ import annotations
@@ -197,7 +197,7 @@ def setup_skills_parser(
     """Setup the skills subcommand parser with all its subcommands.
 
     Each subcommand gets a dedicated help screen so that
-    `deepagents skills -h` shows skills-specific help, not the
+    `invincat-cli skills -h` shows skills-specific help, not the
     global help.
 
     Args:

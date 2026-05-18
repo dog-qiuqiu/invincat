@@ -1,4 +1,4 @@
-"""Internationalization (i18n) support for deepagents-cli.
+"""Internationalization (i18n) support for invincat-cli.
 
 This module provides comprehensive language localization support, enabling
 users to switch between English and Chinese languages throughout the application.

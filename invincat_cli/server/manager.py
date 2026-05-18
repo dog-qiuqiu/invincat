@@ -169,11 +169,11 @@ def _write_pyproject(work_dir: Path) -> None:
     """
     cli_dir = Path(__file__).parent.parent
     content = f"""[project]
-name = "deepagents-server-runtime"
+name = "invincat-server-runtime"
 version = "0.0.1"
 requires-python = ">=3.11"
 dependencies = [
-    "deepagents-cli @ file://{cli_dir}",
+    "invincat-cli @ file://{cli_dir}",
 ]
 
 [build-system]

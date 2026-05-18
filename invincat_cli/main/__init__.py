@@ -1,4 +1,4 @@
-"""Main entry point and CLI loop for deepagents."""
+"""Main entry point and CLI loop for Invincat."""
 
 # ruff: noqa: E402
 # Imports placed after warning filters to suppress deprecation warnings
@@ -23,7 +23,7 @@ from pathlib import Path as Path  # noqa: F401
 # Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
 
-from invincat_cli.core.version import __version__
+from invincat_cli.core.version import CLI_COMMAND, __version__
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +125,7 @@ def cli_main() -> None:
         except Exception:  # Best-effort SDK version lookup
             logger.debug("Unexpected error looking up SDK version", exc_info=True)
             sdk_version = "unknown"
-        print(f"deepagents-cli {__version__}\ndeepagents (SDK) {sdk_version}")  # noqa: T201  # CLI version output
+        print(f"invincat-cli {__version__}\ndeepagents (SDK) {sdk_version}")  # noqa: T201  # CLI version output
         sys.exit(0)
 
     # ACP mode does not require Textual, so skip UI dependency checks when
@@ -168,8 +168,8 @@ def cli_main() -> None:
                 msg = (
                     "Error: --no-mcp and --mcp-config are mutually exclusive."
                     " Use one or the other.\n"
-                    "  deepagents --mcp-config path/to/config.json\n"
-                    "  deepagents --no-mcp\n"
+                    "  invincat-cli --mcp-config path/to/config.json\n"
+                    "  invincat-cli --no-mcp\n"
                 )
                 sys.stderr.write(msg)
                 sys.stderr.flush()
@@ -205,8 +205,8 @@ def cli_main() -> None:
             _Console(stderr=True).print(
                 "[bold red]Error:[/bold red] --no-mcp and --mcp-config "
                 "are mutually exclusive. Use one or the other.\n"
-                "  deepagents --mcp-config path/to/config.json\n"
-                "  deepagents --no-mcp"
+                "  invincat-cli --mcp-config path/to/config.json\n"
+                "  invincat-cli --no-mcp"
             )
             sys.exit(2)
 
@@ -225,7 +225,7 @@ def cli_main() -> None:
             _Console(stderr=True).print(
                 f"[bold red]Error:[/bold red] {flag} requires "
                 "--non-interactive (-n) or piped stdin\n"
-                "  deepagents -n 'summarize README.md' --quiet"
+                "  invincat-cli -n 'summarize README.md' --quiet"
             )
             sys.exit(2)
 
@@ -443,7 +443,7 @@ def cli_main() -> None:
                 ):
                     console.print()
                     console.print("[dim]Resume this thread with:[/dim]")
-                    hint = Text("deepagents -r ", style="cyan")
+                    hint = Text(f"{CLI_COMMAND} -r ", style="cyan")
                     hint.append(str(thread_id), style="cyan")
                     console.print(hint)
             except Exception:

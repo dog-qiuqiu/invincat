@@ -9,7 +9,7 @@ Examples:
  init_skill.py my-api-helper --path skills/private
  init_skill.py custom-skill --path /custom/location
 
-For deepagents CLI:
+For Invincat CLI:
  init_skill.py my-skill --path ~/.invincat/agent/skills
 """
 
@@ -332,7 +332,7 @@ def main():
         print(" init_skill.py my-new-skill --path skills/public")
         print(" init_skill.py my-api-helper --path skills/private")
         print(" init_skill.py custom-skill --path /custom/location")
-        print("\nFor deepagents CLI:")
+        print("\nFor Invincat CLI:")
         print(" init_skill.py my-skill --path ~/.invincat/agent/skills")
         sys.exit(1)
 

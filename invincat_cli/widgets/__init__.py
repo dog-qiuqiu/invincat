@@ -1,4 +1,4 @@
-"""Textual widgets for deepagents-cli.
+"""Textual widgets for invincat-cli.
 
 Import directly from submodules, e.g.:
 

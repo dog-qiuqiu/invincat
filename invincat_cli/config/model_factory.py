@@ -82,8 +82,8 @@ def get_default_memory_model_spec() -> str | None:
     return None
 
 
-_OPENROUTER_APP_URL = "https://pypi.org/project/deepagents-cli/"
-_OPENROUTER_APP_TITLE = "Deep Agents CLI"
+_OPENROUTER_APP_URL = "https://pypi.org/project/invincat-cli/"
+_OPENROUTER_APP_TITLE = "Invincat CLI"
 _OPENROUTER_APP_CATEGORIES: list[str] = ["cli-agent"]
 
 

@@ -58,7 +58,7 @@ def test_default_working_dirs_and_provider_names() -> None:
 
 
 def test_import_provider_module_reports_extra_install_hint() -> None:
-    with pytest.raises(ImportError, match="deepagents-cli\\[missing\\]"):
+    with pytest.raises(ImportError, match="invincat-cli\\[missing\\]"):
         sandbox_factory._import_provider_module(
             "definitely_missing_provider_module",
             provider="missing",
@@ -91,7 +91,7 @@ def test_verify_sandbox_deps_raises_for_missing_or_invalid_spec(monkeypatch) -> 
         lambda _name: None,
     )
 
-    with pytest.raises(ImportError, match="deepagents-cli\\[daytona\\]"):
+    with pytest.raises(ImportError, match="invincat-cli\\[daytona\\]"):
         sandbox_factory.verify_sandbox_deps("daytona")
 
     def broken_find_spec(_name: str) -> object:
@@ -99,7 +99,7 @@ def test_verify_sandbox_deps_raises_for_missing_or_invalid_spec(monkeypatch) -> 
 
     monkeypatch.setattr(sandbox_factory.importlib.util, "find_spec", broken_find_spec)
 
-    with pytest.raises(ImportError, match="deepagents-cli\\[runloop\\]"):
+    with pytest.raises(ImportError, match="invincat-cli\\[runloop\\]"):
         sandbox_factory.verify_sandbox_deps("runloop")
 
 

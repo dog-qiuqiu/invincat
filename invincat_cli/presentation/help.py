@@ -33,13 +33,13 @@ def _print_option_section(*lines: str, title: str = "Options") -> None:
 
 
 def show_help() -> None:
-    """Show top-level help information for the deepagents CLI."""
+    """Show top-level help information for the Invincat CLI."""
     editable_path = _get_editable_install_path()
     install_type = f" (local: {escape(editable_path)})" if editable_path else ""
     banner_color = theme.PRIMARY_DEV if _is_editable_install() else theme.PRIMARY
     console.print()
     console.print(
-        f"[bold {banner_color}]deepagents-cli[/bold {banner_color}]"
+        f"[bold {banner_color}]invincat-cli[/bold {banner_color}]"
         f" v{__version__}{install_type}"
     )
     console.print()
@@ -50,17 +50,17 @@ def show_help() -> None:
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
     console.print(
-        "  deepagents [OPTIONS]                           Start interactive thread"
+        "  invincat-cli [OPTIONS]                           Start interactive thread"
     )
-    console.print("  deepagents agents <list>                       Manage agent data")
+    console.print("  invincat-cli agents <list>                       Manage agent data")
     console.print(
-        "  deepagents skills <list|create|info|delete>    Manage agent skills"
-    )
-    console.print(
-        "  deepagents threads <list|delete>               Manage conversation threads"
+        "  invincat-cli skills <list|create|info|delete>    Manage agent skills"
     )
     console.print(
-        "  deepagents update                              Check for and install updates"
+        "  invincat-cli threads <list|delete>               Manage conversation threads"
+    )
+    console.print(
+        "  invincat-cli update                              Check for and install updates"
     )
     console.print()
 
@@ -116,29 +116,29 @@ def show_help() -> None:
         "  --update                   Check for and install updates, then exit"
     )
     console.print("  --acp                      Run as an ACP server over stdio")
-    console.print("  -v, --version              Show deepagents CLI and SDK versions")
+    console.print("  -v, --version              Show Invincat CLI and DeepAgents SDK versions")
     console.print("  -h, --help                 Show this help message and exit")
     console.print()
 
     console.print("[bold]Non-Interactive Mode:[/bold]", style=theme.PRIMARY)
     console.print(
-        "  deepagents -n 'Summarize README.md'     # Run task (no local shell access)",
+        "  invincat-cli -n 'Summarize README.md'     # Run task (no local shell access)",
         style=theme.MUTED,
     )
     console.print(
-        "  deepagents -n 'List files' -S recommended  # Use safe commands",
+        "  invincat-cli -n 'List files' -S recommended  # Use safe commands",
         style=theme.MUTED,
     )
     console.print(
-        "  deepagents -n 'Search logs' -S ls,cat,grep # Specify list",
+        "  invincat-cli -n 'Search logs' -S ls,cat,grep # Specify list",
         style=theme.MUTED,
     )
     console.print(
-        "  deepagents -n 'Fix tests' -S all           # Any command",
+        "  invincat-cli -n 'Fix tests' -S all           # Any command",
         style=theme.MUTED,
     )
     console.print(
-        "  cat prompt.txt | deepagents --stdin -q      # Explicit stdin",
+        "  cat prompt.txt | invincat-cli --stdin -q      # Explicit stdin",
         style=theme.MUTED,
     )
     console.print()
@@ -151,7 +151,7 @@ def show_list_help() -> None:
     """
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents agents list [options]")
+    console.print("  invincat-cli agents list [options]")
     console.print()
     console.print(
         "List agent data directories found in ~/.invincat/.",
@@ -160,8 +160,8 @@ def show_list_help() -> None:
     _print_option_section()
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents agents list")
-    console.print("  deepagents agents list --json")
+    console.print("  invincat-cli agents list")
+    console.print("  invincat-cli agents list --json")
     console.print()
 
 
@@ -169,7 +169,7 @@ def show_agents_help() -> None:
     """Show help information for the `agents` subcommand."""
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents agents <command> [options]")
+    console.print("  invincat-cli agents <command> [options]")
     console.print()
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
     console.print("  list|ls           List all agents")
@@ -177,7 +177,7 @@ def show_agents_help() -> None:
     _print_option_section()
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents agents list")
+    console.print("  invincat-cli agents list")
     console.print()
 
 
@@ -189,7 +189,7 @@ def show_skills_help() -> None:
     """
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents skills <command> [options]")
+    console.print("  invincat-cli skills <command> [options]")
     console.print()
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
     console.print("  list|ls           List all available skills")
@@ -204,14 +204,14 @@ def show_skills_help() -> None:
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents skills list")
-    console.print("  deepagents skills list --project")
-    console.print("  deepagents skills create my-skill")
-    console.print("  deepagents skills create my-skill --agent myagent")
-    console.print("  deepagents skills info my-skill")
-    console.print("  deepagents skills delete my-skill")
-    console.print("  deepagents skills delete my-skill --force --project")
-    console.print("  deepagents skills delete -h")
+    console.print("  invincat-cli skills list")
+    console.print("  invincat-cli skills list --project")
+    console.print("  invincat-cli skills create my-skill")
+    console.print("  invincat-cli skills create my-skill --agent myagent")
+    console.print("  invincat-cli skills info my-skill")
+    console.print("  invincat-cli skills delete my-skill")
+    console.print("  invincat-cli skills delete my-skill --force --project")
+    console.print("  invincat-cli skills delete -h")
     console.print()
     console.print(
         "[bold]Skill directories (highest precedence first):[/bold]",
@@ -231,7 +231,7 @@ def show_skills_list_help() -> None:
     """Show help information for the `skills list` subcommand."""
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents skills list [options]")
+    console.print("  invincat-cli skills list [options]")
     console.print()
     _print_option_section(
         "  --agent NAME            Agent identifier (default: agent)",
@@ -239,9 +239,9 @@ def show_skills_list_help() -> None:
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents skills list")
-    console.print("  deepagents skills list --project")
-    console.print("  deepagents skills list --json")
+    console.print("  invincat-cli skills list")
+    console.print("  invincat-cli skills list --project")
+    console.print("  invincat-cli skills list --json")
     console.print()
 
 
@@ -249,7 +249,7 @@ def show_skills_create_help() -> None:
     """Show help information for the `skills create` subcommand."""
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents skills create <name> [options]")
+    console.print("  invincat-cli skills create <name> [options]")
     console.print()
     _print_option_section(
         "  --agent NAME            Agent identifier (default: agent)",
@@ -258,8 +258,8 @@ def show_skills_create_help() -> None:
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents skills create web-research")
-    console.print("  deepagents skills create my-skill --project")
+    console.print("  invincat-cli skills create web-research")
+    console.print("  invincat-cli skills create my-skill --project")
     console.print()
 
 
@@ -267,7 +267,7 @@ def show_skills_info_help() -> None:
     """Show help information for the `skills info` subcommand."""
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents skills info <name> [options]")
+    console.print("  invincat-cli skills info <name> [options]")
     console.print()
     _print_option_section(
         "  --agent NAME            Agent identifier (default: agent)",
@@ -275,8 +275,8 @@ def show_skills_info_help() -> None:
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents skills info web-research")
-    console.print("  deepagents skills info my-skill --project")
+    console.print("  invincat-cli skills info web-research")
+    console.print("  invincat-cli skills info my-skill --project")
     console.print()
 
 
@@ -284,7 +284,7 @@ def show_skills_delete_help() -> None:
     """Show help information for the `skills delete` subcommand."""
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents skills delete <name> [options]")
+    console.print("  invincat-cli skills delete <name> [options]")
     console.print()
     _print_option_section(
         "  --agent NAME            Agent identifier (default: agent)",
@@ -294,10 +294,10 @@ def show_skills_delete_help() -> None:
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents skills delete old-skill")
-    console.print("  deepagents skills delete old-skill --force")
-    console.print("  deepagents skills delete old-skill --project")
-    console.print("  deepagents skills delete old-skill --dry-run")
+    console.print("  invincat-cli skills delete old-skill")
+    console.print("  invincat-cli skills delete old-skill --force")
+    console.print("  invincat-cli skills delete old-skill --project")
+    console.print("  invincat-cli skills delete old-skill --dry-run")
     console.print()
 
 
@@ -305,7 +305,7 @@ def show_update_help() -> None:
     """Show help information for the `update` subcommand."""
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents update [options]")
+    console.print("  invincat-cli update [options]")
     console.print()
     console.print(
         "Check for and install CLI updates from PyPI.",
@@ -314,8 +314,8 @@ def show_update_help() -> None:
     _print_option_section()
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents update")
-    console.print("  deepagents update --json")
+    console.print("  invincat-cli update")
+    console.print("  invincat-cli update --json")
     console.print()
 
 
@@ -327,7 +327,7 @@ def show_threads_help() -> None:
     """
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents threads <command> [options]")
+    console.print("  invincat-cli threads <command> [options]")
     console.print()
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
     console.print("  list|ls           List all threads")
@@ -336,10 +336,10 @@ def show_threads_help() -> None:
     _print_option_section()
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents threads list")
-    console.print("  deepagents threads list -n 10")
-    console.print("  deepagents threads list --agent mybot")
-    console.print("  deepagents threads delete abc123")
+    console.print("  invincat-cli threads list")
+    console.print("  invincat-cli threads list -n 10")
+    console.print("  invincat-cli threads list --agent mybot")
+    console.print("  invincat-cli threads delete abc123")
     console.print()
 
 
@@ -347,15 +347,15 @@ def show_threads_delete_help() -> None:
     """Show help information for the `threads delete` subcommand."""
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents threads delete <ID> [options]")
+    console.print("  invincat-cli threads delete <ID> [options]")
     console.print()
     _print_option_section(
         "  --dry-run               Show what would happen without making changes",
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents threads delete abc123")
-    console.print("  deepagents threads delete abc123 --dry-run")
+    console.print("  invincat-cli threads delete abc123")
+    console.print("  invincat-cli threads delete abc123 --dry-run")
     console.print()
 
 
@@ -363,7 +363,7 @@ def show_threads_list_help() -> None:
     """Show help information for the `threads list` subcommand."""
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents threads list [options]")
+    console.print("  invincat-cli threads list [options]")
     console.print()
     _print_option_section(
         "  --agent NAME              Filter by agent name",
@@ -376,10 +376,10 @@ def show_threads_list_help() -> None:
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents threads list")
-    console.print("  deepagents threads list -n 10")
-    console.print("  deepagents threads list --agent mybot")
-    console.print("  deepagents threads list --branch main -v")
-    console.print("  deepagents threads list --sort created --limit 50")
-    console.print("  deepagents threads list -r")
+    console.print("  invincat-cli threads list")
+    console.print("  invincat-cli threads list -n 10")
+    console.print("  invincat-cli threads list --agent mybot")
+    console.print("  invincat-cli threads list --branch main -v")
+    console.print("  invincat-cli threads list --sort created --limit 50")
+    console.print("  invincat-cli threads list -r")
     console.print()

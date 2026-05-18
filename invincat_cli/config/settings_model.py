@@ -20,7 +20,7 @@ def _home() -> Path:
 
 @dataclass
 class Settings:
-    """Global settings and environment detection for deepagents-cli.
+    """Global settings and environment detection for invincat-cli.
 
     This class is initialized once at startup and provides access to:
     - Available models and API keys

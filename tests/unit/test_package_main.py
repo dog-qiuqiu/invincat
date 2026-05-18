@@ -33,4 +33,4 @@ def test_main_package_entrypoint_is_runnable() -> None:
     )
 
     assert result.returncode == 0
-    assert "deepagents-cli" in result.stdout
+    assert "invincat-cli" in result.stdout

@@ -1,4 +1,4 @@
-"""Non-interactive execution mode for deepagents CLI.
+"""Non-interactive execution mode for Invincat CLI.
 
 Provides `run_non_interactive` which runs a single user task against the
 agent graph, streams results to stdout, and exits with an appropriate code.

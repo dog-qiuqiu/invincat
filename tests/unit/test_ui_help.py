@@ -45,17 +45,17 @@ def test_print_option_section_includes_custom_and_shared_options(
 @pytest.mark.parametrize(
     ("show_fn", "expected"),
     [
-        (ui.show_list_help, "deepagents agents list [options]"),
-        (ui.show_agents_help, "deepagents agents <command> [options]"),
-        (ui.show_skills_help, "deepagents skills <command> [options]"),
-        (ui.show_skills_list_help, "deepagents skills list [options]"),
-        (ui.show_skills_create_help, "deepagents skills create <name> [options]"),
-        (ui.show_skills_info_help, "deepagents skills info <name> [options]"),
-        (ui.show_skills_delete_help, "deepagents skills delete <name> [options]"),
-        (ui.show_update_help, "deepagents update [options]"),
-        (ui.show_threads_help, "deepagents threads <command> [options]"),
-        (ui.show_threads_delete_help, "deepagents threads delete <ID> [options]"),
-        (ui.show_threads_list_help, "deepagents threads list [options]"),
+        (ui.show_list_help, "invincat-cli agents list [options]"),
+        (ui.show_agents_help, "invincat-cli agents <command> [options]"),
+        (ui.show_skills_help, "invincat-cli skills <command> [options]"),
+        (ui.show_skills_list_help, "invincat-cli skills list [options]"),
+        (ui.show_skills_create_help, "invincat-cli skills create <name> [options]"),
+        (ui.show_skills_info_help, "invincat-cli skills info <name> [options]"),
+        (ui.show_skills_delete_help, "invincat-cli skills delete <name> [options]"),
+        (ui.show_update_help, "invincat-cli update [options]"),
+        (ui.show_threads_help, "invincat-cli threads <command> [options]"),
+        (ui.show_threads_delete_help, "invincat-cli threads delete <ID> [options]"),
+        (ui.show_threads_list_help, "invincat-cli threads list [options]"),
     ],
 )
 def test_subcommand_help_screens_print_usage_and_common_flags(
@@ -81,8 +81,8 @@ def test_show_help_prints_standard_top_level_help(
     ui.show_help()
 
     text = fake_console.text
-    assert "deepagents-cli" in text
-    assert "deepagents [OPTIONS]" in text
+    assert "invincat-cli" in text
+    assert "invincat-cli [OPTIONS]" in text
     assert "--non-interactive MSG" in text
     assert "--acp" in text
 

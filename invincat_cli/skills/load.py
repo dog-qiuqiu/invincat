@@ -121,7 +121,7 @@ def list_skills(
                 if source_label == "built-in":
                     extra["metadata"] = {
                         **skill["metadata"],
-                        "deepagents-cli-version": _cli_version,
+                        "invincat-cli-version": _cli_version,
                     }
                 extended = cast("ExtendedSkillMetadata", {**skill, **extra})
                 all_skills[skill["name"]] = extended

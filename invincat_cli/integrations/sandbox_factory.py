@@ -57,7 +57,7 @@ def _import_provider_module(
     except ImportError as exc:
         msg = (
             f"The '{provider}' sandbox provider requires the '{package}' package. "
-            f"Install it with: pip install 'deepagents-cli[{provider}]'"
+            f"Install it with: pip install 'invincat-cli[{provider}]'"
         )
         raise ImportError(msg) from exc
 

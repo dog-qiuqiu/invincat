@@ -1,4 +1,4 @@
-"""Sandbox provider interface used by the deepagents CLI."""
+"""Sandbox provider interface used by Invincat CLI."""
 
 from __future__ import annotations
 

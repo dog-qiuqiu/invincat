@@ -92,7 +92,7 @@ def test_list_skills_adds_cli_version_to_built_in_metadata(
 
     assert skill["source"] == "built-in"
     assert skill["metadata"]["existing"] == "value"
-    assert skill["metadata"]["deepagents-cli-version"] == load._cli_version
+    assert skill["metadata"]["invincat-cli-version"] == load._cli_version
 
 
 def test_list_skills_skips_missing_and_broken_sources(

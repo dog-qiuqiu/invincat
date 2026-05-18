@@ -1,4 +1,4 @@
-"""Deep Agents CLI - Interactive AI coding assistant."""
+"""Invincat CLI - interactive AI coding assistant."""
 
 from __future__ import annotations
 

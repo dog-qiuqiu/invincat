@@ -1,1 +1,1 @@
-"""Integrations for external systems used by the deepagents CLI."""
+"""Integrations for external systems used by Invincat CLI."""

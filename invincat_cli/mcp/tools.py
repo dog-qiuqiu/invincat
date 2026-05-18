@@ -1,4 +1,4 @@
-"""MCP tools loader facade for deepagents CLI."""
+"""MCP tools loader facade for Invincat CLI."""
 
 from __future__ import annotations
 

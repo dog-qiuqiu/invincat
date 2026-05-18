@@ -55,7 +55,7 @@ _reset_langsmith_project_url_cache = _langsmith_links.reset_project_url_cache
 # Lazy bootstrap: dotenv loading, LANGSMITH_PROJECT override, and start-path
 # detection are deferred until first access of `settings` (via module
 # `__getattr__`).  This avoids disk I/O and path traversal during import for
-# callers that never touch `settings` (e.g. `deepagents --help`).
+# callers that never touch `settings` (e.g. `invincat-cli --help`).
 # ---------------------------------------------------------------------------
 
 _bootstrap_done = False

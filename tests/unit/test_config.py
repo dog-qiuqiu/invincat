@@ -694,7 +694,7 @@ class TestUtilityFunctions:
         monkeypatch.setenv("LANGSMITH_PROJECT", "env-project")
         assert config_mod.get_langsmith_project_name() == "env-project"
         monkeypatch.delenv("LANGSMITH_PROJECT")
-        assert config_mod.get_langsmith_project_name() == "deepagents-cli"
+        assert config_mod.get_langsmith_project_name() == "invincat-cli"
 
         values.clear()
         assert config_mod.get_langsmith_project_name() is None
@@ -732,7 +732,7 @@ class TestUtilityFunctions:
         )
         assert (
             config_mod.build_langsmith_thread_url("thread-1")
-            == "https://smith/projects/p/t/thread-1?utm_source=deepagents-cli"
+            == "https://smith/projects/p/t/thread-1?utm_source=invincat-cli"
         )
 
     def test_langsmith_project_url_failure_paths(self, monkeypatch: pytest.MonkeyPatch):
@@ -1083,8 +1083,8 @@ class TestModelCreation:
         }
 
         openrouter = _get_provider_kwargs("openrouter")
-        assert openrouter["app_url"] == "https://pypi.org/project/deepagents-cli/"
-        assert openrouter["app_title"] == "Deep Agents CLI"
+        assert openrouter["app_url"] == "https://pypi.org/project/invincat-cli/"
+        assert openrouter["app_title"] == "Invincat CLI"
         assert openrouter["app_categories"] == ["cli-agent"]
 
     def test_provider_kwargs_runs_openrouter_version_check(

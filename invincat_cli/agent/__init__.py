@@ -137,7 +137,7 @@ def create_cli_agent(
 ) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
-    This is the main entry point for creating a deepagents CLI agent, usable
+    This is the main entry point for creating an Invincat CLI agent, usable
     both internally and from external code (e.g., benchmarking frameworks).
 
     Args:

@@ -148,9 +148,9 @@ def test_format_tool_warning_tui_includes_ripgrep_hint(
 @pytest.mark.parametrize(
     ("argv", "expected"),
     [
-        (["deepagents"], {"command": None, "agent": "agent"}),
+        (["invincat-cli"], {"command": None, "agent": "agent"}),
         (
-            ["deepagents", "threads", "list", "--agent", "coder", "-n", "5"],
+            ["invincat-cli", "threads", "list", "--agent", "coder", "-n", "5"],
             {
                 "command": "threads",
                 "threads_command": "list",
@@ -159,7 +159,7 @@ def test_format_tool_warning_tui_includes_ripgrep_hint(
             },
         ),
         (
-            ["deepagents", "skills", "delete", "demo", "--force", "--json"],
+            ["invincat-cli", "skills", "delete", "demo", "--force", "--json"],
             {
                 "command": "skills",
                 "skills_command": "delete",
@@ -168,7 +168,7 @@ def test_format_tool_warning_tui_includes_ripgrep_hint(
                 "output_format": "json",
             },
         ),
-        (["deepagents", "wecombot"], {"command": "wecombot"}),
+        (["invincat-cli", "wecombot"], {"command": "wecombot"}),
     ],
 )
 def test_parse_args_builds_cli_subcommands(
@@ -191,7 +191,7 @@ def test_parse_args_lazy_help_action_invokes_ui_help(
 
     events: list[str] = []
     monkeypatch.setattr(ui_module, "show_help", lambda: events.append("help"))
-    monkeypatch.setattr(main.sys, "argv", ["deepagents", "-h"])
+    monkeypatch.setattr(main.sys, "argv", ["invincat-cli", "-h"])
 
     with pytest.raises(SystemExit) as exc_info:
         main.parse_args()
@@ -213,7 +213,7 @@ def test_parse_args_uses_unknown_sdk_version_when_lookup_fails(
     else:
         error = RuntimeError("metadata unavailable")
 
-    monkeypatch.setattr(main.sys, "argv", ["deepagents"])
+    monkeypatch.setattr(main.sys, "argv", ["invincat-cli"])
     monkeypatch.setattr(
         "importlib.metadata.version",
         lambda _name: (_ for _ in ()).throw(error),
@@ -1473,7 +1473,7 @@ def test_cli_main_update_paths_exit_with_expected_status(
         return upgrade_success, "upgrade output"
 
     update_module.perform_upgrade = fake_perform_upgrade
-    update_module.upgrade_command = lambda: "uv tool upgrade deepagents-cli"
+    update_module.upgrade_command = lambda: "uv tool upgrade invincat-cli"
     monkeypatch.setitem(sys.modules, "invincat_cli.update_check", update_module)
 
     _prepare_cli_main(monkeypatch, _cli_args(update=True))
@@ -1963,7 +1963,7 @@ def test_cli_main_interactive_prints_update_banner(
 
     calls: list[dict[str, Any]] = []
     update_module = ModuleType("invincat_cli.update_check")
-    update_module.upgrade_command = lambda: "uv tool upgrade deepagents-cli"
+    update_module.upgrade_command = lambda: "uv tool upgrade invincat-cli"
     update_module.is_auto_update_enabled = lambda: False
     monkeypatch.setitem(sys.modules, "invincat_cli.update_check", update_module)
     monkeypatch.setattr(sessions_module, "generate_thread_id", lambda: "thread-new")

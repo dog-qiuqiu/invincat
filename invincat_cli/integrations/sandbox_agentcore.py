@@ -83,7 +83,7 @@ class _AgentCoreProvider(SandboxProvider):
 
         interpreter = agentcore_module.CodeInterpreter(
             region=self._region,
-            integration_source="deepagents-cli",
+            integration_source="invincat-cli",
         )
         try:
             interpreter.start()

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Quick validation script for skills - minimal version.
 
-For deepagents CLI, skills are located at:
+For Invincat CLI, skills are located at:
 ~/.invincat/<agent>/skills/<skill-name>/
 
 Example:

@@ -20,7 +20,7 @@ async def list_threads_command(
     *,
     output_format: OutputFormat = "text",
 ) -> None:
-    """CLI handler for `deepagents threads list`."""
+    """CLI handler for `invincat-cli threads list`."""
     from invincat_cli.model_config import (
         load_thread_relative_time,
         load_thread_sort_order,
@@ -63,6 +63,7 @@ async def list_threads_command(
 
     from invincat_cli import theme
     from invincat_cli.config import console
+    from invincat_cli.core.version import CLI_COMMAND
 
     if not threads:
         filters = []
@@ -76,7 +77,7 @@ async def list_threads_command(
             )
         else:
             console.print("[yellow]No threads found.[/yellow]")
-        console.print("[dim]Start a conversation with: deepagents[/dim]")
+        console.print(f"[dim]Start a conversation with: {CLI_COMMAND}[/dim]")
         return
 
     title_parts = []
@@ -141,7 +142,7 @@ async def delete_thread_command(
     dry_run: bool = False,
     output_format: OutputFormat = "text",
 ) -> None:
-    """CLI handler for `deepagents threads delete`."""
+    """CLI handler for `invincat-cli threads delete`."""
     if dry_run:
         exists = await _sessions.thread_exists(thread_id)
         if output_format == "json":

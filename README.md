@@ -6,7 +6,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/invincat-cli.svg)](https://pypi.org/project/invincat-cli/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-![](data/banner_en.png)
+![](https://raw.githubusercontent.com/dog-qiuqiu/invincat/main/data/banner_en.png)
 
 Invincat is a terminal-native AI coding assistant for local repositories. It can inspect and edit files, run shell commands with approval, use web/MCP tools, keep long-term memory, plan before execution, run scheduled tasks, and bridge remote WeCom messages into a project session.
 

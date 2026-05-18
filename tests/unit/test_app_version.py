@@ -17,7 +17,7 @@ def test_build_version_message() -> None:
     set_language(Language.EN)
 
     assert build_version_message(cli_version="1.2.3", sdk_version="4.5.6") == (
-        "deepagents-cli version: 1.2.3\ndeepagents (SDK) version: 4.5.6"
+        "invincat-cli version: 1.2.3\ndeepagents (SDK) version: 4.5.6"
     )
 
 
@@ -25,7 +25,7 @@ def test_build_version_message_with_unknowns() -> None:
     set_language(Language.EN)
 
     assert build_version_message(cli_version=None, sdk_version=None) == (
-        "deepagents-cli version: unknown\ndeepagents (SDK) version: unknown"
+        "invincat-cli version: unknown\ndeepagents (SDK) version: unknown"
     )
 
 
@@ -37,7 +37,7 @@ def test_resolve_version_message_with_injected_package_lookup() -> None:
             cli_version="1.2.3",
             package_version=lambda package: "4.5.6",
         )
-        == "deepagents-cli version: 1.2.3\ndeepagents (SDK) version: 4.5.6"
+        == "invincat-cli version: 1.2.3\ndeepagents (SDK) version: 4.5.6"
     )
 
 
@@ -52,7 +52,7 @@ def test_resolve_version_message_handles_missing_sdk() -> None:
             cli_version="1.2.3",
             package_version=_missing,
         )
-        == "deepagents-cli version: 1.2.3\ndeepagents (SDK) version: unknown"
+        == "invincat-cli version: 1.2.3\ndeepagents (SDK) version: unknown"
     )
 
 
@@ -67,7 +67,7 @@ def test_resolve_version_message_handles_sdk_lookup_error() -> None:
             cli_version="1.2.3",
             package_version=_broken,
         )
-        == "deepagents-cli version: 1.2.3\ndeepagents (SDK) version: unknown"
+        == "invincat-cli version: 1.2.3\ndeepagents (SDK) version: unknown"
     )
 
 
@@ -76,7 +76,7 @@ def test_resolve_version_message_uses_default_cli_version() -> None:
 
     message = resolve_version_message(package_version=lambda _package: "4.5.6")
 
-    assert "deepagents-cli version: " in message
+    assert "invincat-cli version: " in message
     assert "deepagents (SDK) version: 4.5.6" in message
 
 
@@ -90,7 +90,7 @@ def test_resolve_version_message_uses_default_package_lookup(monkeypatch) -> Non
 
     assert (
         resolve_version_message(cli_version="1.2.3")
-        == "deepagents-cli version: 1.2.3\ndeepagents (SDK) version: 4.5.6"
+        == "invincat-cli version: 1.2.3\ndeepagents (SDK) version: 4.5.6"
     )
 
 
@@ -113,7 +113,7 @@ def test_resolve_version_message_handles_cli_import_error(monkeypatch) -> None:
 
     assert (
         resolve_version_message(package_version=lambda _package: "4.5.6")
-        == "deepagents-cli version: unknown\ndeepagents (SDK) version: 4.5.6"
+        == "invincat-cli version: unknown\ndeepagents (SDK) version: 4.5.6"
     )
 
 
@@ -138,5 +138,5 @@ def test_resolve_version_message_handles_unexpected_cli_lookup_error(
 
     assert (
         resolve_version_message(package_version=lambda _package: "4.5.6")
-        == "deepagents-cli version: unknown\ndeepagents (SDK) version: 4.5.6"
+        == "invincat-cli version: unknown\ndeepagents (SDK) version: 4.5.6"
     )

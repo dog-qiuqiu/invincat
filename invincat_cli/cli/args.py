@@ -8,7 +8,7 @@ import logging
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from invincat_cli.core.version import __version__
+from invincat_cli.core.version import CLI_COMMAND, __version__
 
 logger = logging.getLogger(__name__)
 
@@ -396,7 +396,7 @@ def parse_args(*, default_agent_name: str = "agent") -> argparse.Namespace:
         "-v",
         "--version",
         action="version",
-        version=f"deepagents-cli {__version__}\ndeepagents (SDK) {_sdk_version()}",
+        version=f"{CLI_COMMAND} {__version__}\ndeepagents (SDK) {_sdk_version()}",
     )
     parser.add_argument(
         "-h",

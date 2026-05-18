@@ -14,7 +14,7 @@ def _resolve_editable_info() -> tuple[bool, str | None]:
     path: str | None = None
 
     try:
-        dist = _config.distribution("deepagents-cli")
+        dist = _config.distribution("invincat-cli")
         raw = dist.read_text("direct_url.json")
         if raw:
             data = _config.json.loads(raw)
@@ -42,7 +42,7 @@ def _resolve_editable_info() -> tuple[bool, str | None]:
 
 
 def _is_editable_install() -> bool:
-    """Check if deepagents-cli is installed in editable mode."""
+    """Check if invincat-cli is installed in editable mode."""
     from invincat_cli import config as _config
 
     return _config._resolve_editable_info()[0]  # noqa: SLF001

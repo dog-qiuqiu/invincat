@@ -1,4 +1,4 @@
-"""Skills module for deepagents CLI.
+"""Skills module for Invincat CLI.
 
 Public API:
 - execute_skills_command: Execute skills subcommands (list/create/info/delete)

@@ -146,6 +146,6 @@ def verify_sandbox_deps(provider: str) -> None:
     if not found:
         msg = (
             f"Missing dependencies for '{provider}' sandbox. "
-            f"Install with: pip install 'deepagents-cli[{extra}]'"
+            f"Install with: pip install 'invincat-cli[{extra}]'"
         )
         raise ImportError(msg)

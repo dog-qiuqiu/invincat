@@ -1,4 +1,4 @@
-"""Textual UI application for deepagents-cli."""
+"""Textual UI application for invincat-cli."""
 
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ class DeepAgentsApp(
     AppRuntimeDelegateMixin,
     App,
 ):
-    """Main Textual application for deepagents-cli."""
+    """Main Textual application for invincat-cli."""
 
     # Runtime attributes initialized by app_runtime.initialization.initialize_app().
     # Keeping the declarations on the Textual app class makes the implicit

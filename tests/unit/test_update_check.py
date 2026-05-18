@@ -156,11 +156,11 @@ def test_detect_install_method_and_upgrade_command(monkeypatch) -> None:
     assert update_check.detect_install_method() == "unknown"
     monkeypatch.setattr("invincat_cli.config._is_editable_install", lambda: False)
     assert update_check.detect_install_method() == "pip"
-    assert update_check.upgrade_command() == "pip install --upgrade deepagents-cli"
-    assert update_check.upgrade_command("brew") == "brew upgrade deepagents-cli"
+    assert update_check.upgrade_command() == "pip install --upgrade invincat-cli"
+    assert update_check.upgrade_command("brew") == "brew upgrade invincat-cli"
     assert (
         update_check.upgrade_command("unknown")
-        == "pip install --upgrade deepagents-cli"
+        == "pip install --upgrade invincat-cli"
     )
 
 
@@ -229,7 +229,7 @@ def test_perform_upgrade_handles_methods_and_process_results(monkeypatch) -> Non
     monkeypatch.setattr(update_check.asyncio, "create_subprocess_shell", create_oserror)
     assert asyncio.run(update_check.perform_upgrade()) == (
         False,
-        "Failed to execute: pip install --upgrade deepagents-cli",
+        "Failed to execute: pip install --upgrade invincat-cli",
     )
 
 

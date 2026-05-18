@@ -1,4 +1,4 @@
-"""Chat input widget for deepagents-cli with autocomplete and history support."""
+"""Chat input widget for invincat-cli with autocomplete and history support."""
 
 from __future__ import annotations
 

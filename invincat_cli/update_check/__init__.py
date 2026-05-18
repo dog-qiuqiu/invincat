@@ -1,4 +1,4 @@
-"""Update lifecycle for `deepagents-cli`.
+"""Update lifecycle for `invincat-cli`.
 
 Handles version checking against PyPI (with caching), install-method detection,
 auto-upgrade execution, config-driven opt-in/out, and "what's new" tracking.
@@ -22,7 +22,12 @@ from typing import TYPE_CHECKING, Literal
 
 from packaging.version import InvalidVersion, Version
 
-from invincat_cli.core.version import PYPI_URL, USER_AGENT, __version__
+from invincat_cli.core.version import (
+    CLI_PACKAGE_NAME,
+    PYPI_URL,
+    USER_AGENT,
+    __version__,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -38,9 +43,9 @@ CACHE_TTL = 86_400  # 24 hours
 InstallMethod = Literal["uv", "pip", "brew", "unknown"]
 
 _UPGRADE_COMMANDS: dict[InstallMethod, str] = {
-    "uv": "uv tool upgrade deepagents-cli",
-    "brew": "brew upgrade deepagents-cli",
-    "pip": "pip install --upgrade deepagents-cli",
+    "uv": f"uv tool upgrade {CLI_PACKAGE_NAME}",
+    "brew": f"brew upgrade {CLI_PACKAGE_NAME}",
+    "pip": f"pip install --upgrade {CLI_PACKAGE_NAME}",
 }
 """Upgrade commands keyed by install method.
 
@@ -105,7 +110,7 @@ def get_latest_version(
     bypass_cache: bool = False,
     include_prereleases: bool = False,
 ) -> str | None:
-    """Fetch the latest deepagents-cli version from PyPI, with caching.
+    """Fetch the latest invincat-cli version from PyPI, with caching.
 
     Results are cached to `CACHE_FILE` to avoid repeated network calls.
     The cache stores both the latest stable and pre-release versions so a
@@ -175,7 +180,7 @@ def get_latest_version(
 
 
 def is_update_available(*, bypass_cache: bool = False) -> tuple[bool, str | None]:
-    """Check whether a newer version of deepagents-cli is available.
+    """Check whether a newer version of invincat-cli is available.
 
     When the installed version is a pre-release (e.g. `0.0.35a1`),
     pre-release versions on PyPI are included in the comparison so alpha
@@ -225,7 +230,7 @@ def is_update_available(*, bypass_cache: bool = False) -> tuple[bool, str | None
 
 
 def detect_install_method() -> InstallMethod:
-    """Detect how `deepagents-cli` was installed.
+    """Detect how `invincat-cli` was installed.
 
     Checks `sys.prefix` against known paths for uv and Homebrew.
 
@@ -252,7 +257,7 @@ def detect_install_method() -> InstallMethod:
 
 
 def upgrade_command(method: InstallMethod | None = None) -> str:
-    """Return the shell command to upgrade `deepagents-cli`.
+    """Return the shell command to upgrade `invincat-cli`.
 
     Falls back to the pip command for unrecognized install methods.
 
@@ -267,7 +272,7 @@ def upgrade_command(method: InstallMethod | None = None) -> str:
 
 
 async def perform_upgrade() -> tuple[bool, str]:
-    """Attempt to upgrade `deepagents-cli` using the detected install method.
+    """Attempt to upgrade `invincat-cli` using the detected install method.
 
     Only tries the detected method — does not fall back to other package
     managers to avoid cross-environment contamination.
