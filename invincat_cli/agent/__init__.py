@@ -84,10 +84,14 @@ from invincat_cli.agent.subagents import (  # noqa: E402, F401
     RESEARCHER_DESCRIPTION,
     RESEARCHER_SUBAGENT_NAME,
     RESEARCHER_SYSTEM_PROMPT,
+    WORKER_DESCRIPTION,
+    WORKER_SUBAGENT_NAME,
+    WORKER_SYSTEM_PROMPT,
     build_builtin_subagents,
     build_document_worker_subagent,
     build_explorer_subagent,
     build_researcher_subagent,
+    build_worker_subagent,
 )
 from invincat_cli.agent.tool_descriptions import (  # noqa: E402, F401
     _add_interrupt_on,
@@ -292,6 +296,7 @@ def create_cli_agent(
                 *(str(spec.get("name", "")).strip() for spec in runtime_subagents),
             },
             explorer_middleware=builtin_subagent_middleware,
+            worker_middleware=builtin_subagent_middleware,
             researcher_middleware=builtin_subagent_middleware,
             document_worker_middleware=builtin_subagent_middleware,
         )

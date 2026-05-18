@@ -24,6 +24,12 @@ from invincat_cli.agent.subagents.researcher import (
     RESEARCHER_SYSTEM_PROMPT,
     build_researcher_subagent,
 )
+from invincat_cli.agent.subagents.worker import (
+    WORKER_DESCRIPTION,
+    WORKER_SUBAGENT_NAME,
+    WORKER_SYSTEM_PROMPT,
+    build_worker_subagent,
+)
 
 __all__ = [
     "DOCUMENT_WORKER_DESCRIPTION",
@@ -35,9 +41,13 @@ __all__ = [
     "RESEARCHER_DESCRIPTION",
     "RESEARCHER_SUBAGENT_NAME",
     "RESEARCHER_SYSTEM_PROMPT",
+    "WORKER_DESCRIPTION",
+    "WORKER_SUBAGENT_NAME",
+    "WORKER_SYSTEM_PROMPT",
     "build_builtin_subagents",
     "build_document_worker_subagent",
     "build_explorer_subagent",
     "build_researcher_subagent",
+    "build_worker_subagent",
     "subagent_names",
 ]

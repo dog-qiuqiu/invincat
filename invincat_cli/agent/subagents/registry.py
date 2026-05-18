@@ -17,6 +17,10 @@ from invincat_cli.agent.subagents.researcher import (
     RESEARCHER_SUBAGENT_NAME,
     build_researcher_subagent,
 )
+from invincat_cli.agent.subagents.worker import (
+    WORKER_SUBAGENT_NAME,
+    build_worker_subagent,
+)
 
 if TYPE_CHECKING:
     from deepagents.middleware.subagents import SubAgent
@@ -38,6 +42,7 @@ def build_builtin_subagents(
     *,
     existing_names: Iterable[str] = (),
     explorer_middleware: Sequence[AgentMiddleware] | None = None,
+    worker_middleware: Sequence[AgentMiddleware] | None = None,
     researcher_middleware: Sequence[AgentMiddleware] | None = None,
     document_worker_middleware: Sequence[AgentMiddleware] | None = None,
 ) -> list[SubAgent]:
@@ -48,6 +53,8 @@ def build_builtin_subagents(
         subagents.append(
             build_explorer_subagent(middleware=explorer_middleware)
         )
+    if WORKER_SUBAGENT_NAME not in names:
+        subagents.append(build_worker_subagent(middleware=worker_middleware))
     if RESEARCHER_SUBAGENT_NAME not in names:
         subagents.append(
             build_researcher_subagent(middleware=researcher_middleware)
