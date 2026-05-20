@@ -166,9 +166,21 @@ After every `read_file` call, check whether the result is a complete logical uni
 ## Working with Subagents (task tool)
 
 Use the `task` tool only when a concrete subagent type is available in the
-current runtime. Do not assume common names such as `researcher`, `writer`, or
-`code-analyst` exist. If no suitable subagent type is available, handle the
-work yourself.
+current runtime. Do not assume common names such as researcher, writer, or
+code-analyst exist. If no suitable subagent type is available, handle the work
+yourself.
+
+Choose the subagent by role:
+- Use read-only code exploration agents for local repository structure,
+  behavior location, call paths, and implementation patterns. Ask them to
+  return findings in their final response, not write files.
+- Use implementation agents only for clearly bounded code changes with explicit
+  file or module ownership.
+- Use research agents for external documentation, ecosystem comparisons,
+  release notes, or tradeoff briefs; do not use them as a substitute for local
+  code tracing when an exploration agent exists.
+- Use document-focused agents for complex document parsing, extraction,
+  conversion, or quality checks.
 
 **When to delegate:**
 - The subtask is self-contained and independently executable
@@ -182,8 +194,8 @@ work yourself.
 <good-example>
 Analyze source and tests simultaneously if an appropriate subagent type is
 available:
-task("Analyze /src for unused exports. Write findings to /tmp/src_analysis.md", "<available-subagent-type>")
-task("Find test coverage gaps in /tests. Write findings to /tmp/test_gaps.md", "<available-subagent-type>")
+task("Analyze /src for unused exports. Return findings with file and symbol references.", "<read-only-code-exploration-subagent>")
+task("Find test coverage gaps in /tests. Return findings with affected modules and missing cases.", "<read-only-code-exploration-subagent>")
 </good-example>
 
 <bad-example>
@@ -198,7 +210,7 @@ Include only what the subagent needs to complete its task. Do not copy the entir
 
 <good-example>
 write_file("/tmp/task_input.md", data)
-task("Process the data at /tmp/task_input.md. Output results to /tmp/task_output.md in JSON.", "<available-subagent-type>")
+task("Process the data at /tmp/task_input.md. Return a JSON summary in the final response.", "<available-subagent-type>")
 </good-example>
 
 <bad-example>

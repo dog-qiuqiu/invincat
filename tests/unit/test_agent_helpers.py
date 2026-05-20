@@ -779,11 +779,20 @@ def test_create_cli_agent_adds_builtin_subagents_by_default(
 
     created = events["created_agents"][0]
     assert created["subagents"][0]["name"] == "explorer"
-    assert "Codebase exploration agent" in created["subagents"][0]["description"]
+    assert "Read-only codebase exploration agent" in created["subagents"][0][
+        "description"
+    ]
+    assert "must not edit files" in created["subagents"][0]["description"]
     assert "read-only" in created["subagents"][0]["system_prompt"]
     assert "repository" in created["subagents"][0]["system_prompt"]
     assert "exploration" in created["subagents"][0]["system_prompt"]
     assert "Do not edit" in created["subagents"][0]["system_prompt"]
+    assert "Do not write findings to files" in created["subagents"][0][
+        "system_prompt"
+    ]
+    assert "Use explorer for local repository structure" in created["subagents"][0][
+        "system_prompt"
+    ]
     assert created["subagents"][1]["name"] == "worker"
     assert "Implementation-focused agent" in created["subagents"][1]["description"]
     assert "clearly scoped implementation task" in created["subagents"][1][
@@ -794,8 +803,10 @@ def test_create_cli_agent_adds_builtin_subagents_by_default(
     ]
     assert "Do not revert" in created["subagents"][1]["system_prompt"]
     assert created["subagents"][2]["name"] == "researcher"
-    assert "read-only investigation" in created["subagents"][2]["description"]
+    assert "external source gathering" in created["subagents"][2]["description"]
+    assert "prefer the explorer subagent" in created["subagents"][2]["description"]
     assert "Do not edit" in created["subagents"][2]["system_prompt"]
+    assert "belongs to explorer" in created["subagents"][2]["system_prompt"]
     assert created["subagents"][3]["name"] == "document-worker"
     assert "complex document work" in created["subagents"][3]["description"]
     assert "Simple short Markdown/README questions" in created["subagents"][3][

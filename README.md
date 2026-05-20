@@ -166,9 +166,9 @@ Invincat includes focused subagents that the main agent can call through the
 
 | Subagent | Responsibility |
 | --- | --- |
-| `explorer` | Codex-style read-only codebase exploration for locating behavior, tracing call paths, understanding module boundaries, and returning file-backed findings before implementation. |
+| `explorer` | Codex-style read-only local codebase exploration for locating behavior, tracing call paths, understanding module boundaries, and returning file-backed findings directly to the main agent before implementation. |
 | `worker` | Codex-style implementation agent for bounded code changes, bug fixes, tests, and local refactors within clearly assigned file or module ownership. |
-| `researcher` | Read-only investigation, source gathering, codebase exploration, and evidence-backed summaries. It helps the main agent understand unfamiliar areas or compare options before acting. |
+| `researcher` | Read-only external/source research, release-note checks, ecosystem comparison, and evidence-backed tradeoff summaries. Local call-path and module tracing should go to `explorer`. |
 | `document-worker` | Document-centric parsing, extraction, summarization, conversion, comparison, and quality checks for PDF, DOCX, PPTX, XLSX, Markdown, CSV, and JSON files. |
 
 These roles are separate so the main agent can keep orchestration and execution

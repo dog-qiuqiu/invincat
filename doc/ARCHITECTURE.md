@@ -143,7 +143,7 @@ command_handlers -> plan_handlers -> plan_mode.runtime/policy/handoff
 | `agent/catalog.py` | 发现、列出和加载 async subagents。 |
 | `agent/middleware.py` | shell allow-list、memory file guard 等 agent middleware。 |
 | `agent/prompt.py` | 构造主 agent system prompt，注入模式、时间、工作目录等。 |
-| `agent/subagents/` | 定义和注册内置子 agent，例如代码探索型 `explorer`、实现执行型 `worker`、只读调研型 `researcher` 和文档处理型 `document-worker`。 |
+| `agent/subagents/` | 定义和注册内置子 agent，例如本地代码探索型 `explorer`、实现执行型 `worker`、外部资料调研型 `researcher` 和文档处理型 `document-worker`。 |
 | `agent/system_prompt.md` | 主 agent 的基础系统提示词。 |
 | `agent/tool_descriptions.py` | HITL 审批时展示的工具描述和 interrupt 配置。 |
 
