@@ -26,7 +26,11 @@ from invincat_cli.agent.subagents.researcher import (
 )
 from invincat_cli.agent.subagents.tool_boundary import (
     READ_ONLY_SUBAGENT_ALLOWED_TOOLS,
+    DocumentWorkerFileGuardMiddleware,
     ReadOnlySubagentToolMiddleware,
+    WorkerShellGuardMiddleware,
+    document_worker_path_block_reason,
+    worker_shell_block_reason,
 )
 from invincat_cli.agent.subagents.worker import (
     WORKER_DESCRIPTION,
@@ -49,11 +53,15 @@ __all__ = [
     "WORKER_DESCRIPTION",
     "WORKER_SUBAGENT_NAME",
     "WORKER_SYSTEM_PROMPT",
+    "DocumentWorkerFileGuardMiddleware",
     "ReadOnlySubagentToolMiddleware",
+    "WorkerShellGuardMiddleware",
     "build_builtin_subagents",
     "build_document_worker_subagent",
     "build_explorer_subagent",
     "build_researcher_subagent",
     "build_worker_subagent",
+    "document_worker_path_block_reason",
     "subagent_names",
+    "worker_shell_block_reason",
 ]

@@ -20,7 +20,8 @@ DOCUMENT_WORKER_DESCRIPTION = (
     "Markdown, text, CSV, and JSON files. Use this agent for office files, "
     "multi-document analysis, structured extraction, version comparison, or "
     "document quality checks. Simple short Markdown/README questions can be "
-    "handled directly by the main agent. It should not implement code changes."
+    "handled directly by the main agent. It should not implement code changes "
+    "or modify source/configuration files."
 )
 """User-visible description exposed through the task tool."""
 
@@ -60,6 +61,11 @@ Boundaries:
 - Do not implement code features or refactor source files.
 - Do not move, rename, delete, or reorganize project files.
 - Do not overwrite original documents unless explicitly authorized.
+- Do not modify source-code files, tests, CI files, project configuration, or
+  the primary README. If document findings imply code or config changes, report
+  them for the main agent or worker.
+- Generated outputs should go to explicit document output paths, such as reports,
+  exports, converted files, or user-requested document destinations.
 - Do not invent missing document content. Mark unreadable, ambiguous, or
   missing sections clearly.
 - For legal, financial, medical, or compliance documents, provide extraction
@@ -71,7 +77,8 @@ Final response format:
 3. Generated outputs
 4. Quality issues
 5. Source references
-6. Follow-up options
+6. Scope confirmation
+7. Follow-up options
 """
 """System prompt for the built-in document-worker subagent."""
 

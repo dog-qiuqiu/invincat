@@ -678,6 +678,12 @@ def test_create_cli_agent_local_shell_memory_skills_and_restrictive_shell(
     assert type(created["subagents"][3]["middleware"][0]).__name__ == (
         "ReadOnlySubagentToolMiddleware"
     )
+    assert type(created["subagents"][2]["middleware"][0]).__name__ == (
+        "WorkerShellGuardMiddleware"
+    )
+    assert type(created["subagents"][4]["middleware"][0]).__name__ == (
+        "DocumentWorkerFileGuardMiddleware"
+    )
     assert all(
         type(item).__name__ != "ReadOnlySubagentToolMiddleware"
         for item in created["subagents"][2]["middleware"]
@@ -726,6 +732,12 @@ def test_create_cli_agent_shell_allow_list_and_memory_fallbacks(
     )
     assert type(created["subagents"][3]["middleware"][0]).__name__ == (
         "ReadOnlySubagentToolMiddleware"
+    )
+    assert type(created["subagents"][2]["middleware"][0]).__name__ == (
+        "WorkerShellGuardMiddleware"
+    )
+    assert type(created["subagents"][4]["middleware"][0]).__name__ == (
+        "DocumentWorkerFileGuardMiddleware"
     )
     assert all(
         type(item).__name__ != "ReadOnlySubagentToolMiddleware"
@@ -795,13 +807,23 @@ def test_create_cli_agent_adds_builtin_subagents_by_default(
     ]
     assert created["subagents"][1]["name"] == "worker"
     assert "Implementation-focused agent" in created["subagents"][1]["description"]
+    assert "avoid git commits or pushes" in created["subagents"][1]["description"]
+    assert type(created["subagents"][1]["middleware"][0]).__name__ == (
+        "WorkerShellGuardMiddleware"
+    )
     assert "clearly scoped implementation task" in created["subagents"][1][
+        "system_prompt"
+    ]
+    assert "When to use this subagent" in created["subagents"][1]["system_prompt"]
+    assert "When not to use this subagent" in created["subagents"][1][
         "system_prompt"
     ]
     assert "You are not alone in the codebase" in created["subagents"][1][
         "system_prompt"
     ]
     assert "Do not revert" in created["subagents"][1]["system_prompt"]
+    assert "Do not run git commit" in created["subagents"][1]["system_prompt"]
+    assert "Scope confirmation" in created["subagents"][1]["system_prompt"]
     assert created["subagents"][2]["name"] == "researcher"
     assert "external source gathering" in created["subagents"][2]["description"]
     assert "prefer the explorer subagent" in created["subagents"][2]["description"]
@@ -812,12 +834,19 @@ def test_create_cli_agent_adds_builtin_subagents_by_default(
     assert "Simple short Markdown/README questions" in created["subagents"][3][
         "description"
     ]
+    assert "modify source/configuration files" in created["subagents"][3][
+        "description"
+    ]
     assert "Do not implement code" in created["subagents"][3]["system_prompt"]
+    assert type(created["subagents"][3]["middleware"][0]).__name__ == (
+        "DocumentWorkerFileGuardMiddleware"
+    )
     assert "When to use this subagent" in created["subagents"][3]["system_prompt"]
     assert "When not to use this subagent" in created["subagents"][3][
         "system_prompt"
     ]
     assert "Source references" in created["subagents"][3]["system_prompt"]
+    assert "Scope confirmation" in created["subagents"][3]["system_prompt"]
 
 
 def test_create_cli_agent_skips_builtin_researcher_when_configured(

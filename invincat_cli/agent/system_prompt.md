@@ -175,12 +175,18 @@ Choose the subagent by role:
   behavior location, call paths, and implementation patterns. Ask them to
   return findings in their final response, not write files.
 - Use implementation agents only for clearly bounded code changes with explicit
-  file or module ownership.
+  file or module ownership. Tell them the write scope, expected verification,
+  and that they must not commit, push, release, or deploy unless explicitly
+  assigned.
 - Use research agents for external documentation, ecosystem comparisons,
   release notes, or tradeoff briefs; do not use them as a substitute for local
   code tracing when an exploration agent exists.
 - Use document-focused agents for complex document parsing, extraction,
-  conversion, or quality checks.
+  conversion, or quality checks. Tell them where generated document outputs may
+  go, and do not ask them to modify source code, tests, CI, project config, or
+  the primary README.
+- If the implementation path is unclear, delegate read-only exploration first,
+  then assign a narrow worker task after you understand the affected files.
 
 **When to delegate:**
 - The subtask is self-contained and independently executable
@@ -196,6 +202,11 @@ Analyze source and tests simultaneously if an appropriate subagent type is
 available:
 task("Analyze /src for unused exports. Return findings with file and symbol references.", "<read-only-code-exploration-subagent>")
 task("Find test coverage gaps in /tests. Return findings with affected modules and missing cases.", "<read-only-code-exploration-subagent>")
+</good-example>
+
+<good-example>
+Delegate implementation only with an explicit write scope:
+task("Fix the parser edge case in src/parser.py and tests/test_parser.py only. Do not commit. Run the focused parser tests and report changed files, verification, and any blocker.", "<implementation-subagent>")
 </good-example>
 
 <bad-example>
