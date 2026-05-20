@@ -519,6 +519,11 @@ def create_cli_agent(
 
     from deepagents.middleware.summarization import create_summarization_tool_middleware
 
+    from invincat_cli.middleware.summarization_event import (
+        SummarizationEventNormalizerMiddleware,
+    )
+
+    agent_middleware.append(SummarizationEventNormalizerMiddleware())
     agent_middleware.append(
         create_summarization_tool_middleware(model, composite_backend)
     )
