@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Protocol
 
 from invincat_cli.core.session_stats import SpinnerStatus
+from invincat_cli.textual_adapter.subagent_activity import SubagentActivityTracker
 from invincat_cli.widgets.messages import ToolCallMessage
 
 if TYPE_CHECKING:
@@ -107,6 +108,9 @@ class TextualUIAdapter:
 
         self._message_store: Any = None
         """Reference to MessageStore for updating tool messages after pruning."""
+
+        self._subagent_activity = SubagentActivityTracker()
+        """Tracks subagent stream activity for task tool progress display."""
 
     def set_message_store(self, message_store: Any) -> None:
         """Set the message store reference.

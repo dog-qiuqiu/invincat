@@ -260,6 +260,12 @@ async def handle_tool_call_block(
             )
             if tool_msg is not None:
                 tool_msg.update_args(parsed_args)
+                if buffer_name == "task":
+                    adapter._subagent_activity.register_task(
+                        tool_call_id=display_key,
+                        widget=tool_msg,
+                        args=parsed_args,
+                    )
                 if (
                     tool_msg.id
                     and adapter._message_store
@@ -287,4 +293,3 @@ async def handle_tool_call_block(
             )
 
             tool_call_buffers.pop(raw_buffer_key, None)
-

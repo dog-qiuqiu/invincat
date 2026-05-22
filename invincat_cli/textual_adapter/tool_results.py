@@ -397,6 +397,9 @@ async def handle_tool_message(
                 tool_id, tool_status, output_str
             )
 
+    if tool_name == "task":
+        adapter._subagent_activity.complete_task(tool_id)
+
     # Reshow spinner only when all in-flight tools have
     # completed (avoids premature "Thinking..." when
     # parallel tool calls are active).

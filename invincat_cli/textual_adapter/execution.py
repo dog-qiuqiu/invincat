@@ -159,6 +159,7 @@ async def execute_task_textual(
     # Those zombies interfere with Strategy 3 (name-match fallback) in future turns,
     # potentially stealing results from the correct current widget.
     adapter._current_tool_messages.clear()
+    adapter._subagent_activity.clear()
 
     # Track pending text and assistant messages PER NAMESPACE to avoid interleaving
     # when multiple subagents stream in parallel
@@ -231,6 +232,12 @@ async def execute_task_textual(
                         # namespace). Subagents run via Task tool and should only
                         # report back to the main agent
                         is_main_agent = ns_key == ()
+                        if not is_main_agent:
+                            adapter._subagent_activity.observe_chunk(
+                                ns_key=ns_key,
+                                stream_mode=current_stream_mode,
+                                data=data,
+                            )
 
                         # Handle CUSTOM stream - middleware lifecycle events
                         if current_stream_mode == "custom":

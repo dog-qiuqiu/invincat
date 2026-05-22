@@ -94,6 +94,7 @@ class ToolCallMessage(ToolCallOutputMixin, Vertical):
         # call get_glyphs() / get_theme_colors() on every 100 ms tick.
         # These values are stable for the lifetime of the widget.
         self._spinner_frames: list[str] | None = None
+        self._progress_detail: str | None = None
         # Deferred state for hydration (set by MessageData.to_widget)
         self._deferred_status: str | None = None
         self._deferred_output: str | None = None
@@ -274,20 +275,38 @@ class ToolCallMessage(ToolCallOutputMixin, Vertical):
         if self._status == "pending":
             if not self._args_finalized:
                 self._status_widget.update(
-                    Content.styled(f"{frame} Generating...{elapsed}", "dim")
+                    Content.styled(
+                        self._format_progress_line(
+                            frame,
+                            f"Generating...{elapsed}",
+                        ),
+                        "dim",
+                    )
                 )
             else:
                 colors = theme.get_theme_colors(self)
                 self._status_widget.update(
-                    Content.styled(f"{frame} Pending...{elapsed}", colors.warning)
+                    Content.styled(
+                        self._format_progress_line(
+                            frame,
+                            f"Pending...{elapsed}",
+                        ),
+                        colors.warning,
+                    )
                 )
         elif self._status == "running":
             self._status_widget.update(
                 Content.styled(
-                    f"{frame} Running...{elapsed}",
+                    self._format_progress_line(frame, f"Running...{elapsed}"),
                     theme.get_theme_colors(self).warning,
                 )
             )
+
+    def _format_progress_line(self, frame: str, base: str) -> str:
+        """Return the animated status line, optionally with progress detail."""
+        if self._progress_detail:
+            return f"{frame} {base} - {self._progress_detail}"
+        return f"{frame} {base}"
 
     def _stop_pending_animation(self) -> None:
         """Stop the animation timer (covers generating/pending/running states)."""
@@ -314,6 +333,22 @@ class ToolCallMessage(ToolCallOutputMixin, Vertical):
             self._update_animation()
             self._animation_timer = self.set_interval(0.1, self._update_animation)
 
+    def set_progress_detail(self, detail: str) -> None:
+        """Update the visible in-progress detail for long-running tools."""
+        normalized = " ".join(str(detail).split())
+        self._progress_detail = normalized or None
+        if self._status in {"pending", "running"}:
+            self._status = "running"
+        if self._status_widget:
+            self._status_widget.remove_class("generating")
+            self._status_widget.add_class("pending")
+            self._status_widget.display = True
+        if self.is_mounted and self._animation_timer is None:
+            self._start_time = self._start_time or time()
+            self._animation_timer = self.set_interval(0.1, self._update_animation)
+        if self._status in {"pending", "running"}:
+            self._update_animation()
+
     def _stop_animation(self) -> None:
         """Stop the animation timer (covers all animated states)."""
         self._stop_pending_animation()
@@ -326,6 +361,7 @@ class ToolCallMessage(ToolCallOutputMixin, Vertical):
         """
         self._stop_animation()
         self._status = "success"
+        self._progress_detail = None
         # Strip redundant success trailer — the UI already conveys success
         self._output = _messages._strip_success_exit_line(result)
         if self._status_widget:
@@ -343,6 +379,7 @@ class ToolCallMessage(ToolCallOutputMixin, Vertical):
         """
         self._stop_animation()
         self._status = "error"
+        self._progress_detail = None
         # For shell commands, prepend the full command so users can see what failed
         command = (
             self._args.get("command")
@@ -371,6 +408,7 @@ class ToolCallMessage(ToolCallOutputMixin, Vertical):
         """Mark the tool call as rejected by user."""
         self._stop_animation()
         self._status = "rejected"
+        self._progress_detail = None
         if self._status_widget:
             self._status_widget.remove_class("generating", "pending")
             self._status_widget.add_class("rejected")
@@ -384,6 +422,7 @@ class ToolCallMessage(ToolCallOutputMixin, Vertical):
         """Mark the tool call as skipped (due to another rejection)."""
         self._stop_animation()
         self._status = "skipped"
+        self._progress_detail = None
         if self._status_widget:
             self._status_widget.remove_class("generating", "pending")
             self._status_widget.add_class("rejected")  # Use same styling as rejected

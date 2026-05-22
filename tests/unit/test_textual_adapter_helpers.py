@@ -685,6 +685,137 @@ def test_execute_task_textual_prepares_files_media_and_skips_noise(
     assert hidden_calls == [None]
 
 
+def test_execute_task_textual_updates_subagent_task_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from langchain_core.messages import ToolMessage
+
+    from invincat_cli import textual_adapter as adapter_mod
+
+    mounted: list[object] = []
+    hooks: list[tuple[str, dict[str, object]]] = []
+
+    class FakeToolCallMessage:
+        def __init__(
+            self,
+            name: str,
+            args: dict[str, object] | None = None,
+            *,
+            tool_call_id: str,
+            args_finalized: bool = False,
+        ) -> None:
+            self._tool_name = name
+            self._args = args or {}
+            self._tool_call_id = tool_call_id
+            self.args_finalized = args_finalized
+            self.id = None
+            self.progress: list[str] = []
+            self.success: list[str] = []
+
+        def update_args(self, args: dict[str, object]) -> None:
+            self._args = args
+
+        def set_progress_detail(self, detail: str) -> None:
+            self.progress.append(detail)
+
+        def set_success(self, result: str = "") -> None:
+            self.success.append(result)
+
+    class FakeAgent:
+        async def astream(self, *_args: object, **_kwargs: object):
+            yield (
+                (),
+                "messages",
+                (
+                    SimpleNamespace(
+                        content_blocks=[
+                            {
+                                "type": "tool_call",
+                                "name": "task",
+                                "args": {
+                                    "description": "Inspect message flow",
+                                    "subagent_type": "worker",
+                                },
+                                "id": "task-1",
+                            }
+                        ]
+                    ),
+                    {},
+                ),
+            )
+            yield (
+                ("worker",),
+                "messages",
+                (
+                    SimpleNamespace(
+                        content_blocks=[
+                            {
+                                "type": "tool_call",
+                                "name": "rg",
+                                "args": {"pattern": "message_flow"},
+                                "id": "sub-tool-1",
+                            }
+                        ]
+                    ),
+                    {},
+                ),
+            )
+            yield (
+                ("worker",),
+                "messages",
+                (ToolMessage("matches", name="rg", tool_call_id="sub-tool-1"), {}),
+            )
+            yield (
+                (),
+                "messages",
+                (
+                    ToolMessage("worker result", name="task", tool_call_id="task-1"),
+                    {},
+                ),
+            )
+
+    async def mount_message(widget: object) -> None:
+        mounted.append(widget)
+
+    async def dispatch(name: str, payload: dict[str, object]) -> None:
+        hooks.append((name, payload))
+
+    monkeypatch.setattr(adapter_mod, "ToolCallMessage", FakeToolCallMessage)
+    monkeypatch.setattr(adapter_mod, "dispatch_hook", dispatch)
+
+    adapter = TextualUIAdapter(
+        mount_message=mount_message,
+        update_status=lambda _status: None,
+        request_approval=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+        set_spinner=lambda _status: _completed(),  # type: ignore[arg-type]
+    )
+
+    asyncio.run(
+        execute_task_textual(
+            "delegate",
+            FakeAgent(),
+            "agent",
+            SimpleNamespace(thread_id="thread-subagent", plan_mode=False),
+            adapter,
+        )
+    )
+
+    task_widgets = [
+        widget
+        for widget in mounted
+        if isinstance(widget, FakeToolCallMessage)
+        and widget._tool_name == "task"
+    ]
+    assert len(task_widgets) == 1
+    assert task_widgets[0].progress == [
+        "Starting worker subagent",
+        "worker calling rg",
+        "worker finished rg",
+    ]
+    assert task_widgets[0].success == ["worker result"]
+    assert hooks[-1] == ("task.complete", {"thread_id": "thread-subagent"})
+
+
 def test_execute_task_textual_unexpected_error_clears_transient_ui(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
