@@ -464,7 +464,7 @@ def test_hydrate_messages_above_mounts_archived_widgets_and_preserves_scroll() -
     asyncio.run(message_flow.hydrate_messages_above(app))
 
     assert app._message_store.has_messages_above is False
-    assert app._message_store.visible_count == MessageStore.WINDOW_SIZE
+    assert app._message_store.visible_count == 60
     assert app.chat.scroll_y == 57
     assert app.messages.children[-1] is first_visible
     assert app._hydration_pending is False
@@ -563,7 +563,7 @@ def test_hydrate_messages_above_falls_back_to_sequential_mount() -> None:
 
     assert app.messages.batch_failed is True
     assert app._message_store.has_messages_above is False
-    assert app._message_store.visible_count == MessageStore.WINDOW_SIZE
+    assert app._message_store.visible_count == 60
     assert [widget.id for widget in app.messages.children] == [
         *(f"msg-{index}" for index in range(10)),
     ]
@@ -594,6 +594,23 @@ def test_hydrate_messages_above_keeps_sequential_fallback_order_before_anchor() 
     assert [widget.id for widget in app.messages.children[:11]] == [
         *(f"msg-{index}" for index in range(10)),
         "msg-10",
+    ]
+
+
+def test_mount_message_keeps_contiguous_window_after_history_hydration() -> None:
+    app = FlowApp()
+    app._message_store.bulk_load([message_data(i) for i in range(60)])
+    app._message_store.mark_hydrated(10)
+    for index in range(60):
+        widget = FakeWidget(f"msg-{index}")
+        widget.parent = app.messages
+        app.messages.children.append(widget)
+
+    asyncio.run(message_flow.mount_message(app, FakeWidget("msg-60")))
+
+    assert app._message_store.get_visible_range() == (11, 61)
+    assert [getattr(child, "id", None) for child in app.messages.children] == [
+        *(f"msg-{index}" for index in range(11, 61)),
     ]
 
 

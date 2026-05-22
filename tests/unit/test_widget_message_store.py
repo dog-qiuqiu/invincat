@@ -242,18 +242,6 @@ def test_store_bulk_window_prune_and_hydrate_boundaries() -> None:
     assert store.get_visible_range()[0] == 0
     assert store.get_messages_to_hydrate() == []
 
-    assert [msg.id for msg in store.get_messages_to_prune_below(count=3)] == [
-        "msg-60",
-        "msg-59",
-        "msg-58",
-    ]
-    store.set_active_message("msg-60")
-    assert store.get_messages_to_prune_below(count=3) == []
-    store.set_active_message(None)
-    store.mark_pruned_below(["msg-60", "msg-59"])
-    assert store.get_visible_range() == (0, 59)
-    assert store.has_messages_below is True
-
 
 def test_store_small_bulk_load_and_none_tool_call_id() -> None:
     store = MessageStore()
@@ -273,34 +261,6 @@ def test_store_scroll_threshold_helpers() -> None:
 
     assert store.should_hydrate_above(scroll_position=10, viewport_height=10) is True
     assert store.should_hydrate_above(scroll_position=25, viewport_height=10) is False
-
-    # No visible overflow yet, so below-pruning is disabled.
-    assert (
-        store.should_prune_below(
-            scroll_position=0,
-            viewport_height=10,
-            content_height=200,
-        )
-        is False
-    )
-
-    store.append(_message(60))
-    assert (
-        store.should_prune_below(
-            scroll_position=0,
-            viewport_height=10,
-            content_height=200,
-        )
-        is True
-    )
-    assert (
-        store.should_prune_below(
-            scroll_position=180,
-            viewport_height=10,
-            content_height=200,
-        )
-        is False
-    )
 
 
 def test_append_logs_large_window_overflow(caplog: pytest.LogCaptureFixture) -> None:

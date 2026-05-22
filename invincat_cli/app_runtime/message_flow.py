@@ -183,91 +183,6 @@ async def prune_old_messages(app: Any) -> None:  # noqa: ANN401
         app._message_store.mark_pruned(pruned_ids)
 
 
-async def prune_messages_below(app: Any) -> None:  # noqa: ANN401
-    """Prune newest message widgets after hydrating older history."""
-    if not app._message_store.window_exceeded():
-        return
-
-    try:
-        messages_container = app.query_one("#messages", Container)
-    except NoMatches:
-        logger.debug("Skipping bottom pruning: #messages container not found")
-        return
-
-    to_prune = app._message_store.get_messages_to_prune_below()
-    if not to_prune:
-        return
-
-    pruned_ids: list[str] = []
-    active_tool_widgets: set[object] = set()
-    if app._ui_adapter is not None:
-        active_tool_widgets = set(app._ui_adapter._current_tool_messages.values())
-
-    queued_widgets = list(getattr(app, "_queued_widgets", []))
-
-    for msg_data in to_prune:
-        try:
-            widget = messages_container.query_one(f"#{msg_data.id}")
-
-            if widget in queued_widgets:
-                logger.debug(
-                    "Skipping bottom prune of queued widget id=%s",
-                    msg_data.id,
-                )
-                continue
-
-            if is_in_flight_tool_widget(widget, active_tool_widgets):
-                logger.debug(
-                    "Skipping bottom prune of in-flight tool widget id=%s "
-                    "(still awaiting ToolMessage result)",
-                    msg_data.id,
-                )
-                continue
-
-            if msg_data.type == "tool" and app._ui_adapter is not None:
-                stale_keys = tool_tracking_keys_for_widget(
-                    app._ui_adapter._current_tool_messages,
-                    widget,
-                )
-                for key in stale_keys:
-                    app._ui_adapter._current_tool_messages.pop(key, None)
-                    logger.debug(
-                        "Removed bottom-pruned tool message from tracking: "
-                        "key=%s id=%s",
-                        key,
-                        msg_data.id,
-                    )
-            try:
-                await widget.remove()
-            except Exception:  # noqa: BLE001
-                logger.warning(
-                    "Failed to remove widget %s during bottom pruning; "
-                    "skipping to keep store/DOM in sync",
-                    msg_data.id,
-                    exc_info=True,
-                )
-                continue
-            pruned_ids.append(msg_data.id)
-        except NoMatches:
-            if not should_mark_missing_widget_pruned(
-                is_streaming=msg_data.is_streaming,
-            ):
-                logger.debug(
-                    "Bottom-pruned widget %s not found but still streaming; skipping",
-                    msg_data.id,
-                )
-            else:
-                logger.debug(
-                    "Bottom-pruned widget %s not in DOM and not streaming; "
-                    "force-advancing window to prevent unbounded growth",
-                    msg_data.id,
-                )
-                pruned_ids.append(msg_data.id)
-
-    if pruned_ids:
-        app._message_store.mark_pruned_below(pruned_ids)
-
-
 def check_hydration_needed(app: Any) -> None:  # noqa: ANN401
     """Schedule hydration when the user scrolls near the top."""
     if not app._message_store.has_messages_above:
@@ -395,7 +310,6 @@ async def hydrate_messages_above(app: Any) -> None:  # noqa: ANN401
         hydrated_count = len(mounted_widgets)
         if hydrated_count > 0:
             app._message_store.mark_hydrated(hydrated_count)
-            await prune_messages_below(app)
 
         estimated_height_per_message = 5
         added_height = hydrated_count * estimated_height_per_message
