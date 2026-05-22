@@ -169,6 +169,7 @@ def _initialize_runtime_state(app: Any) -> None:  # noqa: ANN401
     app._pending_plan_handoff_prompt = None
 
     app._message_store = MessageStore()
+    app._hydration_pending = False
     app._startup_task = None
     app._discovered_skills = []
     app._skill_allowed_roots = []

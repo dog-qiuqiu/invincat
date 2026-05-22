@@ -242,6 +242,18 @@ def test_store_bulk_window_prune_and_hydrate_boundaries() -> None:
     assert store.get_visible_range()[0] == 0
     assert store.get_messages_to_hydrate() == []
 
+    assert [msg.id for msg in store.get_messages_to_prune_below(count=3)] == [
+        "msg-60",
+        "msg-59",
+        "msg-58",
+    ]
+    store.set_active_message("msg-60")
+    assert store.get_messages_to_prune_below(count=3) == []
+    store.set_active_message(None)
+    store.mark_pruned_below(["msg-60", "msg-59"])
+    assert store.get_visible_range() == (0, 59)
+    assert store.has_messages_below is True
+
 
 def test_store_small_bulk_load_and_none_tool_call_id() -> None:
     store = MessageStore()

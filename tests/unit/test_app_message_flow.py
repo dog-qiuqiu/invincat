@@ -92,6 +92,7 @@ class FlowApp:
         self.chat = FakeChat()
         self.later: list[object] = []
         self.missing_selectors: set[str] = set()
+        self._hydration_pending = False
 
     def query_one(self, selector: str, *_args: object) -> object:
         if selector in self.missing_selectors:
@@ -432,8 +433,10 @@ def test_check_hydration_needed_schedules_when_near_top() -> None:
     app.chat.size.height = 20
 
     message_flow.check_hydration_needed(app)
+    message_flow.check_hydration_needed(app)
 
     assert app.later == [app._hydrate_messages_above]
+    assert app._hydration_pending is True
 
 
 def test_check_hydration_needed_skips_without_messages_above_or_chat() -> None:
@@ -461,8 +464,10 @@ def test_hydrate_messages_above_mounts_archived_widgets_and_preserves_scroll() -
     asyncio.run(message_flow.hydrate_messages_above(app))
 
     assert app._message_store.has_messages_above is False
+    assert app._message_store.visible_count == MessageStore.WINDOW_SIZE
     assert app.chat.scroll_y == 57
     assert app.messages.children[-1] is first_visible
+    assert app._hydration_pending is False
 
 
 def test_hydrate_messages_above_skips_missing_or_empty_sources() -> None:
@@ -532,7 +537,9 @@ def test_hydrate_messages_above_handles_widget_and_mount_failures(
     asyncio.run(message_flow.hydrate_messages_above(app))
 
     assert app._message_store.has_messages_above is True
+    assert app._message_store.get_visible_range() == (10, 60)
     assert app.chat.scroll_y == 0
+    assert app.messages.children == []
 
 
 def test_hydrate_messages_above_falls_back_to_sequential_mount() -> None:
@@ -556,6 +563,69 @@ def test_hydrate_messages_above_falls_back_to_sequential_mount() -> None:
 
     assert app.messages.batch_failed is True
     assert app._message_store.has_messages_above is False
+    assert app._message_store.visible_count == MessageStore.WINDOW_SIZE
+    assert [widget.id for widget in app.messages.children] == [
+        *(f"msg-{index}" for index in range(10)),
+    ]
+
+
+def test_hydrate_messages_above_keeps_sequential_fallback_order_before_anchor() -> None:
+    app = FlowApp()
+
+    class FlakyContainer(FakeContainer):
+        def __init__(self) -> None:
+            super().__init__()
+            self.batch_failed = False
+
+        async def mount(self, *widgets: object, before: object | None = None) -> None:
+            if len(widgets) > 1 and not self.batch_failed:
+                self.batch_failed = True
+                raise RuntimeError("batch failed")
+            await super().mount(*widgets, before=before)
+
+    app.messages = FlakyContainer()
+    anchor = FakeWidget("msg-10")
+    app.messages.children.append(anchor)
+    anchor.parent = app.messages
+    app._message_store.bulk_load([message_data(i) for i in range(60)])
+
+    asyncio.run(message_flow.hydrate_messages_above(app))
+
+    assert [widget.id for widget in app.messages.children[:11]] == [
+        *(f"msg-{index}" for index in range(10)),
+        "msg-10",
+    ]
+
+
+def test_hydrate_messages_above_rolls_back_mount_failure() -> None:
+    app = FlowApp()
+
+    class FailingSecondContainer(FakeContainer):
+        async def mount(self, *widgets: object, before: object | None = None) -> None:
+            if len(widgets) > 1:
+                raise RuntimeError("batch failed")
+            if getattr(widgets[0], "id", None) == "msg-1":
+                raise RuntimeError("second failed")
+            await super().mount(*widgets, before=before)
+
+    class FakeData:
+        def __init__(self, index: int) -> None:
+            self.id = f"msg-{index}"
+            self.content = ""
+
+        def to_widget(self) -> FakeWidget:
+            return FakeWidget(self.id)
+
+    app.messages = FailingSecondContainer()
+    app._message_store.bulk_load([message_data(i) for i in range(60)])
+    app._message_store.get_messages_to_hydrate = lambda: [  # type: ignore[method-assign]
+        FakeData(i) for i in range(10)
+    ]
+
+    asyncio.run(message_flow.hydrate_messages_above(app))
+
+    assert app.messages.children == []
+    assert app._message_store.get_visible_range() == (10, 60)
 
 
 def test_clear_messages_resets_store_and_container() -> None:

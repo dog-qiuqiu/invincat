@@ -1333,9 +1333,10 @@ def test_scroll_helpers_reanchor_only_near_bottom(
         "check_hydration_needed",
     )
     app.on_scroll_up("event")
+    app.on_mouse_scroll_up("event")
     app.on_scroll_to("event")
 
-    assert calls == [((app,), {}), ((app,), {})]
+    assert calls == [((app,), {}), ((app,), {}), ((app,), {})]
 
 
 def test_local_input_focus_approval_paste_and_cancel_helpers(

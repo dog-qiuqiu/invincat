@@ -150,6 +150,7 @@ class DeepAgentsApp(
     _pending_plan_handoff_prompt: str | None
 
     _message_store: Any
+    _hydration_pending: bool
     _startup_task: Any | None
     _discovered_skills: list[Any]
     _skill_allowed_roots: list[Path]

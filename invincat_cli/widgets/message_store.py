@@ -324,6 +324,42 @@ class MessageStore:
 
         return to_prune
 
+    def get_messages_to_prune_below(
+        self, count: int | None = None
+    ) -> list[MessageData]:
+        """Get newest visible messages that should be pruned from the DOM.
+
+        Returns a contiguous run from the END of the visible window. This is
+        used after hydrating older messages while the user is far from the
+        bottom, so the DOM window can remain bounded without losing the newly
+        visible older messages.
+        """
+        if count is None:
+            count = max(0, self.visible_count - self.WINDOW_SIZE)
+
+        if count <= 0:
+            return []
+
+        to_prune: list[MessageData] = []
+        idx = self._visible_end - 1
+
+        while len(to_prune) < count and idx >= self._visible_start:
+            msg = self._messages[idx]
+            if msg.id == self._active_message_id:
+                logger.debug(
+                    "get_messages_to_prune_below: stopped at active message id=%s "
+                    "after %d pruned (requested %d); window may remain above "
+                    "WINDOW_SIZE until streaming completes",
+                    msg.id,
+                    len(to_prune),
+                    count,
+                )
+                break
+            to_prune.append(msg)
+            idx -= 1
+
+        return to_prune
+
     def mark_pruned(self, message_ids: list[str]) -> None:
         """Mark messages as pruned (widgets removed).
 
@@ -346,6 +382,15 @@ class MessageStore:
             and self._messages[self._visible_start].id in pruned_set
         ):
             self._visible_start += 1
+
+    def mark_pruned_below(self, message_ids: list[str]) -> None:
+        """Mark newest visible messages as pruned from the DOM."""
+        pruned_set = set(message_ids)
+        while (
+            self._visible_end > self._visible_start
+            and self._messages[self._visible_end - 1].id in pruned_set
+        ):
+            self._visible_end -= 1
 
     def get_messages_to_hydrate(self, count: int | None = None) -> list[MessageData]:
         """Get messages above the visible window to hydrate.

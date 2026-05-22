@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from typing import Any
 
     from textual.app import ComposeResult
+    from textual.events import MouseScrollUp
     from textual.scrollbar import ScrollTo, ScrollUp
     from textual.widget import Widget
 
@@ -178,6 +179,9 @@ class AppRuntimeDelegateMixin:
         await handle_auto_update_toggle(self)
 
     def on_scroll_up(self, _event: ScrollUp) -> None:
+        self._check_hydration_needed()
+
+    def on_mouse_scroll_up(self, _event: MouseScrollUp) -> None:
         self._check_hydration_needed()
 
     def on_scroll_to(self, _event: ScrollTo) -> None:
