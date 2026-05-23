@@ -92,3 +92,53 @@ def test_summarization_event_normalizer_async() -> None:
         seen[0].state["_summarization_event"]["summary_message"],
         HumanMessage,
     )
+
+
+def test_summarization_event_normalizer_before_model_converts_event() -> None:
+    middleware = SummarizationEventNormalizerMiddleware()
+    state = {
+        "messages": [
+            HumanMessage(content="one"),
+            HumanMessage(content="two"),
+            HumanMessage(content="three"),
+            HumanMessage(content="four"),
+        ],
+        "_summarization_event": _serialized_event(),
+    }
+
+    update = middleware.before_model(state, runtime=None)
+
+    assert update is not None
+    summary = update["_summarization_event"]["summary_message"]
+    assert isinstance(summary, HumanMessage)
+    assert summary.additional_kwargs == {"lc_source": "summarization"}
+
+
+def test_summarization_event_normalizer_clears_stale_child_event() -> None:
+    middleware = SummarizationEventNormalizerMiddleware()
+    state = {
+        "messages": [HumanMessage(content="subagent task")],
+        "_summarization_event": _serialized_event(),
+    }
+
+    assert middleware.before_model(state, runtime=None) == {
+        "_summarization_event": None
+    }
+
+
+def test_summarization_event_normalizer_wrap_clears_stale_event() -> None:
+    middleware = SummarizationEventNormalizerMiddleware()
+    request = Request(
+        state={
+            "messages": [HumanMessage(content="subagent task")],
+            "_summarization_event": _serialized_event(),
+        }
+    )
+    seen: list[Request] = []
+
+    def handler(next_request: Request) -> str:
+        seen.append(next_request)
+        return "ok"
+
+    assert middleware.wrap_model_call(request, handler) == "ok"
+    assert seen[0].state["_summarization_event"] is None
