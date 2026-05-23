@@ -171,6 +171,12 @@ async def load_thread_history(
     if not history_thread_id:
         logger.debug("Skipping history load: no thread ID available")
         return
+    if getattr(app, "_loaded_history_thread_id", None) == history_thread_id:
+        logger.debug("Skipping history load for %s: already loaded", history_thread_id)
+        return
+    if getattr(app, "_loading_history_thread_id", None) == history_thread_id:
+        logger.debug("Skipping history load for %s: already loading", history_thread_id)
+        return
     if preloaded_payload is None and not app._agent:
         logger.debug(
             "Skipping history load for %s: no active agent and no preloaded data",
@@ -179,6 +185,7 @@ async def load_thread_history(
         return
 
     try:
+        app._loading_history_thread_id = history_thread_id
         payload = (
             preloaded_payload
             if preloaded_payload is not None
@@ -230,6 +237,7 @@ async def load_thread_history(
             t("thread.resumed").format(thread_id=history_thread_id)
         )
         await app._mount_message(thread_msg_widget)
+        app._loaded_history_thread_id = history_thread_id
         schedule_thread_message_link(
             app,
             thread_msg_widget,
@@ -252,6 +260,9 @@ async def load_thread_history(
         await app._mount_message(
             AppMessage(t("thread.history_load_failed").format(error=str(exc)))
         )
+    finally:
+        if getattr(app, "_loading_history_thread_id", None) == history_thread_id:
+            app._loading_history_thread_id = None
 
 
 async def reset_thread_conversation_view(app: Any) -> None:  # noqa: ANN401
@@ -259,6 +270,8 @@ async def reset_thread_conversation_view(app: Any) -> None:  # noqa: ANN401
     app._pending_messages.clear()
     app._queued_widgets.clear()
     await app._clear_messages()
+    app._loaded_history_thread_id = None
+    app._loading_history_thread_id = None
     app._context_tokens = 0
     app._tokens_approximate = False
     app._update_tokens(0)

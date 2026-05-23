@@ -286,11 +286,8 @@ async def handle_message_stream_chunk(
                     if adapter._set_spinner:
                         await adapter._set_spinner(None)
                     msg_id = f"asst-{uuid.uuid4().hex[:8]}"
-                    # Mark active BEFORE mounting so pruning
-                    # (triggered by mount) won't remove it
-                    # (_mount_message can trigger
-                    # _prune_old_messages if the window exceeds
-                    # WINDOW_SIZE.)
+                    # Mark active BEFORE mounting so store state records the
+                    # streaming assistant message while content arrives.
                     if adapter._set_active_message:
                         adapter._set_active_message(msg_id)
                     current_msg = adapter_mod.AssistantMessage(id=msg_id)

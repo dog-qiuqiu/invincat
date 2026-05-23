@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Protocol
 
+from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT
+
 from invincat_cli.core.session_stats import SpinnerStatus
+from invincat_cli.i18n import t
 from invincat_cli.textual_adapter.subagent_activity import SubagentActivityTracker
 from invincat_cli.widgets.messages import ToolCallMessage
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from invincat_cli.core.ask_user_types import AskUserWidgetResult, Question
@@ -18,6 +24,33 @@ if TYPE_CHECKING:
 
     class _TokensShowCallback(Protocol):
         def __call__(self, *, approximate: bool = False) -> None: ...
+
+
+_EXECUTE_WATCHDOG_GRACE_SECONDS = 5
+_MAX_EXECUTE_WATCHDOG_SECONDS = 3600
+
+
+def _coerce_execute_timeout(value: object) -> int | None:
+    if value is None:
+        return DEFAULT_EXECUTE_TIMEOUT
+    if type(value) is int:
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return DEFAULT_EXECUTE_TIMEOUT
+        try:
+            return int(stripped)
+        except ValueError:
+            return DEFAULT_EXECUTE_TIMEOUT
+    return DEFAULT_EXECUTE_TIMEOUT
+
+
+def _execute_watchdog_delay(args: dict[str, Any]) -> int | None:
+    timeout = _coerce_execute_timeout(args.get("timeout"))
+    if timeout is None or timeout <= 0:
+        return None
+    return min(timeout, _MAX_EXECUTE_WATCHDOG_SECONDS) + _EXECUTE_WATCHDOG_GRACE_SECONDS
 
 
 class TextualUIAdapter:
@@ -50,6 +83,7 @@ class TextualUIAdapter:
             ]
             | None
         ) = None,
+        on_execute_watchdog_timeout: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         """Initialize the adapter."""
         self._mount_message = mount_message
@@ -96,6 +130,15 @@ class TextualUIAdapter:
         self._current_tool_messages: dict[str, ToolCallMessage] = {}
         """Map of tool call IDs (normalized str) to their message widgets."""
 
+        self._tool_watchdog_tasks: dict[str, asyncio.Task[None]] = {}
+        """Per-tool watchdog tasks used to keep stale running tools from hanging UI."""
+
+        self._timed_out_tool_messages: dict[str, ToolCallMessage] = {}
+        """Tool widgets already marked timed out but still eligible for late results."""
+
+        self._on_execute_watchdog_timeout = on_execute_watchdog_timeout
+        """Called after an execute watchdog fires so the app can cancel the turn."""
+
         # Token display callbacks (set by the app after construction)
         self._on_tokens_update: _TokensUpdateCallback | None = None
         """Called with total context tokens after each LLM response."""
@@ -112,6 +155,90 @@ class TextualUIAdapter:
         self._subagent_activity = SubagentActivityTracker()
         """Tracks subagent stream activity for task tool progress display."""
 
+    def start_execute_watchdog(
+        self,
+        tool_call_id: str,
+        tool_msg: ToolCallMessage,
+        args: dict[str, Any],
+    ) -> None:
+        """Start a UI watchdog for an execute tool call.
+
+        The backend should normally return a ToolMessage when command execution
+        succeeds, fails, or times out.  If that final message never arrives, the
+        widget would otherwise stay in "running" forever.
+        """
+        delay = _execute_watchdog_delay(args)
+        if delay is None:
+            return
+
+        self.cancel_tool_watchdog(tool_call_id)
+        self._timed_out_tool_messages.pop(str(tool_call_id), None)
+        self._tool_watchdog_tasks[tool_call_id] = asyncio.create_task(
+            self._execute_watchdog(tool_call_id, tool_msg, delay)
+        )
+
+    def cancel_tool_watchdog(self, tool_call_id: str | int | None) -> None:
+        """Cancel the watchdog associated with a completed/removed tool call."""
+        if tool_call_id is None:
+            return
+        task = self._tool_watchdog_tasks.pop(str(tool_call_id), None)
+        if task is not None:
+            task.cancel()
+
+    def cancel_all_tool_watchdogs(self) -> None:
+        """Cancel all pending tool watchdogs."""
+        for task in self._tool_watchdog_tasks.values():
+            task.cancel()
+        self._tool_watchdog_tasks.clear()
+        self._timed_out_tool_messages.clear()
+
+    async def _execute_watchdog(
+        self,
+        tool_call_id: str,
+        tool_msg: ToolCallMessage,
+        delay: int,
+    ) -> None:
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+
+        active = self._current_tool_messages.get(tool_call_id)
+        if active is not tool_msg:
+            return
+
+        error = t("tool.execute_watchdog_timeout", seconds=delay)
+        try:
+            tool_msg.set_error(error)
+        except Exception:  # noqa: BLE001
+            pass
+
+        self._current_tool_messages.pop(tool_call_id, None)
+        self._tool_watchdog_tasks.pop(tool_call_id, None)
+        self._timed_out_tool_messages[tool_call_id] = tool_msg
+        self._update_tool_message_in_store(tool_call_id, "error", error)
+
+        if self._set_spinner and not self._current_tool_messages:
+            await self._set_spinner(t("status.thinking"))
+
+        if self._on_execute_watchdog_timeout is not None:
+            try:
+                await self._on_execute_watchdog_timeout(tool_call_id)
+            except Exception:
+                logger.warning(
+                    "Execute watchdog timeout callback failed for tool_call_id=%s",
+                    tool_call_id,
+                    exc_info=True,
+                )
+
+    def pop_timed_out_tool_message(
+        self, tool_call_id: str | int | None
+    ) -> ToolCallMessage | None:
+        """Return a timed-out tool widget for a late ToolMessage result, if any."""
+        if tool_call_id is None:
+            return None
+        return self._timed_out_tool_messages.pop(str(tool_call_id), None)
+
     def set_message_store(self, message_store: Any) -> None:
         """Set the message store reference.
 
@@ -123,7 +250,7 @@ class TextualUIAdapter:
     def _update_tool_message_in_store(
         self, tool_call_id: str | int, status: str, output: str
     ) -> bool:
-        """Update tool message data in the store when widget is pruned.
+        """Update tool message data in the store when no live widget is available.
 
         Args:
             tool_call_id: The tool call ID to find (str or int, normalized internally).
@@ -168,6 +295,7 @@ class TextualUIAdapter:
         for tool_msg in list(self._current_tool_messages.values()):
             tool_msg.set_error(error)
         self._current_tool_messages.clear()
+        self.cancel_all_tool_watchdogs()
 
         # Clear active streaming message to avoid stale "active" state in the store.
         if self._set_active_message:

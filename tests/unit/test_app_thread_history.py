@@ -8,11 +8,8 @@ from invincat_cli.app_runtime import thread_history
 from invincat_cli.app_runtime.thread_history import (
     build_resume_summary,
     convert_messages_to_data,
-    is_in_flight_tool_widget,
     merge_thread_state_with_fallback,
-    should_mark_missing_widget_pruned,
     thread_history_payload_from_state_values,
-    tool_tracking_keys_for_widget,
 )
 from invincat_cli.widgets.message_store import MessageData, MessageType, ToolStatus
 
@@ -42,6 +39,7 @@ def test_convert_messages_to_data_matches_tool_results() -> None:
     ]
     assert data[1].content == "working done"
     assert data[2].tool_name == "read_file"
+    assert data[2].tool_call_id == "call-1"
     assert data[2].tool_status == ToolStatus.SUCCESS
     assert data[2].tool_output == "file content"
 
@@ -144,6 +142,27 @@ def test_convert_messages_to_data_rejects_unmatched_tool_calls() -> None:
     assert len(data) == 1
     assert data[0].type == MessageType.TOOL
     assert data[0].tool_status == ToolStatus.REJECTED
+    assert data[0].tool_call_id == "call-1"
+
+
+def test_convert_messages_to_data_keeps_empty_tool_results_visible() -> None:
+    data = convert_messages_to_data(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"id": "call-1", "name": "shell", "args": {"command": "true"}}
+                ],
+            ),
+            ToolMessage("", tool_call_id="call-1"),
+        ]
+    )
+
+    assert len(data) == 1
+    assert data[0].type == MessageType.TOOL
+    assert data[0].tool_status == ToolStatus.SUCCESS
+    assert data[0].tool_call_id == "call-1"
+    assert data[0].tool_output == "(no output)"
 
 
 def test_convert_messages_to_data_handles_unmatched_and_unsupported_messages() -> None:
@@ -198,17 +217,3 @@ def test_build_resume_summary_returns_empty_without_user_messages() -> None:
         )
         == ""
     )
-
-
-def test_prune_widget_helpers() -> None:
-    active_widget = object()
-    other_widget = object()
-
-    assert is_in_flight_tool_widget(active_widget, {active_widget})
-    assert not is_in_flight_tool_widget(other_widget, {active_widget})
-    assert tool_tracking_keys_for_widget(
-        {"index": active_widget, "uuid": active_widget, "other": other_widget},
-        active_widget,
-    ) == ["index", "uuid"]
-    assert should_mark_missing_widget_pruned(is_streaming=False)
-    assert not should_mark_missing_widget_pruned(is_streaming=True)

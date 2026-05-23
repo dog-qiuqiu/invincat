@@ -161,14 +161,6 @@ def _patch_async(
             None,
         ),
         (
-            "_check_hydration_needed",
-            "invincat_cli.app_runtime.message_flow",
-            "check_hydration_needed",
-            (),
-            {},
-            None,
-        ),
-        (
             "_is_spinner_at_correct_position",
             "invincat_cli.app_runtime.message_flow",
             "is_spinner_at_correct_position",
@@ -515,14 +507,6 @@ def test_sync_app_methods_delegate_to_runtime_modules(
             "_handle_auto_update_toggle",
             "invincat_cli.app_runtime.update_handlers",
             "handle_auto_update_toggle",
-            (),
-            {},
-            None,
-        ),
-        (
-            "_hydrate_messages_above",
-            "invincat_cli.app_runtime.message_flow",
-            "hydrate_messages_above",
             (),
             {},
             None,
@@ -1008,14 +992,6 @@ def test_sync_app_methods_delegate_to_runtime_modules(
             None,
         ),
         (
-            "_prune_old_messages",
-            "invincat_cli.app_runtime.message_flow",
-            "prune_old_messages",
-            (),
-            {},
-            None,
-        ),
-        (
             "_clear_messages",
             "invincat_cli.app_runtime.message_flow",
             "clear_messages",
@@ -1327,16 +1303,9 @@ def test_scroll_helpers_reanchor_only_near_bottom(
     app.query_one = lambda *_args: (_ for _ in ()).throw(app_module.NoMatches())  # type: ignore[method-assign]
     app._maybe_reanchor()
 
-    calls = _patch_sync(
-        monkeypatch,
-        "invincat_cli.app_runtime.message_flow",
-        "check_hydration_needed",
-    )
-    app.on_scroll_up("event")
-    app.on_mouse_scroll_up("event")
     app.on_scroll_to("event")
 
-    assert calls == [((app,), {}), ((app,), {}), ((app,), {})]
+    assert events == ["anchor"]
 
 
 def test_local_input_focus_approval_paste_and_cancel_helpers(

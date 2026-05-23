@@ -98,6 +98,7 @@ async def handle_tool_message(
 
     tool_msg = None
     tool_args_for_match: dict[str, Any] | None = None
+    matched_tool_key: str | None = None
 
     # Strategy 1: Direct key match on normalized str ID.
     # Use pop(key, None) defensively even though the preceding
@@ -122,6 +123,7 @@ async def handle_tool_message(
                 "Matched ToolMessage by direct key tool_id=%s",
                 tool_id,
             )
+            matched_tool_key = tool_id
 
     # Strategy 2: Match by widget's _tool_call_id attribute.
     # When the widget was stored under a different (e.g. index-based)
@@ -129,7 +131,7 @@ async def handle_tool_message(
     #   1. The widget's _tool_call_id attribute → real tool_id
     #   2. The MessageStore entry's tool_call_id → real tool_id
     # Without (2) the store's index still maps the OLD key, so
-    # any future prune/hydrate lookup by tool_id would miss it.
+    # any future lookup by tool_id would miss it.
     if not tool_msg and tool_id:
         for key, msg in list(
             adapter._current_tool_messages.items()
@@ -141,6 +143,7 @@ async def handle_tool_message(
                 tool_msg = (
                     adapter._current_tool_messages.pop(key)
                 )
+                matched_tool_key = key
                 logger.debug(
                     "Matched ToolMessage by _tool_call_id=%s to key=%s",
                     tool_id,
@@ -174,6 +177,21 @@ async def handle_tool_message(
                             )
                 break
 
+    # Strategy 2.5: a watchdog may have marked an execute widget as timed out
+    # and removed it from active tracking.  If the backend later returns the
+    # real ToolMessage, update that same mounted widget instead of rendering a
+    # duplicate fallback result.
+    if not tool_msg and tool_id:
+        pop_timed_out = getattr(adapter, "pop_timed_out_tool_message", None)
+        if pop_timed_out is not None:
+            tool_msg = pop_timed_out(tool_id)
+            if tool_msg is not None:
+                matched_tool_key = tool_id
+                logger.debug(
+                    "Matched late ToolMessage for timed-out tool_id=%s",
+                    tool_id,
+                )
+
     # Strategy 3: Match by tool_name (fallback for missing IDs)
     if (
         not tool_msg
@@ -193,6 +211,7 @@ async def handle_tool_message(
             tool_msg = adapter._current_tool_messages.pop(
                 key
             )
+            matched_tool_key = key
             logger.debug(
                 "Matched ToolMessage by tool_name=%s to key=%s",
                 tool_name,
@@ -207,6 +226,7 @@ async def handle_tool_message(
                             key
                         )
                     )
+                    matched_tool_key = key
                     logger.debug(
                         "Matched ToolMessage by tool_name=%s status=%s to key=%s",
                         tool_name,
@@ -219,6 +239,7 @@ async def handle_tool_message(
                 tool_msg = (
                     adapter._current_tool_messages.pop(key)
                 )
+                matched_tool_key = key
                 logger.debug(
                     "Matched ToolMessage by tool_name=%s (first candidate) to key=%s",
                     tool_name,
@@ -247,7 +268,7 @@ async def handle_tool_message(
     if not tool_msg and tool_id:
         logger.warning(
             "ToolMessage unmatched: tool_id=%s name=%s "
-            "remaining keys=%s; widget may be pruned or ID mismatch",
+            "remaining keys=%s; widget may be unavailable or ID mismatch",
             tool_id,
             tool_name,
             [
@@ -294,6 +315,7 @@ async def handle_tool_message(
         output_str = f"{output_str}\n\n[diff unavailable: operation was not tracked]"
 
     if tool_msg:
+        adapter.cancel_tool_watchdog(matched_tool_key or tool_id)
         if tool_status == "success":
             tool_msg.set_success(output_str)
         else:
@@ -316,11 +338,9 @@ async def handle_tool_message(
                 tool_msg.id, tool_status=_final
             )
     elif tool_id:
-        # Widget not in current tracking map — it was either
-        # pruned before the ToolMessage arrived, or the index
-        # was already cleared by mark_pruned() (see #2.3 fix).
-        # Either way, look up the stored data and recreate a
-        # widget so the result is always visible to the user.
+        adapter.cancel_tool_watchdog(tool_id)
+        # Widget not in current tracking map. Look up the stored data and
+        # recreate a widget so the result is always visible to the user.
         msg_data = None
         if adapter._message_store:
             # get_message_by_tool_call_id normalises to str
@@ -331,7 +351,7 @@ async def handle_tool_message(
 
         if msg_data:
             logger.debug(
-                "ToolMessage tool_call_id=%s widget pruned "
+                "ToolMessage tool_call_id=%s widget unavailable "
                 "(found in store); recreating widget",
                 tool_id,
             )

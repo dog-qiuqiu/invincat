@@ -158,6 +158,7 @@ async def execute_task_textual(
     # the UUID-keyed widget is popped, leaving the index-keyed one as a zombie.
     # Those zombies interfere with Strategy 3 (name-match fallback) in future turns,
     # potentially stealing results from the correct current widget.
+    adapter.cancel_all_tool_watchdogs()
     adapter._current_tool_messages.clear()
     adapter._subagent_activity.clear()
 
@@ -380,9 +381,7 @@ async def execute_task_textual(
             # Unconditionally clear the active message after the stream loop exits.
             # _flush_assistant_text_ns clears it per-namespace, but if a turn
             # produces only tool calls (no assistant text), that function is never
-            # called and _active_message_id stays set from the previous turn,
-            # causing get_messages_to_prune() to break early on the stale active
-            # message and leave the DOM window unbounded.
+            # called and _active_message_id stays set from the previous turn.
             if adapter._set_active_message:
                 adapter._set_active_message(None)
 
@@ -450,9 +449,7 @@ async def execute_task_textual(
     except Exception:
         # Unexpected exception (e.g. network error, API error): clear transient
         # UI state so the app remains usable for the next message.
-        # Without this, _active_message_id stays set from the failed turn,
-        # causing get_messages_to_prune() to stop at the stale active message
-        # and leave the DOM window unbounded.
+        # Without this, _active_message_id stays set from the failed turn.
         logger.exception("Unexpected error in execute_task_textual")
         if adapter._set_active_message:
             adapter._set_active_message(None)
@@ -465,6 +462,7 @@ async def execute_task_textual(
                 tool_msg.set_error(t("tool.interrupted_by_error"))
             except Exception:  # noqa: BLE001
                 pass
+        adapter.cancel_all_tool_watchdogs()
         adapter._current_tool_messages.clear()
         raise
 

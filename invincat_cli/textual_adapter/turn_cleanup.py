@@ -41,6 +41,7 @@ async def handle_interrupt_cleanup(
 
     for tool_msg in list(adapter._current_tool_messages.values()):
         tool_msg.set_rejected()
+    adapter.cancel_all_tool_watchdogs()
     adapter._current_tool_messages.clear()
 
     try:

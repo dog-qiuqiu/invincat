@@ -29,6 +29,9 @@ from invincat_cli.textual_adapter import (
     execute_task_textual,
     print_usage_table,
 )
+from invincat_cli.textual_adapter import ui_adapter as ui_adapter_mod
+from invincat_cli.textual_adapter.tool_calls import handle_tool_call_block
+from invincat_cli.textual_adapter.tool_results import handle_tool_message
 
 
 class _CacheModel(BaseModel):
@@ -59,13 +62,21 @@ class _MessageStore:
 
 class _ToolWidget:
     def __init__(self, name: str = "shell") -> None:
+        self.id = "tool-widget"
         self._tool_name = name
         self._args = {"command": "pwd"}
+        self._status = "running"
         self.errors: list[str] = []
+        self.successes: list[str] = []
         self.rejected = False
 
     def set_error(self, error: str) -> None:
         self.errors.append(error)
+        self._status = "error"
+
+    def set_success(self, output: str) -> None:
+        self.successes.append(output)
+        self._status = "success"
 
     def set_rejected(self) -> None:
         self.rejected = True
@@ -167,6 +178,147 @@ def test_textual_ui_adapter_updates_store_and_finalizes_pending_tools() -> None:
     assert second.errors == ["boom"]
     assert adapter._current_tool_messages == {}
     assert active == [None]
+
+
+def test_execute_watchdog_delay_uses_default_custom_and_no_timeout() -> None:
+    assert ui_adapter_mod._execute_watchdog_delay({}) == 125
+    assert ui_adapter_mod._execute_watchdog_delay({"timeout": "10"}) == 15
+    assert ui_adapter_mod._execute_watchdog_delay({"timeout": 0}) is None
+    assert ui_adapter_mod._execute_watchdog_delay({"timeout": 9999}) == 3605
+
+
+def test_execute_watchdog_marks_stale_tool_error() -> None:
+    spinners: list[object] = []
+    timed_out: list[str] = []
+
+    async def set_spinner(value: object) -> None:
+        spinners.append(value)
+
+    async def on_timeout(tool_call_id: str) -> None:
+        timed_out.append(tool_call_id)
+
+    adapter = TextualUIAdapter(
+        mount_message=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+        update_status=lambda _status: None,
+        request_approval=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+        set_spinner=set_spinner,
+        on_execute_watchdog_timeout=on_timeout,
+    )
+    store = _MessageStore(_ToolData())
+    adapter.set_message_store(store)
+    tool = _ToolWidget("execute")
+    adapter._current_tool_messages = {"call-1": tool}  # type: ignore[assignment,dict-item]
+
+    asyncio.run(adapter._execute_watchdog("call-1", tool, 0))  # type: ignore[arg-type]
+
+    assert "execute result" in tool.errors[0]
+    assert adapter._current_tool_messages == {}
+    assert store.last_lookup == "call-1"
+    assert store.updated[0][0] == "msg-1"
+    assert spinners
+    assert timed_out == ["call-1"]
+
+
+def test_late_execute_result_updates_timed_out_widget_without_duplicate_mount() -> None:
+    mounted: list[object] = []
+
+    async def mount_message(widget: object) -> None:
+        mounted.append(widget)
+
+    adapter = TextualUIAdapter(
+        mount_message=mount_message,
+        update_status=lambda _status: None,
+        request_approval=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+    )
+    store = _MessageStore(_ToolData())
+    adapter.set_message_store(store)
+    tool = _ToolWidget("execute")
+    adapter._timed_out_tool_messages = {"call-1": tool}  # type: ignore[assignment]
+    message = SimpleNamespace(
+        name="execute",
+        status="success",
+        content="finished",
+        tool_call_id="call-1",
+    )
+    file_op_tracker = SimpleNamespace(
+        active={},
+        complete_with_message=lambda *_args, **_kwargs: None,
+    )
+
+    asyncio.run(
+        handle_tool_message(
+            adapter=adapter,
+            message=message,
+            file_op_tracker=file_op_tracker,
+            processed_wecom_file_tool_ids=set(),
+            on_wecom_file_request=None,
+            on_schedule_payload=None,
+            pending_text_by_namespace={},
+            ns_key=(),
+            assistant_message_by_namespace={},
+        )
+    )
+
+    assert tool.successes == ["finished"]
+    assert mounted == []
+    assert adapter._timed_out_tool_messages == {}
+    assert store.updated[-1][1]["tool_status"].value == "success"
+
+
+def test_execute_tool_args_start_watchdog() -> None:
+    mounted: list[object] = []
+    watchdogs: list[tuple[str, object, dict[str, object]]] = []
+
+    class FakeSubagentActivity:
+        def register_task(self, **_kwargs: object) -> None:
+            raise AssertionError("execute should not register subagent task")
+
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self._current_tool_messages: dict[str, object] = {}
+            self._message_store = None
+            self._set_spinner = None
+            self._subagent_activity = FakeSubagentActivity()
+
+        async def _mount_message(self, widget: object) -> None:
+            mounted.append(widget)
+
+        def start_execute_watchdog(
+            self,
+            tool_call_id: str,
+            tool_msg: object,
+            args: dict[str, object],
+        ) -> None:
+            watchdogs.append((tool_call_id, tool_msg, args))
+
+    adapter = FakeAdapter()
+    args = {"command": "sleep 10", "timeout": 1}
+
+    asyncio.run(
+        handle_tool_call_block(
+            adapter=adapter,
+            block={
+                "type": "tool_call",
+                "name": "execute",
+                "id": "call-1",
+                "args": args,
+            },
+            displayed_tool_ids=set(),
+            tool_call_buffers={},
+            planner_mode_enforced=False,
+            planner_allowed_tool_set=frozenset(),
+            file_op_tracker=SimpleNamespace(
+                active={},
+                start_operation=lambda *_args, **_kwargs: None,
+            ),
+            pending_text_by_namespace={},
+            ns_key=(),
+            assistant_message_by_namespace={},
+        )
+    )
+
+    assert len(mounted) == 1
+    assert watchdogs == [("call-1", mounted[0], args)]
 
 
 def test_build_interrupted_ai_message_from_text_and_tools() -> None:

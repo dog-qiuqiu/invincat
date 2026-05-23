@@ -192,12 +192,6 @@ class AppTurnFlowMixin:
 
         await mount_message(self, widget)
 
-    async def _prune_old_messages(self) -> None:
-        """Prune oldest message widgets if we exceed the window size."""
-        from invincat_cli.app_runtime.message_flow import prune_old_messages
-
-        await prune_old_messages(self)
-
     def _set_active_message(self, message_id: str | None) -> None:
         """Set the active streaming message."""
         self._message_store.set_active_message(message_id)

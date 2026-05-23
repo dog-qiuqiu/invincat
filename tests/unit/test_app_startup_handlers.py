@@ -122,6 +122,9 @@ class StartupApp:
     async def _request_approve_plan(self, *_args: object) -> object:
         return None
 
+    async def _handle_execute_watchdog_timeout(self, _tool_call_id: str) -> None:
+        return None
+
     def _on_tokens_update(self, tokens: int) -> None:
         self.tokens.append(tokens)
 

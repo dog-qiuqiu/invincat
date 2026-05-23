@@ -17,8 +17,7 @@ if TYPE_CHECKING:
     from typing import Any
 
     from textual.app import ComposeResult
-    from textual.events import MouseScrollUp
-    from textual.scrollbar import ScrollTo, ScrollUp
+    from textual.scrollbar import ScrollTo
     from textual.widget import Widget
 
     from invincat_cli.remote.client import RemoteAgent
@@ -163,6 +162,13 @@ class AppRuntimeDelegateMixin:
 
         await check_for_updates(self)
 
+    async def _handle_execute_watchdog_timeout(self, tool_call_id: str) -> None:
+        from invincat_cli.app_runtime.agent_handlers import (
+            handle_execute_watchdog_timeout,
+        )
+
+        await handle_execute_watchdog_timeout(self, tool_call_id)
+
     async def _show_whats_new(self) -> None:
         from invincat_cli.app_runtime.update_handlers import show_whats_new
 
@@ -178,14 +184,7 @@ class AppRuntimeDelegateMixin:
 
         await handle_auto_update_toggle(self)
 
-    def on_scroll_up(self, _event: ScrollUp) -> None:
-        self._check_hydration_needed()
-
-    def on_mouse_scroll_up(self, _event: MouseScrollUp) -> None:
-        self._check_hydration_needed()
-
     def on_scroll_to(self, _event: ScrollTo) -> None:
-        self._check_hydration_needed()
         self._maybe_reanchor()
 
     def _update_status(self, message: str) -> None:
@@ -220,16 +219,6 @@ class AppRuntimeDelegateMixin:
         if not chat.is_anchored and chat.max_scroll_y > 0:
             if chat.scroll_y >= chat.max_scroll_y - 2:
                 chat.anchor()
-
-    def _check_hydration_needed(self) -> None:
-        from invincat_cli.app_runtime.message_flow import check_hydration_needed
-
-        check_hydration_needed(self)
-
-    async def _hydrate_messages_above(self) -> None:
-        from invincat_cli.app_runtime.message_flow import hydrate_messages_above
-
-        await hydrate_messages_above(self)
 
     async def _mount_before_queued(self, container: Container, widget: Widget) -> None:
         from invincat_cli.app_runtime.message_flow import mount_before_queued

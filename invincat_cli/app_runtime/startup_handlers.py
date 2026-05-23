@@ -150,6 +150,7 @@ async def post_paint_init(app: Any) -> None:  # noqa: ANN401
         sync_message_content=app._sync_message_content,
         request_ask_user=app._request_ask_user,
         request_approve_plan=app._request_approve_plan,
+        on_execute_watchdog_timeout=app._handle_execute_watchdog_timeout,
     )
     app._ui_adapter._on_tokens_update = app._on_tokens_update
     app._ui_adapter._on_tokens_hide = app._hide_tokens

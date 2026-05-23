@@ -70,6 +70,8 @@ class ThreadApp:
         self._context_tokens = 12
         self._tokens_approximate = True
         self._message_store = MessageStore()
+        self._loaded_history_thread_id: str | None = None
+        self._loading_history_thread_id: str | None = None
         self._status_bar = FakeStatusBar()
         self.messages_container = FakeMessagesContainer()
         self.chat = FakeChat()
@@ -426,8 +428,56 @@ def test_load_thread_history_mounts_visible_messages_and_resume_notice(
     assert app._status_bar.count == 1
     assert len(app.messages_container.mounted) == 1
     assert app.messages
+    assert app._loaded_history_thread_id == "thread-1"
+    assert app._loading_history_thread_id is None
     assert linked == [("Resumed thread", "thread-1")]
     assert app.chat.scrolled is True
+
+
+def test_load_thread_history_skips_duplicate_loaded_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = ThreadApp()
+    payload = ThreadHistoryPayload([user_message("first")], context_tokens=0)
+    monkeypatch.setattr(
+        thread_handlers,
+        "schedule_thread_message_link",
+        lambda *_args, **_kwargs: None,
+    )
+
+    asyncio.run(
+        thread_handlers.load_thread_history(
+            app,
+            thread_id="thread-1",
+            preloaded_payload=payload,
+        )
+    )
+    asyncio.run(
+        thread_handlers.load_thread_history(
+            app,
+            thread_id="thread-1",
+            preloaded_payload=payload,
+        )
+    )
+
+    assert len(app.messages_container.mounted) == 1
+    assert len(app.messages) == 2
+
+
+def test_load_thread_history_skips_duplicate_in_flight_thread() -> None:
+    app = ThreadApp()
+    app._loading_history_thread_id = "thread-1"
+    payload = ThreadHistoryPayload([user_message("first")], context_tokens=0)
+
+    asyncio.run(
+        thread_handlers.load_thread_history(
+            app,
+            thread_id="thread-1",
+            preloaded_payload=payload,
+        )
+    )
+
+    assert app.messages_container.mounted == []
 
 
 def test_load_thread_history_logs_assistant_render_error(
@@ -552,6 +602,8 @@ def test_reset_thread_conversation_view_clears_pending_ui_state() -> None:
     assert not app._pending_messages
     assert not app._queued_widgets
     assert app.cleared == 1
+    assert app._loaded_history_thread_id is None
+    assert app._loading_history_thread_id is None
     assert app._context_tokens == 0
     assert app._tokens_approximate is False
     assert app.updated_tokens == [0]

@@ -1,17 +1,11 @@
-"""Message store for virtualized chat history.
+"""Message store for chat history.
 
-This module provides data structures and management for message virtualization,
-allowing the CLI to handle large message histories efficiently by keeping only
-a sliding window of widgets in the DOM while storing all message data as
-lightweight dataclasses.
-
-The approach is inspired by Textual's `Log` widget, which only keeps `N` lines
-in the DOM and recreates older ones on demand.
+This module stores all messages as lightweight dataclasses and keeps the
+visible range aligned with the full message list.
 """
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from invincat_cli.widgets.message_data import (
@@ -23,8 +17,6 @@ from invincat_cli.widgets.message_data import (
 from invincat_cli.widgets.message_data import (
     ToolStatus as ToolStatus,
 )
-
-logger = logging.getLogger(__name__)
 
 # Fields on MessageData that callers are allowed to update via update_message().
 # Prevents accidental overwriting of identity fields like id/type/timestamp.
@@ -44,22 +36,7 @@ _UPDATABLE_FIELDS: frozenset[str] = frozenset(
 
 
 class MessageStore:
-    """Manages message data and widget window for virtualization.
-
-    This class stores all messages as data and manages a sliding window
-    of widgets that are actually mounted in the DOM.
-
-    Attributes:
-        WINDOW_SIZE: Maximum number of widgets to keep in DOM.
-
-            Balances DOM performance with smooth scrolling experience.
-        HYDRATE_BUFFER: Number of messages to hydrate when scrolling near edge.
-
-            Provides enough buffer to avoid visible loading pauses.
-    """
-
-    WINDOW_SIZE: int = 50
-    HYDRATE_BUFFER: int = 15
+    """Manages message data for the chat transcript."""
 
     def __init__(self) -> None:
         """Initialize the message store."""
@@ -67,7 +44,7 @@ class MessageStore:
         self._visible_start: int = 0
         self._visible_end: int = 0
 
-        # Track active streaming message - never archive this
+        # Track active streaming message.
         self._active_message_id: str | None = None
 
         # O(1) lookup index: tool_call_id (str) → message id (str).
@@ -86,16 +63,6 @@ class MessageStore:
         """Number of messages currently visible (as widgets)."""
         return self._visible_end - self._visible_start
 
-    @property
-    def has_messages_above(self) -> bool:
-        """Check if there are archived messages above the visible window."""
-        return self._visible_start > 0
-
-    @property
-    def has_messages_below(self) -> bool:
-        """Check if there are archived messages below the visible window."""
-        return self._visible_end < len(self._messages)
-
     def append(self, message: MessageData) -> None:
         """Add a new message to the store.
 
@@ -106,28 +73,10 @@ class MessageStore:
         self._visible_end = len(self._messages)
         self._index_tool_call_id(message)
 
-        # After appending, visible_count legitimately exceeds WINDOW_SIZE by 1
-        # (which triggers the app's prune cycle).  If it grows much further
-        # before pruning runs, the DOM and store diverge — log a warning so
-        # the caller can investigate (e.g. prune callback is not wired up).
-        overflow = self.visible_count - self.WINDOW_SIZE
-        if overflow > 5:
-            logger.warning(
-                "MessageStore window overflow: visible=%d WINDOW_SIZE=%d excess=%d; "
-                "prune cycle may not be running",
-                self.visible_count,
-                self.WINDOW_SIZE,
-                overflow,
-            )
-
     def bulk_load(
         self, messages: list[MessageData]
     ) -> tuple[list[MessageData], list[MessageData]]:
-        """Load many messages at once, keeping only the tail visible.
-
-        This is optimized for thread resumption: all messages are stored as
-        lightweight data, but only the last `WINDOW_SIZE` entries are marked
-        visible (i.e. will need DOM widgets).
+        """Load many messages at once, keeping all of them visible.
 
         Args:
             messages: Ordered list of message data to load.
@@ -139,15 +88,10 @@ class MessageStore:
             self._messages.append(msg)
             self._index_tool_call_id(msg)
         total = len(self._messages)
-
-        if total <= self.WINDOW_SIZE:
-            self._visible_start = 0
-        else:
-            self._visible_start = total - self.WINDOW_SIZE
-
+        self._visible_start = 0
         self._visible_end = total
 
-        archived = self._messages[: self._visible_start]
+        archived: list[MessageData] = []
         visible = self._messages[self._visible_start : self._visible_end]
         return archived, visible
 
@@ -269,142 +213,6 @@ class MessageStore:
             True if this is the active message.
         """
         return message_id == self._active_message_id
-
-    def window_exceeded(self) -> bool:
-        """Check if the visible window exceeds the maximum size.
-
-        Returns:
-            True if we should prune some widgets.
-        """
-        return self.visible_count > self.WINDOW_SIZE
-
-    def get_messages_to_prune(self, count: int | None = None) -> list[MessageData]:
-        """Get the oldest visible messages that should be pruned.
-
-        Returns a contiguous run of messages from the START of the visible
-        window. Stops at the active streaming message to avoid creating gaps
-        in the visible window (which would desync store state from the DOM).
-
-        Args:
-            count: Number of messages to prune, or None to prune
-                enough to get back to WINDOW_SIZE.
-
-        Returns:
-            List of messages to prune (remove widgets for).
-        """
-        if count is None:
-            count = max(0, self.visible_count - self.WINDOW_SIZE)
-
-        if count <= 0:
-            return []
-
-        to_prune: list[MessageData] = []
-        idx = self._visible_start
-
-        while len(to_prune) < count and idx < self._visible_end:
-            msg = self._messages[idx]
-            # Stop at the active message to keep the window contiguous.
-            # Pruning past the active streaming widget would remove it from the
-            # DOM while content is still being streamed into it.  This means
-            # the window may temporarily stay above WINDOW_SIZE when the
-            # active message is near the front — acceptable since streaming is
-            # short-lived and the next prune cycle will clear the remainder.
-            if msg.id == self._active_message_id:
-                logger.debug(
-                    "get_messages_to_prune: stopped at active message id=%s "
-                    "after %d pruned (requested %d); window may remain above "
-                    "WINDOW_SIZE until streaming completes",
-                    msg.id,
-                    len(to_prune),
-                    count,
-                )
-                break
-            to_prune.append(msg)
-            idx += 1
-
-        return to_prune
-
-    def mark_pruned(self, message_ids: list[str]) -> None:
-        """Mark messages as pruned (widgets removed).
-
-        Advances `_visible_start` past consecutive pruned messages at the front
-        of the window.
-
-        Note: ``_tool_call_id_index`` entries are intentionally **kept** for
-        pruned messages.  The index is used by the widget-recreation fallback
-        path (``get_message_by_tool_call_id`` → recreate widget from stored
-        data) when a ToolMessage result arrives after its widget has been
-        pruned.  Removing the entry here would force a blank fallback widget
-        with no tool name or args.  Entries are cleared only on ``clear()``.
-
-        Args:
-            message_ids: IDs of messages that were pruned.
-        """
-        pruned_set = set(message_ids)
-        while (
-            self._visible_start < self._visible_end
-            and self._messages[self._visible_start].id in pruned_set
-        ):
-            self._visible_start += 1
-
-    def get_messages_to_hydrate(self, count: int | None = None) -> list[MessageData]:
-        """Get messages above the visible window to hydrate.
-
-        Args:
-            count: Number of messages to hydrate, or None for `HYDRATE_BUFFER`.
-
-        Returns:
-            List of messages to hydrate (create widgets for), in order.
-        """
-        if count is None:
-            count = self.HYDRATE_BUFFER
-
-        if self._visible_start <= 0:
-            return []
-
-        hydrate_start = max(0, self._visible_start - count)
-        return self._messages[hydrate_start : self._visible_start]
-
-    def mark_hydrated(self, count: int) -> int:
-        """Mark that messages above were hydrated.
-
-        Args:
-            count: Number of messages that were hydrated.
-
-        Returns:
-            Actual number of messages whose window pointer was moved.
-            This may be less than *count* if there are fewer archived
-            messages than requested (e.g. when called with a stale count).
-        """
-        if count > self._visible_start:
-            logger.warning(
-                "mark_hydrated called with count=%d but only %d messages are "
-                "above the visible window; clamping to avoid negative _visible_start",
-                count,
-                self._visible_start,
-            )
-        actual = min(count, self._visible_start)
-        self._visible_start -= actual
-        return actual
-
-    def should_hydrate_above(
-        self, scroll_position: float, viewport_height: int
-    ) -> bool:
-        """Check if we should hydrate messages above the current view.
-
-        Args:
-            scroll_position: Current scroll Y position.
-            viewport_height: Height of the viewport.
-
-        Returns:
-            True if user is scrolling near the top and we have archived messages.
-        """
-        if not self.has_messages_above:
-            return False
-
-        # Hydrate when within 2x viewport height of the top
-        threshold = viewport_height * 2
-        return scroll_position < threshold
 
     def clear(self) -> None:
         """Clear all messages."""

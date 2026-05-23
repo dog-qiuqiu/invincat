@@ -1,23 +1,18 @@
-"""Message mounting and pruning helpers for the Textual app."""
+"""Message mounting helpers for the Textual app."""
 
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-from textual.containers import Container, VerticalScroll
+from textual.containers import Container
 from textual.css.query import NoMatches
 from textual.widget import Widget
 
-from invincat_cli.app_runtime.thread_history import (
-    is_in_flight_tool_widget,
-    should_mark_missing_widget_pruned,
-    tool_tracking_keys_for_widget,
-)
 from invincat_cli.core.session_stats import SpinnerStatus
 from invincat_cli.widgets.loading import LoadingWidget
 from invincat_cli.widgets.message_store import MessageData
-from invincat_cli.widgets.messages import AssistantMessage, QueuedUserMessage
+from invincat_cli.widgets.messages import QueuedUserMessage
 
 logger = logging.getLogger(__name__)
 
@@ -99,224 +94,11 @@ async def mount_message(app: Any, widget: Any) -> None:  # noqa: ANN401
     else:
         await mount_before_queued(app, messages, widget)
 
-    await prune_old_messages(app)
-
     try:
         input_container = app.query_one("#bottom-app-container", Container)
         input_container.scroll_visible()
     except NoMatches:
         pass
-
-
-async def prune_old_messages(app: Any) -> None:  # noqa: ANN401
-    """Prune oldest message widgets when the visible window is exceeded."""
-    if not app._message_store.window_exceeded():
-        return
-
-    try:
-        messages_container = app.query_one("#messages", Container)
-    except NoMatches:
-        logger.debug("Skipping pruning: #messages container not found")
-        return
-
-    to_prune = app._message_store.get_messages_to_prune()
-    if not to_prune:
-        return
-
-    pruned_ids: list[str] = []
-    active_tool_widgets: set[object] = set()
-    if app._ui_adapter is not None:
-        active_tool_widgets = set(app._ui_adapter._current_tool_messages.values())
-
-    for msg_data in to_prune:
-        try:
-            widget = messages_container.query_one(f"#{msg_data.id}")
-
-            if is_in_flight_tool_widget(widget, active_tool_widgets):
-                logger.debug(
-                    "Skipping prune of in-flight tool widget id=%s "
-                    "(still awaiting ToolMessage result)",
-                    msg_data.id,
-                )
-                continue
-
-            if msg_data.type == "tool" and app._ui_adapter is not None:
-                stale_keys = tool_tracking_keys_for_widget(
-                    app._ui_adapter._current_tool_messages,
-                    widget,
-                )
-                for key in stale_keys:
-                    app._ui_adapter._current_tool_messages.pop(key, None)
-                    logger.debug(
-                        "Removed tool message from tracking: key=%s id=%s",
-                        key,
-                        msg_data.id,
-                    )
-            try:
-                await widget.remove()
-            except Exception:  # noqa: BLE001
-                logger.warning(
-                    "Failed to remove widget %s during pruning; "
-                    "skipping to keep store/DOM in sync",
-                    msg_data.id,
-                    exc_info=True,
-                )
-                continue
-            pruned_ids.append(msg_data.id)
-        except NoMatches:
-            if not should_mark_missing_widget_pruned(
-                is_streaming=msg_data.is_streaming,
-            ):
-                logger.debug(
-                    "Widget %s not found but still streaming; skipping prune",
-                    msg_data.id,
-                )
-            else:
-                logger.debug(
-                    "Widget %s not in DOM and not streaming; "
-                    "force-advancing window to prevent unbounded growth",
-                    msg_data.id,
-                )
-                pruned_ids.append(msg_data.id)
-
-    if pruned_ids:
-        app._message_store.mark_pruned(pruned_ids)
-
-
-def check_hydration_needed(app: Any) -> None:  # noqa: ANN401
-    """Schedule hydration when the user scrolls near the top."""
-    if not app._message_store.has_messages_above:
-        return
-    if getattr(app, "_hydration_pending", False):
-        return
-
-    try:
-        chat = app.query_one("#chat", VerticalScroll)
-    except NoMatches:
-        logger.debug("Skipping hydration check: #chat container not found")
-        return
-
-    scroll_y = chat.scroll_y
-    viewport_height = chat.size.height
-
-    if app._message_store.should_hydrate_above(scroll_y, viewport_height):
-        app._hydration_pending = True
-        try:
-            app.call_later(app._hydrate_messages_above)
-        except Exception:
-            app._hydration_pending = False
-            raise
-
-
-async def hydrate_messages_above(app: Any) -> None:  # noqa: ANN401
-    """Hydrate older messages when the user scrolls near the top."""
-    try:
-        if not app._message_store.has_messages_above:
-            return
-
-        try:
-            chat = app.query_one("#chat", VerticalScroll)
-        except NoMatches:
-            logger.debug("Skipping hydration: #chat not found")
-            return
-
-        try:
-            messages_container = app.query_one("#messages", Container)
-        except NoMatches:
-            logger.debug("Skipping hydration: #messages not found")
-            return
-
-        to_hydrate = app._message_store.get_messages_to_hydrate()
-        if not to_hydrate:
-            return
-
-        old_scroll_y = chat.scroll_y
-        first_child = (
-            messages_container.children[0] if messages_container.children else None
-        )
-
-        mounted_widgets: list[tuple[Widget, MessageData]] = []
-        hydrated_widgets: list[tuple[Widget, MessageData]] = []
-        for msg_data in to_hydrate:
-            try:
-                widget = msg_data.to_widget()
-                hydrated_widgets.append((widget, msg_data))
-            except Exception:
-                logger.warning(
-                    "Failed to create widget for message %s; "
-                    "skipping hydration to keep the visible window contiguous",
-                    msg_data.id,
-                    exc_info=True,
-                )
-                return
-
-        if not hydrated_widgets:
-            return
-
-        widgets_to_mount = [widget for widget, _ in hydrated_widgets]
-        try:
-            if first_child:
-                await messages_container.mount(*widgets_to_mount, before=first_child)
-            else:
-                await messages_container.mount(*widgets_to_mount)
-            mounted_widgets = hydrated_widgets
-        except Exception:
-            logger.warning(
-                "Batch hydration mount failed; falling back to sequential",
-                exc_info=True,
-            )
-            mounted_widgets = [
-                (widget, msg_data)
-                for widget, msg_data in hydrated_widgets
-                if getattr(widget, "parent", None) is messages_container
-            ]
-            for widget, msg_data in hydrated_widgets:
-                if getattr(widget, "parent", None) is messages_container:
-                    continue
-                try:
-                    if first_child:
-                        await messages_container.mount(widget, before=first_child)
-                    else:
-                        await messages_container.mount(widget)
-                    mounted_widgets.append((widget, msg_data))
-                except Exception:
-                    logger.warning(
-                        "Failed to mount hydrated widget %s; "
-                        "rolling back hydration to keep the visible window contiguous",
-                        widget.id,
-                        exc_info=True,
-                    )
-                    for mounted_widget, _ in reversed(mounted_widgets):
-                        try:
-                            await mounted_widget.remove()
-                        except Exception:
-                            logger.warning(
-                                "Failed to roll back hydrated widget %s",
-                                mounted_widget.id,
-                                exc_info=True,
-                            )
-                    return
-
-        for widget, msg_data in mounted_widgets:
-            if isinstance(widget, AssistantMessage) and msg_data.content:
-                try:
-                    await widget.set_content(msg_data.content)
-                except Exception:
-                    logger.warning(
-                        "Failed to set content for hydrated widget",
-                        exc_info=True,
-                    )
-
-        hydrated_count = len(mounted_widgets)
-        if hydrated_count > 0:
-            app._message_store.mark_hydrated(hydrated_count)
-
-        estimated_height_per_message = 5
-        added_height = hydrated_count * estimated_height_per_message
-        chat.scroll_y = old_scroll_y + added_height
-    finally:
-        if hasattr(app, "_hydration_pending"):
-            app._hydration_pending = False
 
 
 async def clear_messages(app: Any) -> None:  # noqa: ANN401

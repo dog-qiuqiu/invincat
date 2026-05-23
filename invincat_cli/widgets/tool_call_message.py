@@ -156,8 +156,8 @@ class ToolCallMessage(ToolCallOutputMixin, Vertical):
         self._hint_widget.display = False
         self._full_widget.display = False
 
-        # If this widget was hydrated from the store it already has a terminal
-        # (or running) deferred status — skip the animation startup entirely and
+        # If this widget was restored from the store it already has a terminal
+        # (or running) deferred status - skip the animation startup entirely and
         # go straight to _restore_deferred_state.  Starting the timer and then
         # immediately stopping it causes a visible spinner flash for re-mounted
         # widgets that are already in a final state.

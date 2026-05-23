@@ -146,6 +146,31 @@ async def handle_agent_task_exception(app: Any, exc: BaseException) -> bool:  # 
     return decision.retry
 
 
+async def handle_execute_watchdog_timeout(app: Any, tool_call_id: str) -> None:  # noqa: ANN401
+    """Cancel a stalled agent turn after the execute UI watchdog fires."""
+    if not app._agent_running:
+        return
+
+    logger.warning(
+        "Execute watchdog timed out for tool_call_id=%s; cancelling active agent turn",
+        tool_call_id,
+    )
+    if app._agent_worker is not None:
+        app._agent_worker.cancel()
+    app._agent_worker = None
+    app._agent_running = False
+    app._active_turn_is_planner = False
+
+    app._finish_active_scheduled_run_as_failed(
+        f"execute tool timed out: {tool_call_id}"
+    )
+    await app._set_spinner(None)
+    if app._chat_input:
+        app._chat_input.set_cursor_active(active=True)
+    app._show_tokens(approximate=app._tokens_approximate)
+    await app._process_next_from_queue()
+
+
 async def run_agent_task(app: Any, request: AgentTurnRequest) -> None:  # noqa: ANN401
     """Run the agent task in a background worker."""
     if app._ui_adapter is None:

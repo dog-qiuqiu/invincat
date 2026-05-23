@@ -126,6 +126,8 @@ def _initialize_runtime_state(app: Any) -> None:  # noqa: ANN401
     app._ui_adapter = None
     app._pending_approval_widget = None
     app._pending_ask_user_widget = None
+    app._loaded_history_thread_id = None
+    app._loading_history_thread_id = None
 
     app._agent_worker = None
     app._agent_running = False
@@ -169,7 +171,6 @@ def _initialize_runtime_state(app: Any) -> None:  # noqa: ANN401
     app._pending_plan_handoff_prompt = None
 
     app._message_store = MessageStore()
-    app._hydration_pending = False
     app._startup_task = None
     app._discovered_skills = []
     app._skill_allowed_roots = []

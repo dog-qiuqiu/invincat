@@ -374,6 +374,7 @@ EN_TRANSLATIONS: dict[str, str] = {
         "tool.plan_preview": "Plan Preview",
         "tool.interrupted_by_error": "Interrupted by error",
         "tool.interrupted_by_user": "Interrupted by user",
+    "tool.execute_watchdog_timeout": "No execute result received after {seconds}s; marking this tool call as timed out and cancelling the turn.",
         "shell.command_completed": "Command completed",
         "shell.command_completed_no_output": "Command completed (no output)",
         "shell.command_timeout": "Command timed out ({seconds}s limit)",

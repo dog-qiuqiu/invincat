@@ -110,6 +110,8 @@ class DeepAgentsApp(
     _ui_adapter: Any | None
     _pending_approval_widget: Any | None
     _pending_ask_user_widget: Any | None
+    _loaded_history_thread_id: str | None
+    _loading_history_thread_id: str | None
 
     _agent_worker: Worker | None
     _agent_running: bool
@@ -150,7 +152,6 @@ class DeepAgentsApp(
     _pending_plan_handoff_prompt: str | None
 
     _message_store: Any
-    _hydration_pending: bool
     _startup_task: Any | None
     _discovered_skills: list[Any]
     _skill_allowed_roots: list[Path]

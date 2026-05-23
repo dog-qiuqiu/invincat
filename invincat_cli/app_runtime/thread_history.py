@@ -7,6 +7,7 @@ from typing import Any
 
 from invincat_cli.app_runtime.state import ThreadHistoryPayload
 from invincat_cli.core.session_stats import format_token_count
+from invincat_cli.presentation.tool_display import format_tool_message_content
 from invincat_cli.widgets.message_store import MessageData, MessageType, ToolStatus
 
 logger = logging.getLogger(__name__)
@@ -95,6 +96,7 @@ def convert_messages_to_data(messages: list[Any]) -> list[MessageData]:
                     tool_name=tool_call.get("name", "unknown"),
                     tool_args=tool_call.get("args", {}),
                     tool_status=ToolStatus.PENDING,
+                    tool_call_id=tool_call_id,
                 )
                 result.append(data)
                 if tool_call_id is not None:
@@ -111,9 +113,7 @@ def convert_messages_to_data(messages: list[Any]) -> list[MessageData]:
                 idx = pending_tool_indices.pop(tool_call_id)
                 data = result[idx]
                 status = getattr(msg, "status", "success")
-                content = (
-                    msg.content if isinstance(msg.content, str) else str(msg.content)
-                )
+                content = format_tool_message_content(msg.content) or "(no output)"
                 data.tool_status = (
                     ToolStatus.SUCCESS if status == "success" else ToolStatus.ERROR
                 )
@@ -161,27 +161,6 @@ def build_resume_summary(messages: list[MessageData], context_tokens: int) -> st
     parts.insert(0, f"{total} messages{token_str}")
 
     return " · ".join(parts)
-
-
-def is_in_flight_tool_widget(
-    widget: object,
-    active_tool_widgets: set[object],
-) -> bool:
-    """Return whether a widget is still tracked as an active tool call."""
-    return widget in active_tool_widgets
-
-
-def tool_tracking_keys_for_widget(
-    tracking: dict[str, object],
-    widget: object,
-) -> list[str]:
-    """Return all tool tracking keys that currently point to a widget."""
-    return [key for key, tracked_widget in tracking.items() if tracked_widget is widget]
-
-
-def should_mark_missing_widget_pruned(*, is_streaming: bool) -> bool:
-    """Return whether missing DOM widget data can be safely marked pruned."""
-    return not is_streaming
 
 
 def _extract_ai_text(content: Any) -> str:

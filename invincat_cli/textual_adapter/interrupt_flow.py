@@ -317,6 +317,7 @@ async def build_interrupt_resume_payload(
                     )
                     for tool_msg in tool_msgs:
                         tool_msg.set_rejected()
+                    adapter.cancel_all_tool_watchdogs()
                     adapter._current_tool_messages.clear()
                     any_rejected = True
                     suppress_resumed_output = True
@@ -333,6 +334,7 @@ async def build_interrupt_resume_payload(
                         adapter._current_tool_messages.values()
                     ):
                         tool_msg.set_rejected()
+                    adapter.cancel_all_tool_watchdogs()
                     adapter._current_tool_messages.clear()
                     any_rejected = True
                     suppress_resumed_output = True
@@ -348,6 +350,7 @@ async def build_interrupt_resume_payload(
                     adapter._current_tool_messages.values()
                 ):
                     tool_msg.set_rejected()
+                adapter.cancel_all_tool_watchdogs()
                 adapter._current_tool_messages.clear()
                 any_rejected = True
                 suppress_resumed_output = True

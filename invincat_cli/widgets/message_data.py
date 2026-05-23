@@ -41,7 +41,7 @@ class ToolStatus(StrEnum):
 
 @dataclass
 class MessageData:
-    """In-memory message data for virtualization."""
+    """In-memory message data for chat history and restore."""
 
     type: MessageType
     content: str

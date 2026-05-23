@@ -374,6 +374,7 @@ ZH_TRANSLATIONS: dict[str, str] = {
         "tool.plan_preview": "计划预览",
         "tool.interrupted_by_error": "因错误中断",
         "tool.interrupted_by_user": "已被用户中断",
+    "tool.execute_watchdog_timeout": "超过 {seconds} 秒未收到 execute 结果，已将该工具调用标记为超时并取消当前回合。",
         "shell.command_completed": "命令执行完成",
         "shell.command_completed_no_output": "命令执行完成（无输出）",
         "shell.command_timeout": "命令执行超时（{seconds} 秒限制）",

@@ -65,6 +65,14 @@ class FakeServerProc:
         return self.tail
 
 
+class FakeWorker:
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+
 class AgentHandlersApp:
     def __init__(self) -> None:
         self._processing_pending = False
@@ -208,6 +216,31 @@ def test_send_to_agent_reports_unconfigured_runtime_and_finishes_schedule() -> N
     ]
     assert isinstance(app.messages[-1], AppMessage)
     assert "not configured" in message_contents(app)[-1]
+
+
+def test_execute_watchdog_timeout_cancels_turn_and_drains_queue() -> None:
+    app = AgentHandlersApp()
+    worker = FakeWorker()
+    app._agent_running = True
+    app._agent_worker = worker
+    app._active_turn_is_planner = True
+
+    asyncio.run(agent_handlers.handle_execute_watchdog_timeout(app, "call-1"))
+
+    assert worker.cancelled is True
+    assert app._agent_running is False
+    assert app._agent_worker is None
+    assert app._active_turn_is_planner is False
+    assert app.spinners == [None]
+    assert app.tokens_shown == [True]
+    assert app.queue_process_calls == 1
+    assert app._chat_input is not None
+    assert app._chat_input.cursor_states == [True]
+    assert app._active_scheduled_run is None
+    assert app._scheduler_runner is not None
+    assert app._scheduler_runner.finished == [
+        ("run-1", "task-1", "failed", "execute tool timed out: call-1")
+    ]
 
 
 def test_send_to_agent_starts_worker_with_planner_request() -> None:

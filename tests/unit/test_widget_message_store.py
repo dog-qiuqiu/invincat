@@ -210,37 +210,19 @@ def test_store_index_lookup_update_and_clear() -> None:
     assert store.get_message_by_tool_call_id("real-id") is None
 
 
-def test_store_bulk_window_prune_and_hydrate_boundaries() -> None:
+def test_store_bulk_load_keeps_all_messages_visible() -> None:
     store = MessageStore()
     archived, visible = store.bulk_load([_message(i) for i in range(60)])
 
-    assert len(archived) == 10
-    assert len(visible) == MessageStore.WINDOW_SIZE
-    assert store.visible_count == MessageStore.WINDOW_SIZE
-    assert store.has_messages_above is True
-    assert store.has_messages_below is False
-    assert store.get_visible_range() == (10, 60)
+    assert archived == []
+    assert len(visible) == 60
+    assert store.visible_count == 60
+    assert store.get_visible_range() == (0, 60)
     assert store.get_all_messages()[0].id == "msg-0"
-    assert store.get_visible_messages()[0].id == "msg-10"
+    assert store.get_visible_messages()[0].id == "msg-0"
 
     store.append(_message(60))
-    assert store.window_exceeded() is True
-    assert [msg.id for msg in store.get_messages_to_prune()] == ["msg-10"]
-    store.set_active_message("msg-10")
-    assert store.get_messages_to_prune(count=3) == []
-    store.set_active_message(None)
-    assert store.get_messages_to_prune(count=0) == []
-
-    store.mark_pruned(["msg-10", "msg-11"])
-    assert store.get_visible_range() == (12, 61)
-    assert [msg.id for msg in store.get_messages_to_hydrate(count=3)] == [
-        "msg-9",
-        "msg-10",
-        "msg-11",
-    ]
-    assert store.mark_hydrated(99) == 12
-    assert store.get_visible_range()[0] == 0
-    assert store.get_messages_to_hydrate() == []
+    assert store.get_visible_range() == (0, 61)
 
 
 def test_store_small_bulk_load_and_none_tool_call_id() -> None:
@@ -253,20 +235,10 @@ def test_store_small_bulk_load_and_none_tool_call_id() -> None:
     assert store.get_message_by_tool_call_id(None) is None
 
 
-def test_store_scroll_threshold_helpers() -> None:
+def test_append_keeps_all_messages_visible() -> None:
     store = MessageStore()
-    assert store.should_hydrate_above(scroll_position=0, viewport_height=10) is False
+    for index in range(56):
+        store.append(_message(index))
 
-    store.bulk_load([_message(i) for i in range(60)])
-
-    assert store.should_hydrate_above(scroll_position=10, viewport_height=10) is True
-    assert store.should_hydrate_above(scroll_position=25, viewport_height=10) is False
-
-
-def test_append_logs_large_window_overflow(caplog: pytest.LogCaptureFixture) -> None:
-    store = MessageStore()
-    with caplog.at_level("WARNING"):
-        for index in range(MessageStore.WINDOW_SIZE + 6):
-            store.append(_message(index))
-
-    assert "window overflow" in caplog.text
+    assert store.visible_count == 56
+    assert store.get_visible_range() == (0, 56)

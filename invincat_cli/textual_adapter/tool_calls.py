@@ -127,9 +127,8 @@ async def handle_tool_call_block(
                 display_key
             ] = existing
             displayed_tool_ids.add(display_key)
-            # Also update the store so that if this widget is
-            # later pruned, the fallback hydration path uses
-            # the correct tool_call_id for result matching.
+            # Also update the store so later result matching uses the canonical
+            # tool_call_id even if the widget was first mounted with an index key.
             if existing.id and adapter._message_store:
                 try:
                     adapter._message_store.update_message(
@@ -260,6 +259,12 @@ async def handle_tool_call_block(
             )
             if tool_msg is not None:
                 tool_msg.update_args(parsed_args)
+                if buffer_name == "execute":
+                    adapter.start_execute_watchdog(
+                        display_key,
+                        tool_msg,
+                        parsed_args,
+                    )
                 if buffer_name == "task":
                     adapter._subagent_activity.register_task(
                         tool_call_id=display_key,
