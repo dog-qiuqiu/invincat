@@ -84,6 +84,7 @@ class TextualUIAdapter:
             | None
         ) = None,
         on_execute_watchdog_timeout: Callable[[str], Awaitable[None]] | None = None,
+        persist_thread_diffs: bool = False,
     ) -> None:
         """Initialize the adapter."""
         self._mount_message = mount_message
@@ -154,6 +155,16 @@ class TextualUIAdapter:
 
         self._subagent_activity = SubagentActivityTracker()
         """Tracks subagent stream activity for task tool progress display."""
+
+        self._thread_id: str | None = None
+        """Current LangGraph thread ID, used for UI-only sidecar history."""
+
+        self._persist_thread_diffs = persist_thread_diffs
+        """Whether to persist UI-only file diffs for later thread resume."""
+
+    def set_thread_id(self, thread_id: str | None) -> None:
+        """Set the active thread ID for this adapter."""
+        self._thread_id = thread_id
 
     def start_execute_watchdog(
         self,

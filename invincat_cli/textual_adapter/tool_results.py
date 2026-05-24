@@ -447,6 +447,17 @@ async def handle_tool_message(
                 record.diff, record.display_path
             )
             await adapter._mount_message(diff_msg)
+            if getattr(adapter, "_persist_thread_diffs", False):
+                from invincat_cli.app_runtime.thread_diff_history import (
+                    save_thread_diff,
+                )
+
+                save_thread_diff(
+                    thread_id=getattr(adapter, "_thread_id", None),
+                    tool_call_id=tool_id or getattr(record, "tool_call_id", None),
+                    display_path=record.display_path,
+                    diff=record.diff,
+                )
         else:
             logger.debug(
                 "No diff for tool=%s tool_call_id=%s "

@@ -265,6 +265,68 @@ def test_late_execute_result_updates_timed_out_widget_without_duplicate_mount() 
     assert store.updated[-1][1]["tool_status"].value == "success"
 
 
+def test_file_tool_diff_result_persists_for_thread_resume(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from invincat_cli.app_runtime.thread_diff_history import load_thread_diffs
+
+    monkeypatch.setattr(
+        "invincat_cli.app_runtime.thread_diff_history._history_root",
+        lambda: tmp_path,
+    )
+    mounted: list[object] = []
+
+    async def mount_message(widget: object) -> None:
+        mounted.append(widget)
+
+    adapter = TextualUIAdapter(
+        mount_message=mount_message,
+        update_status=lambda _status: None,
+        request_approval=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+        persist_thread_diffs=True,
+    )
+    adapter.set_thread_id("thread-1")
+    adapter._current_tool_messages["call-1"] = _ToolWidget("edit_file")
+    message = SimpleNamespace(
+        name="edit_file",
+        status="success",
+        content="ok",
+        tool_call_id="call-1",
+    )
+    record = SimpleNamespace(
+        status="success",
+        error=None,
+        diff="--- before\n+++ after",
+        display_path="demo.py",
+        args={"file_path": "demo.py"},
+    )
+    file_op_tracker = SimpleNamespace(
+        active={},
+        complete_with_message=lambda *_args, **_kwargs: record,
+    )
+
+    asyncio.run(
+        handle_tool_message(
+            adapter=adapter,
+            message=message,
+            file_op_tracker=file_op_tracker,
+            processed_wecom_file_tool_ids=set(),
+            on_wecom_file_request=None,
+            on_schedule_payload=None,
+            pending_text_by_namespace={},
+            ns_key=(),
+            assistant_message_by_namespace={},
+        )
+    )
+
+    records = load_thread_diffs("thread-1")
+    assert records[0].tool_call_id == "call-1"
+    assert records[0].display_path == "demo.py"
+    assert records[0].diff == "--- before\n+++ after"
+    assert mounted
+
+
 def test_execute_tool_args_start_watchdog() -> None:
     mounted: list[object] = []
     watchdogs: list[tuple[str, object, dict[str, object]]] = []

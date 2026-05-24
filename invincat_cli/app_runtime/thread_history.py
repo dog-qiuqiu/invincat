@@ -6,6 +6,10 @@ import logging
 from typing import Any
 
 from invincat_cli.app_runtime.state import ThreadHistoryPayload
+from invincat_cli.app_runtime.thread_diff_history import (
+    ThreadDiffRecord,
+    load_thread_diffs,
+)
 from invincat_cli.core.session_stats import format_token_count
 from invincat_cli.presentation.tool_display import format_tool_message_content
 from invincat_cli.widgets.message_store import MessageData, MessageType, ToolStatus
@@ -35,6 +39,8 @@ def merge_thread_state_with_fallback(
 
 def thread_history_payload_from_state_values(
     state_values: dict[str, Any],
+    *,
+    thread_id: str | None = None,
 ) -> ThreadHistoryPayload:
     """Build a thread-history payload from raw checkpoint channel values."""
     raw_tokens = state_values.get("_context_tokens")
@@ -51,7 +57,10 @@ def thread_history_payload_from_state_values(
 
         messages = convert_to_messages(messages)
 
-    return ThreadHistoryPayload(convert_messages_to_data(messages), context_tokens)
+    data = convert_messages_to_data(messages)
+    if thread_id:
+        data = merge_thread_diff_messages(data, load_thread_diffs(thread_id))
+    return ThreadHistoryPayload(data, context_tokens)
 
 
 def convert_messages_to_data(messages: list[Any]) -> list[MessageData]:
@@ -134,6 +143,40 @@ def convert_messages_to_data(messages: list[Any]) -> list[MessageData]:
     for idx in pending_tool_indices.values():
         result[idx].tool_status = ToolStatus.REJECTED
 
+    return result
+
+
+def merge_thread_diff_messages(
+    messages: list[MessageData],
+    diff_records: list[ThreadDiffRecord],
+) -> list[MessageData]:
+    """Insert persisted UI diff messages after their matching file tool result."""
+    if not diff_records:
+        return messages
+
+    records_by_tool_id = {record.tool_call_id: record for record in diff_records}
+    result: list[MessageData] = []
+    for msg in messages:
+        result.append(msg)
+        if (
+            msg.type != MessageType.TOOL
+            or msg.tool_call_id is None
+            or msg.tool_name not in {"write_file", "edit_file"}
+            or msg.tool_status != ToolStatus.SUCCESS
+        ):
+            continue
+
+        record = records_by_tool_id.get(str(msg.tool_call_id))
+        if record is None:
+            continue
+
+        result.append(
+            MessageData(
+                type=MessageType.DIFF,
+                content=record.diff,
+                diff_file_path=record.display_path,
+            )
+        )
     return result
 
 

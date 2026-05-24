@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from invincat_cli.app_runtime import thread_history
+from invincat_cli.app_runtime.thread_diff_history import (
+    ThreadDiffRecord,
+    load_thread_diffs,
+    save_thread_diff,
+)
 from invincat_cli.app_runtime.thread_history import (
     build_resume_summary,
     convert_messages_to_data,
+    merge_thread_diff_messages,
     merge_thread_state_with_fallback,
     thread_history_payload_from_state_values,
 )
@@ -42,6 +51,51 @@ def test_convert_messages_to_data_matches_tool_results() -> None:
     assert data[2].tool_call_id == "call-1"
     assert data[2].tool_status == ToolStatus.SUCCESS
     assert data[2].tool_output == "file content"
+
+
+def test_merge_thread_diff_messages_inserts_after_matching_file_tool() -> None:
+    messages = [
+        MessageData(type=MessageType.USER, content="edit"),
+        MessageData(
+            type=MessageType.TOOL,
+            content="",
+            tool_name="edit_file",
+            tool_args={"file_path": "demo.py"},
+            tool_status=ToolStatus.SUCCESS,
+            tool_call_id="call-1",
+            tool_output="ok",
+        ),
+        MessageData(
+            type=MessageType.TOOL,
+            content="",
+            tool_name="read_file",
+            tool_args={"file_path": "demo.py"},
+            tool_status=ToolStatus.SUCCESS,
+            tool_call_id="call-2",
+            tool_output="content",
+        ),
+    ]
+
+    merged = merge_thread_diff_messages(
+        messages,
+        [
+            ThreadDiffRecord(
+                tool_call_id="call-1",
+                display_path="demo.py",
+                diff="--- before\n+++ after",
+                created_at=1.0,
+            )
+        ],
+    )
+
+    assert [item.type for item in merged] == [
+        MessageType.USER,
+        MessageType.TOOL,
+        MessageType.DIFF,
+        MessageType.TOOL,
+    ]
+    assert merged[2].content == "--- before\n+++ after"
+    assert merged[2].diff_file_path == "demo.py"
 
 
 def test_merge_thread_state_with_fallback_fills_empty_remote_values() -> None:
@@ -82,6 +136,49 @@ def test_thread_history_payload_from_state_values_converts_messages() -> None:
     assert len(payload.messages) == 1
     assert payload.messages[0].type == MessageType.USER
     assert payload.messages[0].content == "hello"
+
+
+def test_thread_history_payload_loads_persisted_diff_records(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "invincat_cli.app_runtime.thread_diff_history._history_root",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(thread_history, "load_thread_diffs", load_thread_diffs)
+    save_thread_diff(
+        thread_id="thread-1",
+        tool_call_id="call-1",
+        display_path="demo.py",
+        diff="--- before\n+++ after",
+    )
+
+    payload = thread_history_payload_from_state_values(
+        {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "call-1",
+                            "name": "write_file",
+                            "args": {"file_path": "demo.py"},
+                        }
+                    ],
+                ),
+                ToolMessage("Updated file demo.py", tool_call_id="call-1"),
+            ]
+        },
+        thread_id="thread-1",
+    )
+
+    assert [item.type for item in payload.messages] == [
+        MessageType.TOOL,
+        MessageType.DIFF,
+    ]
+    assert payload.messages[1].content == "--- before\n+++ after"
+    assert payload.messages[1].diff_file_path == "demo.py"
 
 
 def test_thread_history_payload_handles_empty_and_serialized_messages() -> None:

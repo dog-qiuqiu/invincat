@@ -78,6 +78,7 @@ async def fetch_thread_history_data(
     return await asyncio.to_thread(
         thread_history_payload_from_state_values,
         state_values,
+        thread_id=thread_id,
     )
 
 

@@ -111,6 +111,7 @@ async def execute_task_textual(
     )
 
     thread_id = session_state.thread_id
+    adapter.set_thread_id(thread_id)
     planner_mode_enforced = bool(is_planner_turn and session_state.plan_mode)
     config = build_stream_config(thread_id, assistant_id, sandbox_type=sandbox_type)
 
