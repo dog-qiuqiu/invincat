@@ -11,6 +11,7 @@ from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT
 
 from invincat_cli.core.session_stats import SpinnerStatus
 from invincat_cli.i18n import t
+from invincat_cli.presentation.formatting import format_duration
 from invincat_cli.textual_adapter.subagent_activity import SubagentActivityTracker
 from invincat_cli.widgets.messages import ToolCallMessage
 
@@ -51,6 +52,22 @@ def _execute_watchdog_delay(args: dict[str, Any]) -> int | None:
     if timeout is None or timeout <= 0:
         return None
     return min(timeout, _MAX_EXECUTE_WATCHDOG_SECONDS) + _EXECUTE_WATCHDOG_GRACE_SECONDS
+
+
+def _execute_progress_detail(args: dict[str, Any]) -> str:
+    command = " ".join(str(args.get("command") or "").split())
+    if len(command) > 80:  # noqa: PLR2004
+        command = command[:77].rstrip() + "..."
+
+    parts: list[str] = []
+    if command:
+        parts.append(f"command: {command}")
+
+    timeout = _coerce_execute_timeout(args.get("timeout"))
+    if timeout and timeout > 0:
+        parts.append(f"timeout {format_duration(timeout)}")
+
+    return " · ".join(parts) if parts else "command running"
 
 
 class TextualUIAdapter:
@@ -179,6 +196,9 @@ class TextualUIAdapter:
         widget would otherwise stay in "running" forever.
         """
         delay = _execute_watchdog_delay(args)
+        set_progress = getattr(tool_msg, "set_progress_detail", None)
+        if callable(set_progress):
+            set_progress(_execute_progress_detail(args))
         if delay is None:
             return
 

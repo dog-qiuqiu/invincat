@@ -95,6 +95,7 @@ class ToolCallMessage(ToolCallOutputMixin, Vertical):
         # These values are stable for the lifetime of the widget.
         self._spinner_frames: list[str] | None = None
         self._progress_detail: str | None = None
+        self._progress_updated_at: float | None = None
         # Deferred state for hydration (set by MessageData.to_widget)
         self._deferred_status: str | None = None
         self._deferred_output: str | None = None
@@ -304,9 +305,28 @@ class ToolCallMessage(ToolCallOutputMixin, Vertical):
 
     def _format_progress_line(self, frame: str, base: str) -> str:
         """Return the animated status line, optionally with progress detail."""
-        if self._progress_detail:
-            return f"{frame} {base} - {self._progress_detail}"
+        detail = self._format_progress_detail()
+        if detail:
+            return f"{frame} {base} - {detail}"
         return f"{frame} {base}"
+
+    def _format_progress_detail(self) -> str:
+        if not self._progress_detail:
+            return ""
+        activity = self._format_activity_age()
+        if activity:
+            return f"{self._progress_detail} · {activity}"
+        return self._progress_detail
+
+    def _format_activity_age(self) -> str:
+        if self._progress_updated_at is None:
+            return ""
+        age = max(0, int(time() - self._progress_updated_at))
+        if age < 5:  # noqa: PLR2004
+            return "active now"
+        if age < 30:  # noqa: PLR2004
+            return f"idle {format_duration(age)}"
+        return f"no update {format_duration(age)}"
 
     def _stop_pending_animation(self) -> None:
         """Stop the animation timer (covers generating/pending/running states)."""
@@ -337,6 +357,7 @@ class ToolCallMessage(ToolCallOutputMixin, Vertical):
         """Update the visible in-progress detail for long-running tools."""
         normalized = " ".join(str(detail).split())
         self._progress_detail = normalized or None
+        self._progress_updated_at = time() if self._progress_detail else None
         if self._status in {"pending", "running"}:
             self._status = "running"
         if self._status_widget:

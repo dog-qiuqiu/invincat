@@ -8,6 +8,7 @@ import pytest
 from textual.content import Content
 
 from invincat_cli.widgets import messages
+from invincat_cli.widgets import tool_call_message as tool_call_message_mod
 from invincat_cli.widgets.messages import (
     AppMessage,
     AssistantMessage,
@@ -591,6 +592,32 @@ def test_tool_call_message_deferred_restore_and_animation(
     widget._status = "running"
     widget._update_animation()
     assert "Running" in widget._status_widget.value.plain
+
+
+def test_tool_call_message_progress_detail_shows_recent_activity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_theme_colors(monkeypatch)
+    current_time = 100.0
+    monkeypatch.setattr(tool_call_message_mod, "time", lambda: current_time)
+
+    widget = ToolCallMessage("task", {"description": "inspect"}, args_finalized=True)
+    widget._status_widget = _FakeStatic()  # type: ignore[assignment]
+    widget._spinner_frames = ["-"]
+    widget._status = "running"
+    widget._start_time = 90.0
+
+    widget.set_progress_detail("worker calling rg")
+    assert "worker calling rg" in widget._status_widget.value.plain
+    assert "active now" in widget._status_widget.value.plain
+
+    current_time = 112.0
+    widget._update_animation()
+    assert "idle 12s" in widget._status_widget.value.plain
+
+    current_time = 140.0
+    widget._update_animation()
+    assert "no update 40s" in widget._status_widget.value.plain
 
 
 def test_tool_call_message_mount_branches(monkeypatch: pytest.MonkeyPatch) -> None:
