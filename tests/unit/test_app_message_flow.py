@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from invincat_cli.app_runtime import message_flow
 from invincat_cli.widgets.message_store import MessageData, MessageStore, MessageType
-from invincat_cli.widgets.messages import AppMessage, QueuedUserMessage
+from invincat_cli.widgets.messages import AppMessage, DiffMessage, QueuedUserMessage
 
 
 class FakeWidget:
@@ -279,6 +279,36 @@ def test_mount_message_keeps_all_history_widgets_mounted() -> None:
     assert [getattr(child, "id", None) for child in app.messages.children] == [
         *(f"msg-{index}" for index in range(61)),
     ]
+
+
+def test_mount_message_after_inserts_dom_and_store_after_anchor() -> None:
+    app = FlowApp()
+    first = FakeWidget("first")
+    second = FakeWidget("second")
+    for widget in (first, second):
+        widget.parent = app.messages
+        app.messages.children.append(widget)
+        app._message_store.append(
+            MessageData(type=MessageType.APP, content=widget.id or "", id=widget.id)
+        )
+
+    diff = DiffMessage("@@\n+new", file_path="file.py")
+
+    asyncio.run(message_flow.mount_message_after(app, first, diff))
+
+    assert [getattr(child, "id", None) for child in app.messages.children] == [
+        "first",
+        diff.id,
+        "second",
+    ]
+    assert [msg.id for msg in app._message_store.get_all_messages()] == [
+        "first",
+        diff.id,
+        "second",
+    ]
+    assert app._status_bar.count == 3
+
+
 def test_clear_messages_resets_store_and_container() -> None:
     app = FlowApp()
     app._message_store.append(message_data(1))

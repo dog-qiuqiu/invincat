@@ -82,6 +82,7 @@ class TextualUIAdapter:
         mount_message: Callable[..., Awaitable[None]],
         update_status: Callable[[str], None],
         request_approval: Callable[..., Awaitable[Any]],
+        mount_message_after: Callable[..., Awaitable[None]] | None = None,
         on_auto_approve_enabled: Callable[[], None] | None = None,
         set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None = None,
         set_active_message: Callable[[str | None], None] | None = None,
@@ -106,6 +107,9 @@ class TextualUIAdapter:
         """Initialize the adapter."""
         self._mount_message = mount_message
         """Async callback to mount a message widget to the chat."""
+
+        self._mount_message_after = mount_message_after
+        """Async callback to mount a message widget after another message widget."""
 
         self._update_status = update_status
         """Callback to update the status bar text."""
@@ -277,6 +281,13 @@ class TextualUIAdapter:
             message_store: The MessageStore instance from the app.
         """
         self._message_store = message_store
+
+    async def mount_message_after(self, anchor: Any, widget: Any) -> None:
+        """Mount a message widget after an anchor when supported."""
+        if self._mount_message_after is not None:
+            await self._mount_message_after(anchor, widget)
+            return
+        await self._mount_message(widget)
 
     def _update_tool_message_in_store(
         self, tool_call_id: str | int, status: str, output: str

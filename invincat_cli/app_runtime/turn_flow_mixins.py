@@ -192,6 +192,16 @@ class AppTurnFlowMixin:
 
         await mount_message(self, widget)
 
+    async def _mount_message_after(
+        self,
+        anchor: Static | AssistantMessage | ToolCallMessage | SkillMessage,
+        widget: Static | AssistantMessage | ToolCallMessage | SkillMessage,
+    ) -> None:
+        """Mount a message widget after another message widget."""
+        from invincat_cli.app_runtime.message_flow import mount_message_after
+
+        await mount_message_after(self, anchor, widget)
+
     def _set_active_message(self, message_id: str | None) -> None:
         """Set the active streaming message."""
         self._message_store.set_active_message(message_id)

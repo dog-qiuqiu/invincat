@@ -99,6 +99,7 @@ async def handle_tool_message(
     tool_msg = None
     tool_args_for_match: dict[str, Any] | None = None
     matched_tool_key: str | None = None
+    diff_anchor_msg = None
 
     # Strategy 1: Direct key match on normalized str ID.
     # Use pop(key, None) defensively even though the preceding
@@ -315,6 +316,7 @@ async def handle_tool_message(
         output_str = f"{output_str}\n\n[diff unavailable: operation was not tracked]"
 
     if tool_msg:
+        diff_anchor_msg = tool_msg
         adapter.cancel_tool_watchdog(matched_tool_key or tool_id)
         if tool_status == "success":
             tool_msg.set_success(output_str)
@@ -361,6 +363,7 @@ async def handle_tool_message(
                 tool_call_id=tool_id,
             )
             await adapter._mount_message(tool_msg)
+            diff_anchor_msg = tool_msg
 
             if tool_status == "success":
                 tool_msg.set_success(output_str)
@@ -400,6 +403,7 @@ async def handle_tool_message(
                 tool_call_id=tool_id,
             )
             await adapter._mount_message(fallback_msg)
+            diff_anchor_msg = fallback_msg
             if tool_status == "success":
                 fallback_msg.set_success(output_str)
             else:
@@ -446,7 +450,11 @@ async def handle_tool_message(
             diff_msg = adapter_mod.DiffMessage(
                 record.diff, record.display_path
             )
-            await adapter._mount_message(diff_msg)
+            mount_after = getattr(adapter, "mount_message_after", None)
+            if diff_anchor_msg is not None and callable(mount_after):
+                await mount_after(diff_anchor_msg, diff_msg)
+            else:
+                await adapter._mount_message(diff_msg)
             if getattr(adapter, "_persist_thread_diffs", False):
                 from invincat_cli.app_runtime.thread_diff_history import (
                     save_thread_diff,

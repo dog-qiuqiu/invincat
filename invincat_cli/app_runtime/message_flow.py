@@ -101,6 +101,59 @@ async def mount_message(app: Any, widget: Any) -> None:  # noqa: ANN401
         pass
 
 
+async def mount_message_after(app: Any, anchor: Any, widget: Any) -> None:  # noqa: ANN401
+    """Mount a message widget immediately after an existing message widget."""
+    try:
+        messages = app.query_one("#messages", Container)
+    except NoMatches:
+        return
+
+    if not messages.is_attached:
+        return
+
+    message_data = MessageData.from_widget(widget)
+    if not widget.id:
+        widget.id = message_data.id
+    anchor_id = getattr(anchor, "id", None)
+    app._message_store.insert_after(anchor_id, message_data)
+
+    if app._status_bar:
+        app._status_bar.set_message_count(app._message_store.total_count)
+
+    mounted = False
+    if getattr(anchor, "parent", None) is messages:
+        children = list(messages.children)
+        if anchor in children:
+            anchor_index = children.index(anchor)
+            before = (
+                children[anchor_index + 1]
+                if anchor_index + 1 < len(children)
+                else None
+            )
+            if before is not None:
+                try:
+                    await messages.mount(widget, before=before)
+                except Exception:
+                    logger.warning(
+                        "Failed to mount message after anchor; appending",
+                        exc_info=True,
+                    )
+                else:
+                    mounted = True
+            if not mounted:
+                await messages.mount(widget)
+                mounted = True
+
+    if not mounted:
+        await mount_before_queued(app, messages, widget)
+
+    try:
+        input_container = app.query_one("#bottom-app-container", Container)
+        input_container.scroll_visible()
+    except NoMatches:
+        pass
+
+
 async def clear_messages(app: Any) -> None:  # noqa: ANN401
     """Clear the messages area and backing message store."""
     app._message_store.clear()

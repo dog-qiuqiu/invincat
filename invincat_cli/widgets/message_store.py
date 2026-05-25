@@ -73,6 +73,28 @@ class MessageStore:
         self._visible_end = len(self._messages)
         self._index_tool_call_id(message)
 
+    def insert_after(self, anchor_id: str | None, message: MessageData) -> None:
+        """Insert a message immediately after an existing message.
+
+        Falls back to append when the anchor is missing.
+
+        Args:
+            anchor_id: ID of the message to insert after.
+            message: The message data to add.
+        """
+        if anchor_id is None:
+            self.append(message)
+            return
+
+        for index, existing in enumerate(self._messages):
+            if existing.id == anchor_id:
+                self._messages.insert(index + 1, message)
+                self._visible_end = len(self._messages)
+                self._index_tool_call_id(message)
+                return
+
+        self.append(message)
+
     def bulk_load(
         self, messages: list[MessageData]
     ) -> tuple[list[MessageData], list[MessageData]]:

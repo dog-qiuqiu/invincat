@@ -142,6 +142,7 @@ async def post_paint_init(app: Any) -> None:  # noqa: ANN401
 
     app._ui_adapter = TextualUIAdapter(
         mount_message=app._mount_message,
+        mount_message_after=getattr(app, "_mount_message_after", None),
         update_status=app._update_status,
         request_approval=app._request_approval,
         on_auto_approve_enabled=app._on_auto_approve_enabled,

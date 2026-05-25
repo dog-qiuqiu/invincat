@@ -225,6 +225,35 @@ def test_store_bulk_load_keeps_all_messages_visible() -> None:
     assert store.get_visible_range() == (0, 61)
 
 
+def test_store_insert_after_preserves_order_and_indexes_tool_calls() -> None:
+    store = MessageStore()
+    first = _message(1)
+    second = _message(2)
+    inserted = MessageData(
+        type=MessageType.TOOL,
+        content="",
+        id="tool",
+        tool_name="edit_file",
+        tool_call_id="call-1",
+    )
+    store.bulk_load([first, second])
+
+    store.insert_after("msg-1", inserted)
+
+    assert [msg.id for msg in store.get_all_messages()] == ["msg-1", "tool", "msg-2"]
+    assert store.get_visible_range() == (0, 3)
+    assert store.get_message_by_tool_call_id("call-1") is inserted
+
+    fallback = _message(3)
+    store.insert_after("missing", fallback)
+    assert [msg.id for msg in store.get_all_messages()] == [
+        "msg-1",
+        "tool",
+        "msg-2",
+        "msg-3",
+    ]
+
+
 def test_store_small_bulk_load_and_none_tool_call_id() -> None:
     store = MessageStore()
     archived, visible = store.bulk_load([_message(i) for i in range(3)])

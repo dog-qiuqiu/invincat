@@ -327,6 +327,66 @@ def test_file_tool_diff_result_persists_for_thread_resume(
     assert mounted
 
 
+def test_file_tool_diff_mounts_after_matching_tool_widget() -> None:
+    mounted: list[object] = []
+    mounted_after: list[tuple[object, object]] = []
+
+    async def mount_message(widget: object) -> None:
+        mounted.append(widget)
+
+    async def mount_message_after(anchor: object, widget: object) -> None:
+        mounted_after.append((anchor, widget))
+
+    adapter = TextualUIAdapter(
+        mount_message=mount_message,
+        mount_message_after=mount_message_after,
+        update_status=lambda _status: None,
+        request_approval=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+    )
+    first = _ToolWidget("edit_file")
+    first.id = "first-tool"
+    second = _ToolWidget("edit_file")
+    second.id = "second-tool"
+    adapter._current_tool_messages = {"call-1": first, "call-2": second}  # type: ignore[assignment,dict-item]
+
+    message = SimpleNamespace(
+        name="edit_file",
+        status="success",
+        content="ok",
+        tool_call_id="call-1",
+    )
+    record = SimpleNamespace(
+        status="success",
+        error=None,
+        diff="--- before\n+++ after\n@@\n-old\n+new",
+        display_path="first.py",
+        args={"file_path": "first.py"},
+    )
+    file_op_tracker = SimpleNamespace(
+        active={},
+        complete_with_message=lambda *_args, **_kwargs: record,
+    )
+
+    asyncio.run(
+        handle_tool_message(
+            adapter=adapter,
+            message=message,
+            file_op_tracker=file_op_tracker,
+            processed_wecom_file_tool_ids=set(),
+            on_wecom_file_request=None,
+            on_schedule_payload=None,
+            pending_text_by_namespace={},
+            ns_key=(),
+            assistant_message_by_namespace={},
+        )
+    )
+
+    assert mounted == []
+    assert mounted_after[0][0] is first
+    assert getattr(mounted_after[0][1], "_file_path") == "first.py"
+    assert adapter._current_tool_messages == {"call-2": second}
+
+
 def test_execute_tool_args_start_watchdog() -> None:
     mounted: list[object] = []
     watchdogs: list[tuple[str, object, dict[str, object]]] = []
