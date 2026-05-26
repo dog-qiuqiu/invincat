@@ -309,6 +309,37 @@ def test_mount_message_after_inserts_dom_and_store_after_anchor() -> None:
     assert app._status_bar.count == 3
 
 
+def test_mount_message_after_appends_when_before_target_is_stale() -> None:
+    app = FlowApp()
+    first = FakeWidget("first")
+    second = FakeWidget("second")
+    for widget in (first, second):
+        widget.parent = app.messages
+        app.messages.children.append(widget)
+    app.messages.fail_before_mount = True
+
+    diff = DiffMessage("@@\n+new", file_path="file.py")
+
+    asyncio.run(message_flow.mount_message_after(app, first, diff))
+
+    assert app.messages.children == [first, second, diff]
+
+
+def test_mount_message_after_falls_back_when_anchor_not_in_messages() -> None:
+    app = FlowApp()
+    anchor = FakeWidget("anchor")
+    anchor.parent = FakeContainer()
+    queued = FakeWidget("queued")
+    queued.parent = app.messages
+    app._queued_widgets.append(queued)
+    app.messages.children.append(queued)
+    diff = DiffMessage("@@\n+new", file_path="file.py")
+
+    asyncio.run(message_flow.mount_message_after(app, anchor, diff))
+
+    assert app.messages.children == [diff, queued]
+
+
 def test_clear_messages_resets_store_and_container() -> None:
     app = FlowApp()
     app._message_store.append(message_data(1))

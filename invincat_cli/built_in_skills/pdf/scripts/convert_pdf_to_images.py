@@ -1,7 +1,10 @@
 import os
 import sys
 
-from pdf2image import convert_from_path
+from invincat_cli.built_in_skills.dependency_check import require_module
+
+pdf2image = require_module("pdf2image", "pdf")
+convert_from_path = pdf2image.convert_from_path
 
 
 def convert(pdf_path, output_dir, max_dim=1000):

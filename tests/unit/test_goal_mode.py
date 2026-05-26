@@ -56,6 +56,23 @@ def test_goal_state_lifecycle_and_store(tmp_path) -> None:
     assert store.load("thread/1") is None
 
 
+def test_goal_state_from_dict_ignores_non_int_like_token_values() -> None:
+    state = GoalState.from_dict(
+        {
+            "objective": "Ship",
+            "status": "active",
+            "thread_id": "thread-1",
+            "created_at": "created",
+            "updated_at": "updated",
+            "token_budget": object(),
+            "tokens_used": object(),
+        }
+    )
+
+    assert state.token_budget is None
+    assert state.tokens_used == 0
+
+
 def test_wrap_goal_context_only_for_active_goal() -> None:
     goal = GoalState.create(objective="Ship MVP", thread_id="thread-1")
 

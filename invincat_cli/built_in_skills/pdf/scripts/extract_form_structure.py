@@ -15,7 +15,9 @@ Usage: python extract_form_structure.py <input.pdf> <output.json>
 import json
 import sys
 
-import pdfplumber
+from invincat_cli.built_in_skills.dependency_check import require_module
+
+pdfplumber = require_module("pdfplumber", "pdf")
 
 
 def extract_form_structure(pdf_path):

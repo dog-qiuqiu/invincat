@@ -2,7 +2,12 @@ import json
 import sys
 
 from extract_form_field_info import get_field_info
-from pypdf import PdfReader, PdfWriter
+
+from invincat_cli.built_in_skills.dependency_check import require_module
+
+pypdf = require_module("pypdf", "pdf")
+PdfReader = pypdf.PdfReader
+PdfWriter = pypdf.PdfWriter
 
 
 def fill_pdf_fields(input_pdf_path: str, fields_json_path: str, output_pdf_path: str):

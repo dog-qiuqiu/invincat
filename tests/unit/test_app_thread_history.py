@@ -181,6 +181,102 @@ def test_thread_history_payload_loads_persisted_diff_records(
     assert payload.messages[1].diff_file_path == "demo.py"
 
 
+def test_thread_diff_history_ignores_empty_inputs_and_invalid_records(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "invincat_cli.app_runtime.thread_diff_history._history_root",
+        lambda: tmp_path,
+    )
+
+    save_thread_diff(thread_id=None, tool_call_id="call-1", display_path="x", diff="d")
+    save_thread_diff(thread_id="thread-1", tool_call_id=None, display_path="x", diff="d")
+    save_thread_diff(thread_id="thread-1", tool_call_id="call-1", display_path="x", diff="")
+    assert load_thread_diffs(None) == []
+    assert not list(tmp_path.glob("*.json"))
+
+    save_thread_diff(
+        thread_id="thread-1",
+        tool_call_id="call-1",
+        display_path="demo.py",
+        diff="--- before",
+    )
+    save_thread_diff(
+        thread_id="thread-1",
+        tool_call_id="call-1",
+        display_path="demo.py",
+        diff="--- after",
+    )
+
+    records = load_thread_diffs("thread-1")
+    assert len(records) == 1
+    assert records[0].diff == "--- after"
+
+    history_file = next(tmp_path.glob("*.json"))
+    history_file.write_text(
+        """
+        {
+          "records": [
+            {"tool_call_id": "", "display_path": "x", "diff": "d"},
+            {"tool_call_id": "call-2", "display_path": 1, "diff": "d"},
+            {"tool_call_id": "call-3", "display_path": "x", "diff": ""},
+            {"tool_call_id": "call-4", "display_path": "x", "diff": "d", "created_at": "bad"},
+            "not-a-dict"
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    coerced = load_thread_diffs("thread-1")
+    assert len(coerced) == 1
+    assert coerced[0].tool_call_id == "call-4"
+    assert coerced[0].created_at == 0.0
+
+
+def test_thread_diff_history_handles_corrupt_and_io_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "invincat_cli.app_runtime.thread_diff_history._history_root",
+        lambda: tmp_path,
+    )
+
+    save_thread_diff(
+        thread_id="thread-1",
+        tool_call_id="call-1",
+        display_path="demo.py",
+        diff="--- before",
+    )
+    history_file = next(tmp_path.glob("*.json"))
+
+    history_file.write_text("[]", encoding="utf-8")
+    assert load_thread_diffs("thread-1") == []
+
+    history_file.write_text('{"records": {}}', encoding="utf-8")
+    assert load_thread_diffs("thread-1") == []
+
+    history_file.write_text("{not json", encoding="utf-8")
+    assert load_thread_diffs("thread-1") == []
+
+    def raise_oserror(_path: Path) -> list[dict[str, object]]:
+        raise OSError("disk")
+
+    monkeypatch.setattr(
+        "invincat_cli.app_runtime.thread_diff_history._load_raw",
+        raise_oserror,
+    )
+    assert load_thread_diffs("thread-1") == []
+    save_thread_diff(
+        thread_id="thread-1",
+        tool_call_id="call-2",
+        display_path="demo.py",
+        diff="--- after",
+    )
+
+
 def test_thread_history_payload_handles_empty_and_serialized_messages() -> None:
     empty = thread_history_payload_from_state_values({"_context_tokens": -1})
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Literal, SupportsIndex, SupportsInt
 
 GoalStatus = Literal["active", "complete", "cancelled"]
 GoalCommandKind = Literal["create", "status", "complete", "cancel", "clear", "error"]
@@ -113,6 +113,8 @@ def _coerce_status(value: object) -> GoalStatus:
 def _coerce_optional_int(value: object) -> int | None:
     if value is None:
         return None
+    if not isinstance(value, (str, bytes, bytearray, SupportsInt, SupportsIndex)):
+        return None
     try:
         parsed = int(value)
     except (TypeError, ValueError):
@@ -121,6 +123,8 @@ def _coerce_optional_int(value: object) -> int | None:
 
 
 def _coerce_int(value: object, *, default: int) -> int:
+    if not isinstance(value, (str, bytes, bytearray, SupportsInt, SupportsIndex)):
+        return default
     try:
         parsed = int(value)
     except (TypeError, ValueError):

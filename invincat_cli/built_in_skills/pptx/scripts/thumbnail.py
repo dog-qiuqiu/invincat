@@ -22,9 +22,12 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-import defusedxml.minidom
 from office.soffice import get_soffice_env
 from PIL import Image, ImageDraw, ImageFont
+
+from invincat_cli.built_in_skills.dependency_check import require_module
+
+minidom = require_module("defusedxml.minidom", "pptx")
 
 THUMBNAIL_WIDTH = 300
 CONVERSION_DPI = 100
@@ -95,7 +98,7 @@ def main():
 def get_slide_info(pptx_path: Path) -> list[dict]:
     with zipfile.ZipFile(pptx_path, "r") as zf:
         rels_content = zf.read("ppt/_rels/presentation.xml.rels").decode("utf-8")
-        rels_dom = defusedxml.minidom.parseString(rels_content)
+        rels_dom = minidom.parseString(rels_content)
 
         rid_to_slide = {}
         for rel in rels_dom.getElementsByTagName("Relationship"):
@@ -106,7 +109,7 @@ def get_slide_info(pptx_path: Path) -> list[dict]:
                 rid_to_slide[rid] = target.replace("slides/", "")
 
         pres_content = zf.read("ppt/presentation.xml").decode("utf-8")
-        pres_dom = defusedxml.minidom.parseString(pres_content)
+        pres_dom = minidom.parseString(pres_content)
 
         slides = []
         for sld_id in pres_dom.getElementsByTagName("p:sldId"):

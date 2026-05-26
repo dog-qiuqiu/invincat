@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any, cast
 
+from langchain_core.language_models.chat_models import ModelProfile
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
@@ -54,12 +56,12 @@ class DeterministicIntegrationChatModel(GenericFakeChatModel):
 
     model: str = "fake"
     # Required by `GenericFakeChatModel`, but our override does not consume it.
-    messages: object = Field(default_factory=lambda: iter(()))
-    profile: dict[str, Any] | None = Field(
-        default_factory=lambda: {
+    messages: Iterator[AIMessage | str] = Field(default_factory=lambda: iter(()))
+    profile: ModelProfile | None = Field(
+        default_factory=lambda: cast(ModelProfile, {
             "tool_calling": True,
             "max_input_tokens": 8000,
-        }
+        })
     )
 
     def bind_tools(

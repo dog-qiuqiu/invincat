@@ -30,6 +30,11 @@ from invincat_cli.textual_adapter import (
     print_usage_table,
 )
 from invincat_cli.textual_adapter import ui_adapter as ui_adapter_mod
+from invincat_cli.textual_adapter.subagent_activity import (
+    SubagentActivityTracker,
+    _activity_detail,
+    _tool_name_from_message,
+)
 from invincat_cli.textual_adapter.tool_calls import handle_tool_call_block
 from invincat_cli.textual_adapter.tool_results import handle_tool_message
 
@@ -68,6 +73,7 @@ class _ToolWidget:
         self._status = "running"
         self.errors: list[str] = []
         self.successes: list[str] = []
+        self.progress: list[str] = []
         self.rejected = False
 
     def set_error(self, error: str) -> None:
@@ -80,6 +86,9 @@ class _ToolWidget:
 
     def set_rejected(self) -> None:
         self.rejected = True
+
+    def set_progress_detail(self, detail: str) -> None:
+        self.progress.append(detail)
 
 
 def test_type_adapters_are_cached() -> None:
@@ -185,6 +194,68 @@ def test_execute_watchdog_delay_uses_default_custom_and_no_timeout() -> None:
     assert ui_adapter_mod._execute_watchdog_delay({"timeout": "10"}) == 15
     assert ui_adapter_mod._execute_watchdog_delay({"timeout": 0}) is None
     assert ui_adapter_mod._execute_watchdog_delay({"timeout": 9999}) == 3605
+    assert ui_adapter_mod._execute_watchdog_delay({"timeout": ""}) == 125
+    assert ui_adapter_mod._execute_watchdog_delay({"timeout": "bad"}) == 125
+    assert ui_adapter_mod._execute_watchdog_delay({"timeout": None}) == 125
+    assert ui_adapter_mod._execute_watchdog_delay({"timeout": object()}) == 125
+
+
+def test_execute_progress_detail_formats_command_and_timeout() -> None:
+    assert (
+        ui_adapter_mod._execute_progress_detail(
+            {"command": "  echo    hello  ", "timeout": "60"}
+        )
+        == "command: echo hello · timeout 1m 0s"
+    )
+    assert (
+        ui_adapter_mod._execute_progress_detail({"command": "", "timeout": 0})
+        == "command running"
+    )
+
+    detail = ui_adapter_mod._execute_progress_detail(
+        {"command": "python " + "x" * 100, "timeout": "bad"}
+    )
+    assert detail.startswith("command: python ")
+    assert "... · timeout 2m 0s" in detail
+    assert "timeout" in detail
+
+
+def test_start_cancel_and_pop_execute_watchdogs() -> None:
+    async def run_case() -> None:
+        adapter = TextualUIAdapter(
+            mount_message=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+            update_status=lambda _status: None,
+            request_approval=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+        )
+        tool = _ToolWidget("execute")
+
+        adapter.start_execute_watchdog("no-timeout", tool, {"timeout": 0})
+        assert tool.progress == ["command running"]
+        assert adapter._tool_watchdog_tasks == {}
+
+        adapter.start_execute_watchdog(
+            "call-1", tool, {"command": "sleep 1", "timeout": 1}
+        )
+        assert "call-1" in adapter._tool_watchdog_tasks
+        assert tool.progress[-1] == "command: sleep 1 · timeout 1s"
+
+        adapter.cancel_tool_watchdog(None)
+        task = adapter._tool_watchdog_tasks["call-1"]
+        adapter.cancel_tool_watchdog("call-1")
+        assert task.cancelled() or task.cancelling()
+
+        adapter.start_execute_watchdog("call-2", tool, {"timeout": 1})
+        adapter._timed_out_tool_messages["call-2"] = tool  # type: ignore[assignment]
+        assert adapter.pop_timed_out_tool_message(None) is None
+        assert adapter.pop_timed_out_tool_message("call-2") is tool
+
+        adapter.start_execute_watchdog("call-3", tool, {"timeout": 1})
+        adapter._timed_out_tool_messages["old"] = tool  # type: ignore[assignment]
+        adapter.cancel_all_tool_watchdogs()
+        assert adapter._tool_watchdog_tasks == {}
+        assert adapter._timed_out_tool_messages == {}
+
+    asyncio.run(run_case())
 
 
 def test_execute_watchdog_marks_stale_tool_error() -> None:
@@ -217,6 +288,154 @@ def test_execute_watchdog_marks_stale_tool_error() -> None:
     assert store.updated[0][0] == "msg-1"
     assert spinners
     assert timed_out == ["call-1"]
+
+
+def test_execute_watchdog_ignores_cancelled_or_stale_tools() -> None:
+    adapter = TextualUIAdapter(
+        mount_message=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+        update_status=lambda _status: None,
+        request_approval=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+    )
+    tool = _ToolWidget("execute")
+    adapter._current_tool_messages = {"call-1": _ToolWidget("execute")}  # type: ignore[assignment,dict-item]
+
+    async def run_case() -> None:
+        task = asyncio.create_task(adapter._execute_watchdog("cancelled", tool, 30))
+        await asyncio.sleep(0)
+        task.cancel()
+        await task
+
+        await adapter._execute_watchdog("call-1", tool, 0)
+
+    asyncio.run(run_case())
+
+    assert tool.errors == []
+
+
+def test_execute_watchdog_handles_widget_and_callback_failures() -> None:
+    class FailingTool(_ToolWidget):
+        def set_error(self, error: str) -> None:
+            super().set_error(error)
+            raise RuntimeError("render failed")
+
+    callbacks: list[str] = []
+
+    async def on_timeout(tool_call_id: str) -> None:
+        callbacks.append(tool_call_id)
+        raise RuntimeError("cancel failed")
+
+    adapter = TextualUIAdapter(
+        mount_message=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+        update_status=lambda _status: None,
+        request_approval=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+        on_execute_watchdog_timeout=on_timeout,
+    )
+    tool = FailingTool("execute")
+    adapter._current_tool_messages = {"call-1": tool}  # type: ignore[assignment,dict-item]
+
+    asyncio.run(adapter._execute_watchdog("call-1", tool, 0))
+
+    assert callbacks == ["call-1"]
+    assert adapter.pop_timed_out_tool_message("call-1") is tool
+
+
+def test_subagent_activity_tracker_updates_matching_task_progress() -> None:
+    tracker = SubagentActivityTracker()
+    explorer = _ToolWidget("task")
+    worker = _ToolWidget("task")
+
+    tracker.register_task(
+        tool_call_id="call-1",
+        widget=explorer,
+        args={"subagent_type": "explorer", "description": "inspect"},
+    )
+    tracker.register_task(
+        tool_call_id="call-2",
+        widget=worker,
+        args={"subagent_type": "worker"},
+    )
+
+    assert explorer.progress == ["Starting explorer subagent"]
+    tracker.observe_chunk(
+        ns_key=("graph", "explorer"),
+        stream_mode="updates",
+        data={"node": "value"},
+    )
+    assert explorer.progress[-1] == "explorer subagent updating state"
+
+    message = SimpleNamespace(
+        content_blocks=[{"type": "tool_call_chunk", "name": "read_file"}]
+    )
+    tracker.observe_chunk(
+        ns_key=("graph", "explorer"),
+        stream_mode="messages",
+        data=(message, {}),
+    )
+    assert explorer.progress[-1] == "explorer calling read_file"
+
+    tracker.complete_task(None)
+    tracker.complete_task("missing")
+    tracker.complete_task("call-1")
+    tracker.observe_chunk(
+        ns_key=("graph", "explorer"),
+        stream_mode="updates",
+        data={},
+    )
+    assert explorer.progress[-1] == "explorer calling read_file"
+
+    tracker.clear()
+    assert tracker._tasks == {}
+
+
+def test_subagent_activity_tracker_handles_ambiguous_and_fallback_namespaces() -> None:
+    tracker = SubagentActivityTracker()
+    first = _ToolWidget("task")
+    second = _ToolWidget("task")
+
+    tracker.observe_chunk(ns_key=(), stream_mode="updates", data={})
+    tracker.register_task(tool_call_id="", widget=first, args={})
+    assert first.progress == []
+
+    tracker.register_task(tool_call_id="1", widget=first, args={})
+    tracker.observe_chunk(ns_key=("unknown",), stream_mode="messages", data=("bad", {}))
+    assert first.progress == ["Starting subagent subagent"]
+
+    tracker.register_task(tool_call_id="2", widget=second, args={"subagent_type": "other"})
+    tracker.observe_chunk(ns_key=("ambiguous",), stream_mode="updates", data={})
+    assert second.progress == ["Starting other subagent", "other subagent updating state"]
+
+    tracker.complete_task("2")
+    tracker.observe_chunk(ns_key=("fallback",), stream_mode="updates", data={})
+    assert first.progress[-1] == "subagent subagent updating state"
+
+    third = _ToolWidget("task")
+    tracker.register_task(tool_call_id="3", widget=third, args={"subagent_type": "third"})
+    tracker.observe_chunk(ns_key=("third",), stream_mode="updates", data={})
+    tracker.observe_chunk(ns_key=("still-ambiguous",), stream_mode="updates", data={})
+    assert third.progress == [
+        "Starting third subagent",
+        "third subagent updating state",
+    ]
+
+
+def test_subagent_activity_detail_detects_message_shapes() -> None:
+    finished = SimpleNamespace(name="read_file")
+    assert _activity_detail("messages", (finished, {}), "worker") == (
+        "worker finished read_file"
+    )
+
+    working = SimpleNamespace(content_blocks=[{"type": "text", "text": "hi"}])
+    assert _activity_detail("messages", (working, {}), "worker") == (
+        "worker subagent working"
+    )
+    assert _activity_detail("custom", (working, {}), "worker") is None
+    assert _activity_detail("messages", ("bad",), "worker") is None
+
+    chunk_call = SimpleNamespace(tool_call_chunks=[{"name": "grep"}])
+    direct_call = SimpleNamespace(tool_calls=[SimpleNamespace(name="write_file")])
+    assert _tool_name_from_message(chunk_call) == "grep"
+    assert _tool_name_from_message(direct_call) == "write_file"
+    assert _tool_name_from_message(SimpleNamespace(content_blocks=["bad"])) is None
 
 
 def test_late_execute_result_updates_timed_out_widget_without_duplicate_mount() -> None:

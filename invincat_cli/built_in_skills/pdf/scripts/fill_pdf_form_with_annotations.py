@@ -1,8 +1,13 @@
 import json
 import sys
 
-from pypdf import PdfReader, PdfWriter
-from pypdf.annotations import FreeText
+from invincat_cli.built_in_skills.dependency_check import require_module
+
+pypdf = require_module("pypdf", "pdf")
+pypdf_annotations = require_module("pypdf.annotations", "pdf")
+PdfReader = pypdf.PdfReader
+PdfWriter = pypdf.PdfWriter
+FreeText = pypdf_annotations.FreeText
 
 
 def transform_from_image_coords(bbox, image_width, image_height, pdf_width, pdf_height):

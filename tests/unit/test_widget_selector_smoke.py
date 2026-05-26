@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+
 from textual.content import Content
 
 from invincat_cli.config import get_glyphs
 from invincat_cli.i18n import Language
+from invincat_cli.widgets import model_register as model_register_mod
 from invincat_cli.widgets.language_selector import LanguageSelectorScreen
 from invincat_cli.widgets.mcp_viewer import MCPToolItem, MCPViewerScreen
+from invincat_cli.widgets.model_register import ModelRegisterScreen
 from invincat_cli.widgets.model_selector_display import ModelSelectorDisplayMixin
 from invincat_cli.widgets.model_selector_option import ModelOption
 from invincat_cli.widgets.theme_selector import ThemeSelectorScreen
@@ -130,3 +134,120 @@ def test_theme_selector_handles_invalid_selection(monkeypatch) -> None:
 
     assert screen._current_theme == "invincat"
     assert dismissed == [None]
+
+
+class _RegisterField:
+    def __init__(self, value: str = "") -> None:
+        self.value = value
+        self.display = True
+        self.focused = False
+        self.text = ""
+
+    def focus(self) -> None:
+        self.focused = True
+
+    def update(self, value: object) -> None:
+        self.text = str(value)
+
+
+def _install_register_fields(
+    monkeypatch,
+    screen: ModelRegisterScreen,
+    *,
+    provider: str = "openai",
+    model: str = "deepseek-v4-flash",
+    api_key_env: str = "",
+    base_url: str = "https://api.deepseek.com",
+    max_input_tokens: str = "128000",
+    thinking: str = "enabled",
+    effort: str = "high",
+) -> dict[str, _RegisterField]:
+    fields = {
+        "reg-provider": _RegisterField(provider),
+        "reg-model": _RegisterField(model),
+        "reg-api-key-env": _RegisterField(api_key_env),
+        "reg-base-url": _RegisterField(base_url),
+        "reg-max-input-tokens": _RegisterField(max_input_tokens),
+        "reg-deepseek-title": _RegisterField(),
+        "reg-deepseek-thinking-label": _RegisterField(),
+        "reg-deepseek-thinking": _RegisterField(thinking),
+        "reg-deepseek-effort-label": _RegisterField(),
+        "reg-deepseek-effort": _RegisterField(effort),
+        "reg-error": _RegisterField(),
+    }
+
+    def fake_query_one(selector: str, *_args: object) -> _RegisterField:
+        return fields[selector.removeprefix("#")]
+
+    monkeypatch.setattr(screen, "query_one", fake_query_one)
+    return fields
+
+
+def test_model_register_deepseek_visibility(monkeypatch) -> None:
+    screen = ModelRegisterScreen()
+    fields = _install_register_fields(monkeypatch, screen)
+
+    assert screen._deepseek_options_enabled() is True
+
+    fields["reg-base-url"].value = "https://api.openai.com/v1"
+    screen._update_deepseek_options_visibility()
+
+    assert screen._deepseek_options_enabled() is False
+    for widget_id in screen._DEEPSEEK_OPTION_IDS:
+        assert fields[widget_id].display is False
+
+
+def test_model_register_submit_persists_model_and_target_params(
+    monkeypatch,
+) -> None:
+    screen = ModelRegisterScreen(target="memory")
+    _install_register_fields(monkeypatch, screen)
+    registered: list[tuple[object, ...]] = []
+    saved_params: list[tuple[object, ...]] = []
+    dismissed: list[tuple[str, str]] = []
+
+    def fake_register_provider_model(*args: object, **kwargs: object) -> bool:
+        registered.append((*args, kwargs))
+        return True
+
+    def fake_save_target_model_params(*args: object, **kwargs: object) -> bool:
+        saved_params.append((*args, kwargs))
+        return True
+
+    monkeypatch.setattr(
+        model_register_mod,
+        "register_provider_model",
+        fake_register_provider_model,
+    )
+    monkeypatch.setattr(
+        model_register_mod,
+        "save_target_model_params",
+        fake_save_target_model_params,
+    )
+    monkeypatch.setattr(screen, "dismiss", dismissed.append)
+
+    asyncio.run(screen.action_submit())
+
+    assert dismissed == [("openai", "deepseek-v4-flash")]
+    assert registered == [
+        (
+            "openai",
+            "deepseek-v4-flash",
+            {
+                "api_key_env": "OPENAI_API_KEY",
+                "base_url": "https://api.deepseek.com",
+                "max_input_tokens": 128000,
+            },
+        )
+    ]
+    assert saved_params == [
+        (
+            "memory",
+            "openai:deepseek-v4-flash",
+            {
+                "extra_body": {"thinking": {"type": "enabled"}},
+                "reasoning_effort": "high",
+            },
+            {},
+        )
+    ]

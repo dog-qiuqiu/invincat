@@ -206,6 +206,26 @@ Project skills override user skills with the same name, and custom skills
 override built-in skills. Each skill lives in its own directory with a
 `SKILL.md` file that defines its `name`, `description`, and instructions.
 
+Some built-in skills rely on document-processing libraries that are not needed
+for normal coding sessions. Install the matching extras when you want those
+workflows available:
+
+```bash
+pip install "invincat-cli[pdf]"
+pip install "invincat-cli[office]"
+pip install "invincat-cli[all-skills]"
+```
+
+Office conversion and spreadsheet recalculation workflows may also need system
+tools such as LibreOffice, Poppler, Tesseract, or Node.js packages named by the
+skill instructions.
+
+For local release checks, install:
+
+```bash
+pip install "invincat-cli[release]"
+```
+
 ## WeCom Bot Daemon
 
 Configure a robot on the enterprise WeChat side to obtain the "Bot ID" and "Secret":

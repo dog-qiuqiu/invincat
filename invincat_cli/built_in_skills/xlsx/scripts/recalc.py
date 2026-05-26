@@ -11,7 +11,11 @@ import sys
 from pathlib import Path
 
 from office.soffice import get_soffice_env
-from openpyxl import load_workbook
+
+from invincat_cli.built_in_skills.dependency_check import require_module
+
+openpyxl = require_module("openpyxl", "xlsx")
+load_workbook = openpyxl.load_workbook
 
 MACRO_DIR_MACOS = "~/Library/Application Support/LibreOffice/4/user/basic/Standard"
 MACRO_DIR_LINUX = "~/.config/libreoffice/4/user/basic/Standard"

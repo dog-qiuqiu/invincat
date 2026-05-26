@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 from textual.containers import Container
 from textual.css.query import NoMatches
@@ -58,7 +58,7 @@ async def set_spinner(app: Any, status: SpinnerStatus) -> None:
             app._loading_widget = None
         return
 
-    messages = app.query_one("#messages", Container)
+    messages = cast("Container", app.query_one("#messages", Container))
 
     if app._loading_widget is None:
         app._loading_widget = LoadingWidget(status)
@@ -74,7 +74,7 @@ async def set_spinner(app: Any, status: SpinnerStatus) -> None:
 async def mount_message(app: Any, widget: Any) -> None:  # noqa: ANN401
     """Mount a message widget and update the message store."""
     try:
-        messages = app.query_one("#messages", Container)
+        messages = cast("Container", app.query_one("#messages", Container))
     except NoMatches:
         return
 
@@ -104,7 +104,7 @@ async def mount_message(app: Any, widget: Any) -> None:  # noqa: ANN401
 async def mount_message_after(app: Any, anchor: Any, widget: Any) -> None:  # noqa: ANN401
     """Mount a message widget immediately after an existing message widget."""
     try:
-        messages = app.query_one("#messages", Container)
+        messages = cast("Container", app.query_one("#messages", Container))
     except NoMatches:
         return
 
@@ -158,7 +158,7 @@ async def clear_messages(app: Any) -> None:  # noqa: ANN401
     """Clear the messages area and backing message store."""
     app._message_store.clear()
     try:
-        messages = app.query_one("#messages", Container)
+        messages = cast("Container", app.query_one("#messages", Container))
         await messages.remove_children()
     except NoMatches:
         logger.warning(

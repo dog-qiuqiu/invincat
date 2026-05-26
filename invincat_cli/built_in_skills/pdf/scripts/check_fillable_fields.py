@@ -1,6 +1,9 @@
 import sys
 
-from pypdf import PdfReader
+from invincat_cli.built_in_skills.dependency_check import require_module
+
+pypdf = require_module("pypdf", "pdf")
+PdfReader = pypdf.PdfReader
 
 reader = PdfReader(sys.argv[1])
 if (reader.get_fields()):

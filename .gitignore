@@ -1,5 +1,14 @@
 __pycache__/
+*.py[cod]
+*$py.class
 .DS_Store
 .coverage
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
 coverage.json
 coverage.xml
+dist/
+build/
+*.egg-info/
+htmlcov/

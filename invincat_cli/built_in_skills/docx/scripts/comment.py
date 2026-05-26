@@ -20,7 +20,9 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-import defusedxml.minidom
+from invincat_cli.built_in_skills.dependency_check import require_module
+
+minidom = require_module("defusedxml.minidom", "docx")
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 NS = {
@@ -84,10 +86,10 @@ def _encode_smart_quotes(text: str) -> str:
 
 
 def _append_xml(xml_path: Path, root_tag: str, content: str) -> None:
-    dom = defusedxml.minidom.parseString(xml_path.read_text(encoding="utf-8"))
+    dom = minidom.parseString(xml_path.read_text(encoding="utf-8"))
     root = dom.getElementsByTagName(root_tag)[0]
     ns_attrs = " ".join(f'xmlns:{k}="{v}"' for k, v in NS.items())
-    wrapper_dom = defusedxml.minidom.parseString(f"<root {ns_attrs}>{content}</root>")
+    wrapper_dom = minidom.parseString(f"<root {ns_attrs}>{content}</root>")
     for child in wrapper_dom.documentElement.childNodes:  
         if child.nodeType == child.ELEMENT_NODE:
             root.appendChild(dom.importNode(child, True))
@@ -96,7 +98,7 @@ def _append_xml(xml_path: Path, root_tag: str, content: str) -> None:
 
 
 def _find_para_id(comments_path: Path, comment_id: int) -> str | None:
-    dom = defusedxml.minidom.parseString(comments_path.read_text(encoding="utf-8"))
+    dom = minidom.parseString(comments_path.read_text(encoding="utf-8"))
     for c in dom.getElementsByTagName("w:comment"):
         if c.getAttribute("w:id") == str(comment_id):
             for p in c.getElementsByTagName("w:p"):
@@ -106,7 +108,7 @@ def _find_para_id(comments_path: Path, comment_id: int) -> str | None:
 
 
 def _get_next_rid(rels_path: Path) -> int:
-    dom = defusedxml.minidom.parseString(rels_path.read_text(encoding="utf-8"))
+    dom = minidom.parseString(rels_path.read_text(encoding="utf-8"))
     max_rid = 0
     for rel in dom.getElementsByTagName("Relationship"):
         rid = rel.getAttribute("Id")
@@ -119,7 +121,7 @@ def _get_next_rid(rels_path: Path) -> int:
 
 
 def _has_relationship(rels_path: Path, target: str) -> bool:
-    dom = defusedxml.minidom.parseString(rels_path.read_text(encoding="utf-8"))
+    dom = minidom.parseString(rels_path.read_text(encoding="utf-8"))
     for rel in dom.getElementsByTagName("Relationship"):
         if rel.getAttribute("Target") == target:
             return True
@@ -127,7 +129,7 @@ def _has_relationship(rels_path: Path, target: str) -> bool:
 
 
 def _has_content_type(ct_path: Path, part_name: str) -> bool:
-    dom = defusedxml.minidom.parseString(ct_path.read_text(encoding="utf-8"))
+    dom = minidom.parseString(ct_path.read_text(encoding="utf-8"))
     for override in dom.getElementsByTagName("Override"):
         if override.getAttribute("PartName") == part_name:
             return True
@@ -142,7 +144,7 @@ def _ensure_comment_relationships(unpacked_dir: Path) -> None:
     if _has_relationship(rels_path, "comments.xml"):
         return  
 
-    dom = defusedxml.minidom.parseString(rels_path.read_text(encoding="utf-8"))
+    dom = minidom.parseString(rels_path.read_text(encoding="utf-8"))
     root = dom.documentElement
     next_rid = _get_next_rid(rels_path)
 
@@ -184,7 +186,7 @@ def _ensure_comment_content_types(unpacked_dir: Path) -> None:
     if _has_content_type(ct_path, "/word/comments.xml"):
         return  
 
-    dom = defusedxml.minidom.parseString(ct_path.read_text(encoding="utf-8"))
+    dom = minidom.parseString(ct_path.read_text(encoding="utf-8"))
     root = dom.documentElement
 
     overrides = [

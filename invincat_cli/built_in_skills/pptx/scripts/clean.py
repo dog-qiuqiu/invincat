@@ -19,7 +19,9 @@ import re
 import sys
 from pathlib import Path
 
-import defusedxml.minidom
+from invincat_cli.built_in_skills.dependency_check import require_module
+
+minidom = require_module("defusedxml.minidom", "pptx")
 
 
 def get_slides_in_sldidlst(unpacked_dir: Path) -> set[str]:
@@ -29,7 +31,7 @@ def get_slides_in_sldidlst(unpacked_dir: Path) -> set[str]:
     if not pres_path.exists() or not pres_rels_path.exists():
         return set()
 
-    rels_dom = defusedxml.minidom.parse(str(pres_rels_path))
+    rels_dom = minidom.parse(str(pres_rels_path))
     rid_to_slide = {}
     for rel in rels_dom.getElementsByTagName("Relationship"):
         rid = rel.getAttribute("Id")
@@ -67,7 +69,7 @@ def remove_orphaned_slides(unpacked_dir: Path) -> list[str]:
                 removed.append(str(rels_file.relative_to(unpacked_dir)))
 
     if removed and pres_rels_path.exists():
-        rels_dom = defusedxml.minidom.parse(str(pres_rels_path))
+        rels_dom = minidom.parse(str(pres_rels_path))
         changed = False
 
         for rel in list(rels_dom.getElementsByTagName("Relationship")):
@@ -109,7 +111,7 @@ def get_slide_referenced_files(unpacked_dir: Path) -> set:
         return referenced
 
     for rels_file in slides_rels_dir.glob("*.rels"):
-        dom = defusedxml.minidom.parse(str(rels_file))
+        dom = minidom.parse(str(rels_file))
         for rel in dom.getElementsByTagName("Relationship"):
             target = rel.getAttribute("Target")
             if not target:
@@ -152,7 +154,7 @@ def get_referenced_files(unpacked_dir: Path) -> set:
     referenced = set()
 
     for rels_file in unpacked_dir.rglob("*.rels"):
-        dom = defusedxml.minidom.parse(str(rels_file))
+        dom = minidom.parse(str(rels_file))
         for rel in dom.getElementsByTagName("Relationship"):
             target = rel.getAttribute("Target")
             if not target:
@@ -221,7 +223,7 @@ def update_content_types(unpacked_dir: Path, removed_files: list[str]) -> None:
     if not ct_path.exists():
         return
 
-    dom = defusedxml.minidom.parse(str(ct_path))
+    dom = minidom.parse(str(ct_path))
     changed = False
 
     for override in list(dom.getElementsByTagName("Override")):
